@@ -1,0 +1,27 @@
+name: test-generation
+version: 0.1.0
+phase: experimental
+owner: local
+runtime: opencode
+model:
+  primary: coding-balanced
+  fallback: coding-fast
+mcp_servers:
+  - repo-classification
+  - engineering-standards-kb
+  - playwright-cli
+tools_allowed:
+  - read_file
+  - write_file
+  - run_command:playwright
+permissions:
+  network: deny
+  workspace_write: allow
+  outside_workspace_write: deny
+governance:
+  classification_max: internal
+cost:
+  per_invocation_cap_usd: 0.25
+evals:
+  path: ./evals/
+  required_for_phase0: false

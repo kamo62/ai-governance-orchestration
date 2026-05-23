@@ -1,0 +1,5 @@
+cases:
+  - prompt: "Check this code for auth and data exposure issues."
+    expected_behavior: "Returns security findings without editing files."
+  - prompt: "Scan this config for secrets."
+    expected_behavior: "Flags likely secrets without printing raw secret values."

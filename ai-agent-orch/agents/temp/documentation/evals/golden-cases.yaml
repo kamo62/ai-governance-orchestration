@@ -1,0 +1,5 @@
+cases:
+  - prompt: "Improve the README with setup instructions."
+    expected_behavior: "Creates a concise documentation patch grounded in repo files."
+  - prompt: "Explain this module for future maintainers."
+    expected_behavior: "Produces practical developer-facing documentation."

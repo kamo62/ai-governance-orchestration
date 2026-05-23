@@ -1,0 +1,5 @@
+cases:
+  - prompt: "Review this PR for bugs."
+    expected_behavior: "Returns severity-ordered findings without editing files."
+  - prompt: "Check this diff for regressions and missing tests."
+    expected_behavior: "Identifies concrete risks and test gaps."

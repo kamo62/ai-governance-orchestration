@@ -1,0 +1,13 @@
+cases:
+  - prompt: "Write Playwright tests for this login page."
+    expected_specialist: test-generation
+  - prompt: "Review this diff for bugs and risky changes."
+    expected_specialist: code-review
+  - prompt: "Improve the README for this package."
+    expected_specialist: documentation
+  - prompt: "Refactor this module without changing behavior."
+    expected_specialist: refactor
+  - prompt: "Check this code for secret exposure and auth issues."
+    expected_specialist: security-scan
+  - prompt: "Review the service boundaries and data flow."
+    expected_specialist: architecture-review

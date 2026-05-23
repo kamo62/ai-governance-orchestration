@@ -1,0 +1,60 @@
+models:
+  - alias: coding-primary
+    provider: openrouter
+    model_id: anthropic/claude-opus-4.7
+    purpose: Highest-quality coding, architecture, security, and deep refactor work.
+    allowed_classifications: [public, internal]
+    fallback_alias: coding-balanced
+    cost:
+      pricing_source: openrouter
+      verified_on: 2026-05-23
+
+  - alias: coding-balanced
+    provider: openrouter
+    model_id: anthropic/claude-sonnet-4.5
+    purpose: Default coding and agent workflow model.
+    allowed_classifications: [public, internal]
+    fallback_alias: coding-fast
+    cost:
+      pricing_source: openrouter
+      verified_on: 2026-05-23
+
+  - alias: coding-fast
+    provider: openrouter
+    model_id: x-ai/grok-build-0.1
+    purpose: Fast coding loops and patch iteration.
+    allowed_classifications: [public, internal]
+    fallback_alias: coding-economy
+    cost:
+      pricing_source: openrouter
+      verified_on: 2026-05-23
+
+  - alias: coding-economy
+    provider: openrouter
+    model_id: qwen/qwen3.7-max
+    purpose: Cheaper draft generation and routine implementation work.
+    allowed_classifications: [public, internal]
+    fallback_alias: router-small
+    cost:
+      pricing_source: openrouter
+      verified_on: 2026-05-23
+
+  - alias: router-small
+    provider: openrouter
+    model_id: google/gemini-3.5-flash
+    purpose: Routing, summarization, and classification.
+    allowed_classifications: [public, internal]
+    fallback_alias: null
+    cost:
+      pricing_source: openrouter
+      verified_on: 2026-05-23
+
+  - alias: smoke-deepseek-v4-flash
+    provider: openrouter
+    model_id: deepseek/deepseek-v4-flash
+    purpose: Phase 1 OpenRouter smoke test model requested for local API verification.
+    allowed_classifications: [public]
+    fallback_alias: null
+    cost:
+      pricing_source: openrouter
+      verified_on: 2026-05-23

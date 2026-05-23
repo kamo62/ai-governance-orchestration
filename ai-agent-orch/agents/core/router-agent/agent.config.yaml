@@ -1,0 +1,24 @@
+name: router-agent
+version: 0.1.0
+phase: experimental
+owner: core
+runtime: opencode
+model:
+  primary: router-small
+  fallback: coding-economy
+mcp_servers:
+  - catalog-introspection
+tools_allowed:
+  - list_specialists
+  - get_specialist_metadata
+permissions:
+  network: deny
+  workspace_write: deny
+  outside_workspace_write: deny
+governance:
+  classification_max: internal
+cost:
+  per_invocation_cap_usd: 0.02
+evals:
+  path: ./evals/
+  required_for_phase0: true

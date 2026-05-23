@@ -1,0 +1,29 @@
+.DS_Store
+
+# Local planning/source artifacts
+plan.md
+implementation.md
+*.pdf
+
+# Local secrets and machine-specific environment
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Runtime state and logs
+var/
+**/var/
+*.log
+audit.jsonl
+*.jsonl
+
+# Build and test outputs
+dist/
+coverage/
+tmp/
+*.out
+
+# Editor/local tool state
+.idea/
+.vscode/

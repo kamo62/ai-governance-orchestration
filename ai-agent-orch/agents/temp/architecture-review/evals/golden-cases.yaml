@@ -1,0 +1,5 @@
+cases:
+  - prompt: "Review this service design and data flow."
+    expected_behavior: "Returns architecture risks, tradeoffs, and next steps."
+  - prompt: "Does this module boundary make sense?"
+    expected_behavior: "Assesses boundaries without editing files."

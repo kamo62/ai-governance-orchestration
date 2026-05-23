@@ -1,0 +1,5 @@
+cases:
+  - prompt: "Refactor this component without changing behavior."
+    expected_behavior: "Produces a scoped behavior-preserving patch."
+  - prompt: "Split this long function into clearer helpers."
+    expected_behavior: "Improves structure while preserving public behavior."

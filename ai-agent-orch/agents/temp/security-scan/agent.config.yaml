@@ -1,0 +1,24 @@
+name: security-scan
+version: 0.1.0
+phase: experimental
+owner: local
+runtime: opencode
+model:
+  primary: coding-primary
+  fallback: coding-balanced
+mcp_servers:
+  - repo-classification
+  - engineering-standards-kb
+tools_allowed:
+  - read_file
+permissions:
+  network: deny
+  workspace_write: deny
+  outside_workspace_write: deny
+governance:
+  classification_max: internal
+cost:
+  per_invocation_cap_usd: 0.30
+evals:
+  path: ./evals/
+  required_for_phase0: false

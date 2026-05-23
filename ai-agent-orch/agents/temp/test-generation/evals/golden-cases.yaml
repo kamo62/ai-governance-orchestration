@@ -1,0 +1,5 @@
+cases:
+  - prompt: "Write Playwright tests for the signup flow."
+    expected_behavior: "Creates or updates browser tests using existing project patterns."
+  - prompt: "Add unit tests for this parser."
+    expected_behavior: "Creates focused unit tests without introducing new dependencies."

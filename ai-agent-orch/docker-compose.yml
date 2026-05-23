@@ -1,0 +1,80 @@
+name: ai-agent-orch
+
+x-app-environment: &app-environment
+  AI_ORCH_ADDR: :8080
+  AI_ORCH_CATALOG_ROOT: /app
+  AI_ORCH_AUDIT_PATH: /app/var/audit/audit.jsonl
+
+x-catalog-volumes: &catalog-volumes
+  - ./agents:/app/agents:ro
+  - ./models:/app/models:ro
+
+x-runtime-volumes: &runtime-volumes
+  - ./agents:/app/agents:ro
+  - ./models:/app/models:ro
+  - audit-data:/app/var/audit
+
+services:
+  governance-shell:
+    build:
+      context: .
+    command: ["governance-shell"]
+    environment:
+      <<: *app-environment
+      AI_ORCH_DEV_TOKEN: ${AI_ORCH_DEV_TOKEN:-}
+      AI_ORCH_CLASSIFICATION_MAX: ${AI_ORCH_CLASSIFICATION_MAX:-internal}
+      AI_ORCH_KILL_SWITCH: ${AI_ORCH_KILL_SWITCH:-false}
+      AI_ORCH_COST_CAP_ENABLED: ${AI_ORCH_COST_CAP_ENABLED:-false}
+      AI_ORCH_SESSION_COST_CAP_USD: ${AI_ORCH_SESSION_COST_CAP_USD:-0}
+    ports:
+      - "${GOVERNANCE_SHELL_PORT:-8080}:8080"
+    volumes: *runtime-volumes
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  orchestrator:
+    build:
+      context: .
+    command: ["orchestrator"]
+    environment:
+      <<: *app-environment
+    ports:
+      - "${ORCHESTRATOR_PORT:-8081}:8080"
+    volumes: *runtime-volumes
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  catalog-validator:
+    profiles: ["tools"]
+    build:
+      context: .
+    command: ["catalog-validator", "-catalog-root", "/app"]
+    environment:
+      <<: *app-environment
+    volumes: *catalog-volumes
+
+  openrouter-smoke:
+    profiles: ["tools"]
+    build:
+      context: .
+    command:
+      - openrouter-smoke
+      - -catalog-root
+      - /app
+      - -model-alias
+      - ${OPENROUTER_MODEL_ALIAS:-smoke-deepseek-v4-flash}
+    environment:
+      <<: *app-environment
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-ai-agent-orch-local}
+    volumes: *catalog-volumes
+
+volumes:
+  audit-data:

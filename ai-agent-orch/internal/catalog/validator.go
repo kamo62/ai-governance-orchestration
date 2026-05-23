@@ -1,0 +1,299 @@
+package catalog
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+var forbiddenMarkdownTokens = []string{
+	"tools_allowed:",
+	"permissions:",
+	"governance:",
+	"cost:",
+	"runtime:",
+	"model_id:",
+}
+
+type Report struct {
+	Agents       []AgentSummary `json:"agents"`
+	ModelAliases []string       `json:"model_aliases"`
+}
+
+type AgentSummary struct {
+	Name          string `json:"name"`
+	Path          string `json:"path"`
+	WorkspaceMode string `json:"workspace_write"`
+}
+
+func (r Report) HasAgent(name string) bool {
+	for _, agent := range r.Agents {
+		if agent.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func Validate(root string) (Report, error) {
+	aliases, err := loadModelAliases(filepath.Join(root, "models", "registry.yaml"))
+	if err != nil {
+		return Report{}, err
+	}
+
+	agentDirs, err := discoverAgentDirs(filepath.Join(root, "agents"))
+	if err != nil {
+		return Report{}, err
+	}
+
+	var report Report
+	for alias := range aliases {
+		report.ModelAliases = append(report.ModelAliases, alias)
+	}
+	sort.Strings(report.ModelAliases)
+
+	var tempAgents []string
+	for _, dir := range agentDirs {
+		cfg, err := validateAgentDir(root, dir, aliases)
+		if err != nil {
+			return Report{}, err
+		}
+		rel, _ := filepath.Rel(root, dir)
+		report.Agents = append(report.Agents, AgentSummary{
+			Name:          cfg.Name,
+			Path:          filepath.ToSlash(rel),
+			WorkspaceMode: cfg.Permissions.WorkspaceWrite,
+		})
+		if strings.Contains(filepath.ToSlash(rel), "agents/temp/") {
+			tempAgents = append(tempAgents, cfg.Name)
+		}
+	}
+
+	sort.Slice(report.Agents, func(i, j int) bool { return report.Agents[i].Name < report.Agents[j].Name })
+	sort.Strings(tempAgents)
+
+	if err := validateRouterCoverage(root, tempAgents); err != nil {
+		return Report{}, err
+	}
+
+	return report, nil
+}
+
+func loadModelAliases(path string) (map[string]struct{}, error) {
+	var registry ModelRegistry
+	if err := readYAML(path, &registry); err != nil {
+		return nil, fmt.Errorf("load model registry: %w", err)
+	}
+	if len(registry.Models) == 0 {
+		return nil, errors.New("model registry has no models")
+	}
+	aliases := make(map[string]struct{}, len(registry.Models))
+	for _, model := range registry.Models {
+		if model.Alias == "" {
+			return nil, errors.New("model registry contains model without alias")
+		}
+		aliases[model.Alias] = struct{}{}
+	}
+	return aliases, nil
+}
+
+func discoverAgentDirs(root string) ([]string, error) {
+	var dirs []string
+	for _, group := range []string{"core", "temp"} {
+		matches, err := filepath.Glob(filepath.Join(root, group, "*"))
+		if err != nil {
+			return nil, err
+		}
+		for _, match := range matches {
+			info, err := os.Stat(match)
+			if err != nil {
+				return nil, err
+			}
+			if info.IsDir() {
+				dirs = append(dirs, match)
+			}
+		}
+	}
+	if len(dirs) == 0 {
+		return nil, fmt.Errorf("no agent directories under %s", root)
+	}
+	sort.Strings(dirs)
+	return dirs, nil
+}
+
+func validateAgentDir(root string, dir string, aliases map[string]struct{}) (agentConfig, error) {
+	mdPath := filepath.Join(dir, "agent.md")
+	cfgPath := filepath.Join(dir, "agent.config.yaml")
+	evalsPath := filepath.Join(dir, "evals", "golden-cases.yaml")
+
+	for _, path := range []string{mdPath, cfgPath, evalsPath} {
+		if _, err := os.Stat(path); err != nil {
+			return agentConfig{}, fmt.Errorf("%s: required file missing: %w", rel(root, path), err)
+		}
+	}
+
+	md, err := os.ReadFile(mdPath)
+	if err != nil {
+		return agentConfig{}, err
+	}
+	mdText := string(md)
+	if !strings.Contains(mdText, "Config: `./agent.config.yaml`") {
+		return agentConfig{}, fmt.Errorf("%s: missing Config reference", rel(root, mdPath))
+	}
+	for _, token := range forbiddenMarkdownTokens {
+		if strings.Contains(mdText, token) {
+			return agentConfig{}, fmt.Errorf("%s: contains executable policy token %q", rel(root, mdPath), token)
+		}
+	}
+
+	cfgBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return agentConfig{}, err
+	}
+	if strings.Contains(string(cfgBytes), "model_id:") {
+		return agentConfig{}, fmt.Errorf("%s: concrete model_id is only allowed in models/registry.yaml", rel(root, cfgPath))
+	}
+
+	var cfg agentConfig
+	if err := yaml.Unmarshal(cfgBytes, &cfg); err != nil {
+		return agentConfig{}, fmt.Errorf("%s: parse config: %w", rel(root, cfgPath), err)
+	}
+	if err := cfg.validate(aliases); err != nil {
+		return agentConfig{}, fmt.Errorf("%s: %w", rel(root, cfgPath), err)
+	}
+
+	if cfg.Permissions.WorkspaceWrite == "deny" && contains(cfg.ToolsAllowed, "write_file") {
+		return agentConfig{}, fmt.Errorf("%s: read-only agent cannot allow write_file", rel(root, cfgPath))
+	}
+	if cfg.Name != "test-generation" && contains(cfg.ToolsAllowed, "run_command:playwright") {
+		return agentConfig{}, fmt.Errorf("%s: only test-generation can run Playwright", rel(root, cfgPath))
+	}
+
+	return cfg, nil
+}
+
+func validateRouterCoverage(root string, tempAgents []string) error {
+	if len(tempAgents) == 0 {
+		return nil
+	}
+	var evals struct {
+		Cases []struct {
+			ExpectedSpecialist string `yaml:"expected_specialist"`
+		} `yaml:"cases"`
+	}
+	path := filepath.Join(root, "agents", "core", "router-agent", "evals", "golden-cases.yaml")
+	if err := readYAML(path, &evals); err != nil {
+		return fmt.Errorf("load router evals: %w", err)
+	}
+	covered := map[string]struct{}{}
+	for _, c := range evals.Cases {
+		if c.ExpectedSpecialist != "" {
+			covered[c.ExpectedSpecialist] = struct{}{}
+		}
+	}
+	for _, agent := range tempAgents {
+		if _, ok := covered[agent]; !ok {
+			return fmt.Errorf("router golden cases do not cover temp agent %q", agent)
+		}
+	}
+	return nil
+}
+
+func readYAML(path string, out any) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return yaml.Unmarshal(b, out)
+}
+
+func rel(root, path string) string {
+	r, err := filepath.Rel(root, path)
+	if err != nil {
+		return path
+	}
+	return filepath.ToSlash(r)
+}
+
+func contains(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+type agentConfig struct {
+	Name         string   `yaml:"name"`
+	Version      string   `yaml:"version"`
+	Phase        string   `yaml:"phase"`
+	Owner        string   `yaml:"owner"`
+	Runtime      string   `yaml:"runtime"`
+	Model        modelRef `yaml:"model"`
+	MCPServers   []string `yaml:"mcp_servers"`
+	ToolsAllowed []string `yaml:"tools_allowed"`
+	Permissions  struct {
+		Network               string `yaml:"network"`
+		WorkspaceWrite        string `yaml:"workspace_write"`
+		OutsideWorkspaceWrite string `yaml:"outside_workspace_write"`
+	} `yaml:"permissions"`
+	Governance struct {
+		ClassificationMax string `yaml:"classification_max"`
+	} `yaml:"governance"`
+	Cost struct {
+		PerInvocationCapUSD float64 `yaml:"per_invocation_cap_usd"`
+	} `yaml:"cost"`
+	Evals struct {
+		Path              string `yaml:"path"`
+		RequiredForPhase0 bool   `yaml:"required_for_phase0"`
+	} `yaml:"evals"`
+}
+
+type modelRef struct {
+	Primary  string `yaml:"primary"`
+	Fallback string `yaml:"fallback"`
+}
+
+func (cfg agentConfig) validate(aliases map[string]struct{}) error {
+	required := map[string]string{
+		"name":                          cfg.Name,
+		"version":                       cfg.Version,
+		"phase":                         cfg.Phase,
+		"owner":                         cfg.Owner,
+		"runtime":                       cfg.Runtime,
+		"model.primary":                 cfg.Model.Primary,
+		"permissions.network":           cfg.Permissions.Network,
+		"permissions.workspace_write":   cfg.Permissions.WorkspaceWrite,
+		"governance.classification_max": cfg.Governance.ClassificationMax,
+		"evals.path":                    cfg.Evals.Path,
+	}
+	for field, value := range required {
+		if value == "" {
+			return fmt.Errorf("missing required field %s", field)
+		}
+	}
+	if len(cfg.MCPServers) == 0 {
+		return errors.New("missing mcp_servers")
+	}
+	if len(cfg.ToolsAllowed) == 0 {
+		return errors.New("missing tools_allowed")
+	}
+	if cfg.Cost.PerInvocationCapUSD <= 0 {
+		return errors.New("cost.per_invocation_cap_usd must be positive")
+	}
+	if _, ok := aliases[cfg.Model.Primary]; !ok {
+		return fmt.Errorf("unknown primary model alias %q", cfg.Model.Primary)
+	}
+	if cfg.Model.Fallback != "" {
+		if _, ok := aliases[cfg.Model.Fallback]; !ok {
+			return fmt.Errorf("unknown fallback model alias %q", cfg.Model.Fallback)
+		}
+	}
+	return nil
+}
