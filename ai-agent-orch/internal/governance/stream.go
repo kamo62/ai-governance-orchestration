@@ -1,6 +1,7 @@
 package governance
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,26 @@ import (
 )
 
 const maxClosedSessionHistory = 256
+
+// sseGlobalLimiter limits concurrent SSE connections to prevent DoS.
+// Capacity of 500 is a reasonable default for local Phase 2.
+var sseGlobalLimiter = make(chan struct{}, 500)
+
+func acquireSSE(ctx context.Context) error {
+	select {
+	case sseGlobalLimiter <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func releaseSSE() {
+	select {
+	case <-sseGlobalLimiter:
+	default:
+	}
+}
 
 // SessionEvent is a single event in a session stream.
 type SessionEvent struct {
@@ -194,6 +215,16 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
+	if h == nil || h.store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "event store unavailable"})
+		return
+	}
+
+	if err := acquireSSE(r.Context()); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "server busy"})
+		return
+	}
+	defer releaseSSE()
 
 	sessionID := extractSessionID(r.URL.Path, "/v1/sessions/", "/events")
 	if sessionID == "" || strings.Contains(sessionID, "/") {

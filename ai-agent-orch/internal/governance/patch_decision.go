@@ -31,9 +31,11 @@ func (h *PatchDecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return
 	}
-	if !h.service.RequireAuthorizedRequest(w, r) {
+	authReq, ok := h.service.RequireAuthorizedRequest(w, r)
+	if !ok {
 		return
 	}
+	r = authReq
 
 	sessionID := extractSessionID(r.URL.Path, "/v1/sessions/", "/patch-decision")
 	if sessionID == "" || strings.Contains(sessionID, "/") {
@@ -41,15 +43,27 @@ func (h *PatchDecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Enforce session ownership.
+	actor := actorFromContext(r.Context())
+	if h.service.sessions != nil {
+		record, err := h.service.sessions.Get(r.Context(), sessionID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			return
+		}
+		if record.ActorSubject != actor {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
+			return
+		}
+	}
+
 	var req struct {
 		PatchID  string `json:"patch_id"`
 		Decision string `json:"decision"`
 		Reason   string `json:"reason,omitempty"`
 	}
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
 	if req.PatchID == "" {
@@ -70,13 +84,18 @@ func (h *PatchDecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	reason := req.Decision
+	if req.Reason != "" {
+		reason = fmt.Sprintf("%s: %s", req.Decision, req.Reason)
+	}
+
 	eventID := h.newID("evt")
 	_, err := h.service.audit.Append(r.Context(), audit.Event{
 		EventID:            eventID,
 		SessionID:          sessionID,
 		EventType:          "patch.decision",
-		Actor:              "local-dev",
-		Reason:             fmt.Sprintf("%s: %s", req.Decision, req.Reason),
+		Actor:              actor,
+		Reason:             reason,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",

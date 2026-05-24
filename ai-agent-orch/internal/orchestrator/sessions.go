@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"ai-agent-orch/internal/audit"
@@ -71,10 +72,8 @@ func (s *SessionIntake) acceptSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request AcceptSessionRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&request); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+	if err := readJSON(w, r, &request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
 	if err := request.validate(); err != nil {
@@ -117,6 +116,22 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+const maxRequestBodyBytes = 1 << 20
+
+func readJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	var extra struct{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		return errors.New("unexpected trailing JSON")
+	}
+	return nil
 }
 
 func randomID(prefix string) string {

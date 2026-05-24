@@ -1,5 +1,7 @@
 .git
 .env
+.env.*
+!.env.example
 *.log
 tmp/
 dist/
@@ -15,3 +17,5 @@ governance-shell
 openrouter-smoke
 orchestrator
 mcp-*
+*.vsix
+review_*.md

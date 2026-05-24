@@ -111,7 +111,7 @@ func TestCreateSessionRejectsInvalidDevTokenBeforeReadingRawPrompt(t *testing.T)
 	}
 }
 
-func TestCreateSessionFailsClosedWhenDevTokenMissingEvenWithBearer(t *testing.T) {
+func TestCreateSessionFailsClosedWhenDevTokenEmpty(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	service := NewSessionService(SessionConfig{
 		Audit: audit.NewFileStore(auditPath),
@@ -121,7 +121,7 @@ func TestCreateSessionFailsClosedWhenDevTokenMissingEvenWithBearer(t *testing.T)
 	})
 	handler := NewSessionHandler(service)
 
-	body := []byte(`{"agent":"test-generation","classification":"internal","prompt":"raw prompt must not be processed"}`)
+	body := []byte(`{"agent":"test-generation","classification":"internal","prompt":"hello world"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer any-token")
 	rec := httptest.NewRecorder()
@@ -132,11 +132,11 @@ func TestCreateSessionFailsClosedWhenDevTokenMissingEvenWithBearer(t *testing.T)
 		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
 	}
 	auditText := readAuditText(t, auditPath)
-	if strings.Contains(auditText, "raw prompt must not be processed") {
-		t.Fatalf("missing-token audit must not include request body: %s", auditText)
+	if strings.Contains(auditText, "hello world") {
+		t.Fatalf("dev-token denial audit event must not include request body: %s", auditText)
 	}
 	if !strings.Contains(auditText, `"reason":"dev token not configured"`) {
-		t.Fatalf("expected missing dev token audit event: %s", auditText)
+		t.Fatalf("expected dev-token denial audit event: %s", auditText)
 	}
 }
 
@@ -313,6 +313,31 @@ func TestCreateSessionFailsClosedWhenAuditWriteFails(t *testing.T) {
 	}
 }
 
+func TestCreateSessionDoesNotPersistWhenAuditWriteFails(t *testing.T) {
+	store := &recordingSessionStore{}
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    failingAuditStore{},
+		Sessions: store,
+		NewID: fixedIDs(
+			"sess_should_not_persist",
+			"evt_should_fail",
+		),
+	})
+	handler := NewSessionHandler(service)
+
+	req := authorizedSessionRequest(`{"agent":"test-generation","classification":"internal","prompt":"normal prompt"}`)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(store.created) != 0 {
+		t.Fatalf("session store must not persist when audit fails: %#v", store.created)
+	}
+}
+
 func fixedIDs(ids ...string) func(string) string {
 	index := 0
 	return func(prefix string) string {
@@ -349,4 +374,25 @@ func (failingAuditStore) Append(context.Context, audit.Event) (audit.Event, erro
 
 func (failingAuditStore) EventsBySession(context.Context, string) ([]audit.Event, error) {
 	return nil, errors.New("audit unavailable")
+}
+
+type recordingSessionStore struct {
+	created []SessionRecord
+}
+
+func (s *recordingSessionStore) Create(_ context.Context, rec SessionRecord) error {
+	s.created = append(s.created, rec)
+	return nil
+}
+
+func (s *recordingSessionStore) Get(context.Context, string) (SessionRecord, error) {
+	return SessionRecord{}, errors.New("session not found")
+}
+
+func (s *recordingSessionStore) UpdateStatus(context.Context, string, string) error {
+	return nil
+}
+
+func (s *recordingSessionStore) CompareAndSwapStatus(context.Context, string, string, string) error {
+	return nil
 }

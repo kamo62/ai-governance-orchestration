@@ -52,6 +52,19 @@ func (h *echoHandle) run(ctx context.Context) {
 		}
 	}
 
+	// Simulate MCP tool calls for each configured endpoint.
+	for name, url := range h.config.MCPEndpoints {
+		h.events <- RuntimeEvent{
+			Type:    "mcp_call",
+			Payload: fmt.Sprintf("Calling MCP %s at %s", name, url),
+		}
+		// In a real runtime this would be an actual HTTP request.
+		h.events <- RuntimeEvent{
+			Type:    "mcp_result",
+			Payload: fmt.Sprintf("MCP %s responded with mock data", name),
+		}
+	}
+
 	patchBytes, err := json.Marshal(map[string]any{
 		"protocolVersion": 1,
 		"patchId":         echoPatchID(h.config.SessionID),

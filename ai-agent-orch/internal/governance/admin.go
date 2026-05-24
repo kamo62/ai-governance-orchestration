@@ -93,9 +93,11 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "kill switch store unavailable"})
 		return
 	}
-	if !h.service.RequireAuthorizedRequest(w, r) {
+	authReq, ok := h.service.RequireAuthorizedRequest(w, r)
+	if !ok {
 		return
 	}
+	r = authReq
 
 	path := strings.TrimPrefix(r.URL.Path, "/v1/admin/killswitch")
 	if path == "" || path == "/" {

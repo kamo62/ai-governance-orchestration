@@ -4,7 +4,7 @@ This repository is my proof of concept for an agent orchestration system that I 
 
 The goal is not to rebuild every agent runtime, IDE workflow, or coding assistant stack inside this project. The goal is to test whether a lightweight system layer can give agent work better governance, routing, auditability, and policy control without forcing every team or engineer into one runtime.
 
-Project state: this is a personal-time POC in active early development. The current backbone includes session creation, audit events, policy gates, audit lookup, router selection, Docker Compose, catalogue validation, OpenRouter smoke tooling, a local CLI scaffold, MCP stubs, optional SQLite audit storage, optional OIDC token-validation scaffolding, a VS Code Bridge scaffold, service-token hardening, and a dispatch/SSE path with an EchoRuntime patch envelope for local testing. A real OpenRouter/OpenCode patch-producing flow and manual VS Code Bridge validation are next. Not production-ready.
+Project state: this is a personal-time POC in active early development. The current backbone includes session creation, session ownership and state guards, audit events, policy gates, audit lookup, router selection, Docker Compose, catalogue validation, OpenRouter smoke tooling, a local CLI scaffold, MCP stubs, optional SQLite audit storage, optional OIDC token-validation scaffolding, a VS Code Bridge scaffold, service-token hardening, and a dispatch/SSE path with an EchoRuntime patch envelope for local testing. A real OpenRouter/OpenCode patch-producing flow and manual VS Code Bridge validation are next. Not production-ready.
 
 ## What This POC Is Exploring
 

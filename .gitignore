@@ -29,6 +29,8 @@ tmp/
 *.tsbuildinfo
 package-lock.json
 **/package-lock.json
+*.vsix
+review_*.md
 ai-agent-orch/ai-orch
 ai-agent-orch/catalog-validator
 ai-agent-orch/governance-shell

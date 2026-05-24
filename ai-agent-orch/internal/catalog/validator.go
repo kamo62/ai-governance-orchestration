@@ -45,6 +45,10 @@ func Validate(root string) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	mcpRegistrations, err := loadMCPRegistrations(root)
+	if err != nil {
+		return Report{}, err
+	}
 
 	agentDirs, err := discoverAgentDirs(filepath.Join(root, "agents"))
 	if err != nil {
@@ -60,7 +64,7 @@ func Validate(root string) (Report, error) {
 	var tempAgents, publishedAgents []string
 	seenAgents := make(map[string]string)
 	for _, dir := range agentDirs {
-		cfg, err := validateAgentDir(root, dir, aliases)
+		cfg, err := validateAgentDir(root, dir, aliases, mcpRegistrations)
 		if err != nil {
 			return Report{}, err
 		}
@@ -138,7 +142,7 @@ func discoverAgentDirs(root string) ([]string, error) {
 	return dirs, nil
 }
 
-func validateAgentDir(root string, dir string, aliases map[string]struct{}) (AgentConfig, error) {
+func validateAgentDir(root string, dir string, aliases map[string]struct{}, mcpRegistrations map[string]MCPRegistration) (AgentConfig, error) {
 	mdPath := filepath.Join(dir, "agent.md")
 	cfgPath := filepath.Join(dir, "agent.config.yaml")
 	evalsPath := filepath.Join(dir, "evals", "golden-cases.yaml")
@@ -178,6 +182,9 @@ func validateAgentDir(root string, dir string, aliases map[string]struct{}) (Age
 	if err := cfg.validate(aliases); err != nil {
 		return AgentConfig{}, fmt.Errorf("%s: %w", rel(root, cfgPath), err)
 	}
+	if err := validateMCPReferences(cfg, mcpRegistrations); err != nil {
+		return AgentConfig{}, fmt.Errorf("%s: %w", rel(root, cfgPath), err)
+	}
 
 	if cfg.Permissions.WorkspaceWrite == "deny" && contains(cfg.ToolsAllowed, "write_file") {
 		return AgentConfig{}, fmt.Errorf("%s: read-only agent cannot allow write_file", rel(root, cfgPath))
@@ -194,6 +201,50 @@ func validateAgentDir(root string, dir string, aliases map[string]struct{}) (Age
 	}
 
 	return cfg, nil
+}
+
+type MCPRegistration struct {
+	ServerID      string   `yaml:"server_id"`
+	AllowedAgents []string `yaml:"allowed_agents"`
+}
+
+func loadMCPRegistrations(root string) (map[string]MCPRegistration, error) {
+	registrationDir := filepath.Join(root, "mcp", "registrations")
+	matches, err := filepath.Glob(filepath.Join(registrationDir, "*.yaml"))
+	if err != nil {
+		return nil, err
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no MCP registrations under %s", rel(root, registrationDir))
+	}
+	registrations := make(map[string]MCPRegistration, len(matches))
+	for _, path := range matches {
+		var reg MCPRegistration
+		if err := readYAML(path, &reg); err != nil {
+			return nil, fmt.Errorf("load MCP registration %s: %w", rel(root, path), err)
+		}
+		if reg.ServerID == "" {
+			return nil, fmt.Errorf("%s: missing server_id", rel(root, path))
+		}
+		if _, exists := registrations[reg.ServerID]; exists {
+			return nil, fmt.Errorf("duplicate MCP registration %q", reg.ServerID)
+		}
+		registrations[reg.ServerID] = reg
+	}
+	return registrations, nil
+}
+
+func validateMCPReferences(cfg AgentConfig, registrations map[string]MCPRegistration) error {
+	for _, serverID := range cfg.MCPServers {
+		reg, ok := registrations[serverID]
+		if !ok {
+			return fmt.Errorf("unknown mcp server %q", serverID)
+		}
+		if len(reg.AllowedAgents) > 0 && !contains(reg.AllowedAgents, cfg.Name) {
+			return fmt.Errorf("mcp server %q does not allow agent %q", serverID, cfg.Name)
+		}
+	}
+	return nil
 }
 
 func validatePublishedAgent(cfg AgentConfig) error {
@@ -257,12 +308,16 @@ func LoadAgentConfig(root, name string) (AgentConfig, error) {
 	if err != nil {
 		return AgentConfig{}, err
 	}
+	mcpRegistrations, err := loadMCPRegistrations(root)
+	if err != nil {
+		return AgentConfig{}, err
+	}
 
 	// Try published first, then temp, then core.
 	for _, group := range []string{"published", "temp", "core"} {
 		dir := filepath.Join(root, "agents", group, name)
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			return validateAgentDir(root, dir, aliases)
+			return validateAgentDir(root, dir, aliases, mcpRegistrations)
 		}
 	}
 
@@ -270,7 +325,7 @@ func LoadAgentConfig(root, name string) (AgentConfig, error) {
 	if name == "router-agent" {
 		dir := filepath.Join(root, "agents", "core", "router-agent")
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			return validateAgentDir(root, dir, aliases)
+			return validateAgentDir(root, dir, aliases, mcpRegistrations)
 		}
 	}
 

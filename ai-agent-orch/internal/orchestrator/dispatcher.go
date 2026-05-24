@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"ai-agent-orch/internal/catalog"
 	"ai-agent-orch/internal/dispatch"
@@ -70,6 +71,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 		ModelID:      modelAlias,
 		AllowedTools: agentCfg.ToolsAllowed,
 		CostCapUSD:   agentCfg.Cost.PerInvocationCapUSD,
+		MCPEndpoints: resolveMCPEndpoints(agentCfg.MCPServers),
 	}
 
 	// Try ACP runtime first if agent specifies opencode.
@@ -93,6 +95,36 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 	// This allows the full chain to work in local Phase 1 without API keys.
 	echo := dispatch.NewEchoRuntime()
 	return echo.StartSession(ctx, sessionCfg)
+}
+
+// Default MCP endpoint URLs within the Docker Compose network.
+var defaultMCPEndpoints = map[string]string{
+	"repo-classification":      "http://mcp-repo-classification:8091",
+	"engineering-standards-kb": "http://mcp-engineering-standards-kb:8092",
+	"catalog-introspection":    "http://mcp-catalog-introspection:8093",
+	"playwright-cli":           "http://mcp-playwright-cli:8094",
+	"issue-tracker":            "http://mcp-issue-tracker:8095",
+	"documentation":            "http://mcp-documentation:8096",
+	"test-management":          "http://mcp-test-management:8097",
+}
+
+func resolveMCPEndpoints(servers []string) map[string]string {
+	endpoints := make(map[string]string, len(servers))
+	for _, name := range servers {
+		if envURL := os.Getenv(mcpEndpointEnvKey(name)); envURL != "" {
+			endpoints[name] = envURL
+			continue
+		}
+		if url, ok := defaultMCPEndpoints[name]; ok {
+			endpoints[name] = url
+		}
+	}
+	return endpoints
+}
+
+func mcpEndpointEnvKey(name string) string {
+	normalized := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(name))
+	return "MCP_" + normalized + "_URL"
 }
 
 func envOrDefault(key, fallback string) string {

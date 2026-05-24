@@ -2,7 +2,6 @@ package governance
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -61,23 +60,49 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return
 	}
-	if !h.service.RequireAuthorizedRequest(w, r) {
+	authReq, ok := h.service.RequireAuthorizedRequest(w, r)
+	if !ok {
 		return
 	}
+	r = authReq
 
 	sessionID := extractSessionID(r.URL.Path, "/v1/sessions/", "/messages")
 	if sessionID == "" || strings.Contains(sessionID, "/") {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
 		return
 	}
+	if blocked, reason := h.service.blockedByKillSwitch(""); blocked {
+		if err := h.service.appendDenied(r.Context(), reason, nil, ""); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			return
+		}
+		writeJSON(w, http.StatusLocked, map[string]any{"error": reason})
+		return
+	}
+
+	// Enforce session ownership.
+	actor := actorFromContext(r.Context())
+	if h.service.sessions != nil {
+		record, err := h.service.sessions.Get(r.Context(), sessionID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			return
+		}
+		if record.ActorSubject != actor {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
+			return
+		}
+		if record.Status != "created" {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "session is not awaiting routing"})
+			return
+		}
+	}
 
 	var req struct {
 		Prompt string `json:"prompt"`
 	}
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
 	if req.Prompt == "" {
@@ -108,7 +133,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		EventID:            eventID,
 		SessionID:          sessionID,
 		EventType:          "router.specialist.selected",
-		Actor:              "local-dev",
+		Actor:              actor,
 		Agent:              decision.Specialist,
 		Reason:             decision.Reason,
 		RawPromptStored:    false,
@@ -118,6 +143,12 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
+	}
+	if h.service.sessions != nil {
+		if err := h.service.sessions.CompareAndSwapStatus(r.Context(), sessionID, "created", "awaiting_confirmation"); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "session state transition failed"})
+			return
+		}
 	}
 	h.service.rememberPrompt(sessionID, req.Prompt)
 

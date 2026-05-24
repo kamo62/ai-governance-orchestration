@@ -64,6 +64,14 @@ func (h *directHandle) run(ctx context.Context) {
 		Payload: "Starting direct runtime session...",
 	}
 
+	// Simulate MCP tool calls for each configured endpoint.
+	for name, url := range h.config.MCPEndpoints {
+		h.events <- RuntimeEvent{
+			Type:    "mcp_call",
+			Payload: fmt.Sprintf("Calling MCP %s at %s", name, url),
+		}
+	}
+
 	req := openrouter.ChatCompletionRequest{
 		Model: h.modelID,
 		Messages: []openrouter.Message{

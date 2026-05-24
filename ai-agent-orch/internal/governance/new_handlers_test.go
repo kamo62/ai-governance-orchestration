@@ -101,6 +101,57 @@ func TestMessagesHandlerRoutesAndWritesAudit(t *testing.T) {
 	}
 }
 
+func TestMessagesHandlerAdvancesSessionToAwaitingConfirmation(t *testing.T) {
+	store, err := NewSQLiteSessionStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	defer store.Close()
+	if err := store.Create(context.Background(), SessionRecord{
+		SessionID:      "sess_route_once",
+		ActorSubject:   "local-dev",
+		Agent:          "test-generation",
+		Classification: "internal",
+		PromptSHA256:   "abc123",
+		Status:         "created",
+		CreatedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+		Sessions: store,
+		NewID:    fixedIDs("evt_route_state_1"),
+	})
+	handler := NewMessagesHandler(service, &fakeOrchestrator{specialist: "test-generation", reason: "testing keyword match"})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_route_once/messages", strings.NewReader(`{"prompt":"write tests"}`))
+	req.Header.Set("Authorization", "Bearer local-test-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	record, err := store.Get(context.Background(), "sess_route_once")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if record.Status != "awaiting_confirmation" {
+		t.Fatalf("expected awaiting_confirmation, got %q", record.Status)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_route_once/messages", strings.NewReader(`{"prompt":"route again"}`))
+	req.Header.Set("Authorization", "Bearer local-test-token")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 on repeat routing, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestMessagesHandlerBlocksSecretInFollowUp(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	service := NewSessionService(SessionConfig{
@@ -211,6 +262,82 @@ func TestConfirmHandlerAcceptsAndWritesAudit(t *testing.T) {
 	}
 }
 
+func TestConfirmHandlerRequiresAwaitingConfirmationState(t *testing.T) {
+	store, err := NewSQLiteSessionStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	defer store.Close()
+	if err := store.Create(context.Background(), SessionRecord{
+		SessionID:      "sess_not_routed",
+		ActorSubject:   "local-dev",
+		Agent:          "test-generation",
+		Classification: "internal",
+		PromptSHA256:   "abc123",
+		Status:         "created",
+		CreatedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+		Sessions: store,
+	})
+	handler := NewConfirmHandler(service, &fakeOrchestrator{})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_not_routed/confirm", strings.NewReader(`{"agent":"test-generation"}`))
+	req.Header.Set("Authorization", "Bearer local-test-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestConfirmHandlerConfirmsRoutedSession(t *testing.T) {
+	store, err := NewSQLiteSessionStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	defer store.Close()
+	if err := store.Create(context.Background(), SessionRecord{
+		SessionID:      "sess_routed",
+		ActorSubject:   "local-dev",
+		Agent:          "test-generation",
+		Classification: "internal",
+		PromptSHA256:   "abc123",
+		Status:         "awaiting_confirmation",
+		CreatedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+		Sessions: store,
+		NewID:    fixedIDs("evt_confirm_state_1"),
+	})
+	handler := NewConfirmHandler(service, &fakeOrchestrator{})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_routed/confirm", strings.NewReader(`{"agent":"test-generation"}`))
+	req.Header.Set("Authorization", "Bearer local-test-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	record, err := store.Get(context.Background(), "sess_routed")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if record.Status != "confirmed" {
+		t.Fatalf("expected confirmed, got %q", record.Status)
+	}
+}
+
 func TestConfirmHandlerWithEventsRequiresCachedPrompt(t *testing.T) {
 	service := NewSessionService(SessionConfig{
 		DevToken: "local-test-token",
@@ -231,6 +358,49 @@ func TestConfirmHandlerWithEventsRequiresCachedPrompt(t *testing.T) {
 	}
 	if orch.dispatchPrompt != "" {
 		t.Fatalf("dispatch must not run without cached prompt, got %q", orch.dispatchPrompt)
+	}
+}
+
+func TestConfirmHandlerDoesNotAdvanceStateWhenPromptMissing(t *testing.T) {
+	store, err := NewSQLiteSessionStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	defer store.Close()
+	if err := store.Create(context.Background(), SessionRecord{
+		SessionID:      "sess_missing_prompt",
+		ActorSubject:   "local-dev",
+		Agent:          "test-generation",
+		Classification: "internal",
+		PromptSHA256:   "abc123",
+		Status:         "awaiting_confirmation",
+		CreatedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+		Sessions: store,
+	})
+	handler := NewConfirmHandlerWithEvents(service, &fakeOrchestrator{}, NewEventStore())
+
+	body := []byte(`{"agent":"test-generation"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_missing_prompt/confirm", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer local-test-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	record, err := store.Get(context.Background(), "sess_missing_prompt")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if record.Status != "awaiting_confirmation" {
+		t.Fatalf("expected session to stay awaiting_confirmation, got %q", record.Status)
 	}
 }
 
@@ -373,7 +543,7 @@ func TestAdminKillSwitchList(t *testing.T) {
 	}
 }
 
-func TestAdminKillSwitchFailsClosedWhenDevTokenMissing(t *testing.T) {
+func TestAdminKillSwitchFailsClosedWhenDevTokenEmpty(t *testing.T) {
 	store := NewMemoryKillSwitch()
 	service := NewSessionService(SessionConfig{})
 	handler := NewAdminHandler(store, service)

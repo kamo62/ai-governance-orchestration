@@ -4,7 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
+	"time"
 
 	"ai-agent-orch/internal/appconfig"
 	"ai-agent-orch/internal/audit"
@@ -51,10 +51,21 @@ func main() {
 		requestAuthorizer = oidcValidator
 	}
 
+	// Initialize session store (SQLite-backed when audit path is SQLite).
+	var sessionStore governance.SessionStore
+	if hasSQLiteExt(cfg.AuditPath) {
+		store, err := governance.NewSQLiteSessionStore(cfg.AuditPath)
+		if err != nil {
+			log.Fatalf("session store init failed: %v", err)
+		}
+		sessionStore = store
+	}
+
 	sessionService := governance.NewSessionService(governance.SessionConfig{
 		DevToken:          cfg.DevToken,
 		Authorizer:        requestAuthorizer,
 		Audit:             auditStore,
+		Sessions:          sessionStore,
 		ClassificationMax: cfg.ClassificationMax,
 		KillSwitch:        cfg.KillSwitch,
 		KillSwitchStore:   killSwitchStore,
@@ -88,8 +99,15 @@ func main() {
 	handler.Handle("/v1/admin/killswitch/", governance.NewAdminHandler(killSwitchStore, sessionService))
 	handler.Handle("/metrics", metricsHandler)
 
+	srv := &http.Server{
+		Addr:         cfg.Addr,
+		Handler:      handler,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
 	log.Printf("governance-shell listening on %s", cfg.Addr)
-	log.Fatal(http.ListenAndServe(cfg.Addr, handler))
+	log.Fatal(srv.ListenAndServe())
 }
 
 // sessionSubrouter dispatches /v1/sessions/{id}/messages, /confirm, /patch-decision, /events.
@@ -100,9 +118,11 @@ type sessionSubrouter struct {
 }
 
 func (sr *sessionSubrouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !sr.sessionService.RequireAuthorizedRequest(w, r) {
+	authReq, ok := sr.sessionService.RequireAuthorizedRequest(w, r)
+	if !ok {
 		return
 	}
+	r = authReq
 
 	path := r.URL.Path
 	switch {
@@ -114,6 +134,8 @@ func (sr *sessionSubrouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		governance.NewPatchDecisionHandler(sr.sessionService).ServeHTTP(w, r)
 	case containsSuffix(path, "/events"):
 		governance.NewEventsHandler(sr.events).ServeHTTP(w, r)
+	case containsSuffix(path, "/abort"):
+		governance.NewAbortHandler(sr.sessionService, sr.events).ServeHTTP(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -124,20 +146,16 @@ func containsSuffix(path, suffix string) bool {
 }
 
 func newAuditStore(auditPath string) (audit.Store, error) {
-	// If the path ends with .db or .sqlite, use SQLite.
-	// Otherwise default to the append-only JSONL file store.
-	if hasSQLiteExt(auditPath) {
-		store, err := audit.NewSQLiteStore(auditPath)
-		if err != nil {
-			return nil, err
-		}
-		log.Printf("using sqlite audit store: %s", auditPath)
-		return store, nil
+	store, err := audit.NewStore(auditPath)
+	if err != nil {
+		return nil, err
 	}
-	return audit.NewFileStore(auditPath), nil
+	if hasSQLiteExt(auditPath) {
+		log.Printf("using sqlite audit store: %s", auditPath)
+	}
+	return store, nil
 }
 
 func hasSQLiteExt(path string) bool {
-	lower := strings.ToLower(path)
-	return strings.HasSuffix(lower, ".db") || strings.HasSuffix(lower, ".sqlite") || strings.HasSuffix(lower, ".sqlite3")
+	return audit.IsSQLitePath(path)
 }

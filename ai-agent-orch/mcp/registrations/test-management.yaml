@@ -8,6 +8,8 @@ allowed_agents:
   - test-generation
   - code-review
   - security-scan
+  - security-review
+  - terraform-review
 tool_policy:
   default_approval: auto
   allow:

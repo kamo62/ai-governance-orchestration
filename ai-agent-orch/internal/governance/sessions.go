@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"ai-agent-orch/internal/audit"
 )
@@ -19,10 +22,33 @@ type AuditAppender interface {
 	Append(context.Context, audit.Event) (audit.Event, error)
 }
 
+// Auth context propagation.
+type authContextKey string
+
+const authInfoKey authContextKey = "authInfo"
+
+// AuthInfo holds the authenticated subject and method.
+type AuthInfo struct {
+	Subject string
+	Method  string
+}
+
+// WithAuthInfo injects auth info into a context.
+func WithAuthInfo(ctx context.Context, info AuthInfo) context.Context {
+	return context.WithValue(ctx, authInfoKey, info)
+}
+
+// AuthInfoFromContext extracts auth info from a context.
+func AuthInfoFromContext(ctx context.Context) (AuthInfo, bool) {
+	v, ok := ctx.Value(authInfoKey).(AuthInfo)
+	return v, ok
+}
+
 type SessionConfig struct {
 	DevToken          string
 	Authorizer        RequestAuthorizer
 	Audit             AuditAppender
+	Sessions          SessionStore
 	ClassificationMax string
 	KillSwitch        bool
 	KillSwitchStore   KillSwitchStore
@@ -36,6 +62,7 @@ type SessionService struct {
 	devToken          string
 	authorizer        RequestAuthorizer
 	audit             AuditAppender
+	sessions          SessionStore
 	classificationMax string
 	killSwitch        bool
 	killSwitchStore   KillSwitchStore
@@ -47,6 +74,39 @@ type SessionService struct {
 	prompts           map[string]string
 	patchMu           sync.Mutex
 	patches           map[string]map[string]struct{}
+	cancelMu          sync.Mutex
+	cancels           map[string]context.CancelFunc
+}
+
+func (s *SessionService) registerCancel(sessionID string, cancel context.CancelFunc) {
+	if s == nil || sessionID == "" {
+		return
+	}
+	s.cancelMu.Lock()
+	defer s.cancelMu.Unlock()
+	if s.cancels == nil {
+		s.cancels = make(map[string]context.CancelFunc)
+	}
+	s.cancels[sessionID] = cancel
+}
+
+func (s *SessionService) cancelExecution(sessionID string) {
+	if s == nil || sessionID == "" {
+		return
+	}
+	s.cancelMu.Lock()
+	defer s.cancelMu.Unlock()
+	if cancel, ok := s.cancels[sessionID]; ok {
+		cancel()
+		delete(s.cancels, sessionID)
+	}
+}
+
+func (s *SessionService) setSessionStatus(ctx context.Context, sessionID string, status string) {
+	if s == nil || s.sessions == nil || sessionID == "" || status == "" {
+		return
+	}
+	_ = s.sessions.UpdateStatus(ctx, sessionID, status)
 }
 
 type CreateSessionRequest struct {
@@ -72,6 +132,7 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 		devToken:          cfg.DevToken,
 		authorizer:        cfg.Authorizer,
 		audit:             cfg.Audit,
+		sessions:          cfg.Sessions,
 		classificationMax: defaultString(cfg.ClassificationMax, "internal"),
 		killSwitch:        cfg.KillSwitch,
 		killSwitchStore:   cfg.KillSwitchStore,
@@ -99,9 +160,11 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return
 	}
-	if !s.RequireAuthorizedRequest(w, r) {
+	authReq, ok := s.RequireAuthorizedRequest(w, r)
+	if !ok {
 		return
 	}
+	r = authReq
 	if blocked, reason := s.blockedByKillSwitch(""); blocked {
 		if err := s.appendDenied(r.Context(), reason, nil, ""); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
@@ -112,10 +175,8 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request CreateSessionRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&request); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+	if err := readJSON(w, r, &request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
 	if err := request.validate(); err != nil {
@@ -167,11 +228,18 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := s.newID("sess")
 	eventID := s.newID("evt")
 	promptHash := sha256.Sum256([]byte(request.Prompt))
+
+	authInfo, _ := AuthInfoFromContext(r.Context())
+	actor := authInfo.Subject
+	if actor == "" {
+		actor = "local-dev"
+	}
+
 	event, err := s.audit.Append(r.Context(), audit.Event{
 		EventID:            eventID,
 		SessionID:          sessionID,
 		EventType:          "session.created",
-		Actor:              "local-dev",
+		Actor:              actor,
 		Agent:              request.Agent,
 		Classification:     request.Classification,
 		PromptSHA256:       hex.EncodeToString(promptHash[:]),
@@ -185,6 +253,22 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
 	}
+
+	// Persist only after the authoritative audit event is durable.
+	if s.sessions != nil {
+		if err := s.sessions.Create(r.Context(), SessionRecord{
+			SessionID:      sessionID,
+			ActorSubject:   actor,
+			Agent:          request.Agent,
+			Classification: request.Classification,
+			PromptSHA256:   hex.EncodeToString(promptHash[:]),
+			Status:         "created",
+			CreatedAt:      time.Now().UTC(),
+		}); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "session store failed"})
+			return
+		}
+	}
 	s.recordSessionCreated()
 	s.rememberPrompt(sessionID, request.Prompt)
 
@@ -196,6 +280,14 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// actorFromContext extracts the authenticated subject from the context, falling back to "local-dev".
+func actorFromContext(ctx context.Context) string {
+	if info, ok := AuthInfoFromContext(ctx); ok && info.Subject != "" {
+		return info.Subject
+	}
+	return "local-dev"
+}
+
 func (s *SessionService) appendDeniedWithCost(ctx context.Context, reason string, classification string, estimatedCostUSD float64, costCapUSD float64) error {
 	if s == nil || s.audit == nil {
 		return nil
@@ -203,7 +295,7 @@ func (s *SessionService) appendDeniedWithCost(ctx context.Context, reason string
 	_, err := s.audit.Append(ctx, audit.Event{
 		EventID:            s.newID("evt"),
 		EventType:          "session.denied",
-		Actor:              "local-dev",
+		Actor:              actorFromContext(ctx),
 		Classification:     classification,
 		Reason:             reason,
 		EstimatedCostUSD:   estimatedCostUSD,
@@ -225,7 +317,7 @@ func (s *SessionService) appendDenied(ctx context.Context, reason string, findin
 	_, err := s.audit.Append(ctx, audit.Event{
 		EventID:            s.newID("evt"),
 		EventType:          "session.denied",
-		Actor:              "local-dev",
+		Actor:              actorFromContext(ctx),
 		Classification:     classification,
 		Reason:             reason,
 		Findings:           findings,
@@ -273,39 +365,44 @@ func (s *SessionService) authorized(header string) bool {
 	return authorizedBearer(header, s.devToken)
 }
 
-func (s *SessionService) RequireAuthorizedRequest(w http.ResponseWriter, r *http.Request) bool {
+// RequireAuthorizedRequest validates the request and injects auth info into the request context.
+// Callers must use the returned *http.Request to access the authenticated subject.
+func (s *SessionService) RequireAuthorizedRequest(w http.ResponseWriter, r *http.Request) (*http.Request, bool) {
 	if s == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
-		return false
+		return r, false
 	}
 	if s.authorizer != nil {
-		if _, ok := s.authorizer.Validate(r.Context(), r.Header.Get("Authorization")); ok {
-			return true
+		subject, ok := s.authorizer.Validate(r.Context(), r.Header.Get("Authorization"))
+		if ok {
+			r = r.WithContext(WithAuthInfo(r.Context(), AuthInfo{Subject: subject, Method: "oidc"}))
+			return r, true
 		}
 		if err := s.appendDenied(r.Context(), "invalid bearer token", nil, ""); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
-			return false
+			return r, false
 		}
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
-		return false
+		return r, false
 	}
 	if s.devToken == "" {
 		if err := s.appendDenied(r.Context(), "dev token not configured", nil, ""); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
-			return false
+			return r, false
 		}
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "dev token not configured"})
-		return false
+		return r, false
 	}
 	if !s.authorized(r.Header.Get("Authorization")) {
 		if err := s.appendDenied(r.Context(), "invalid dev token", nil, ""); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
-			return false
+			return r, false
 		}
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
-		return false
+		return r, false
 	}
-	return true
+	r = r.WithContext(WithAuthInfo(r.Context(), AuthInfo{Subject: "local-dev", Method: "dev"}))
+	return r, true
 }
 
 type RequestAuthorizer interface {
@@ -387,7 +484,25 @@ func authorizedBearer(header string, token string) bool {
 	if !strings.HasPrefix(header, prefix) {
 		return false
 	}
-	return strings.TrimPrefix(header, prefix) == token
+	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(header, prefix)), []byte(token)) == 1
+}
+
+// maxRequestBodyBytes limits JSON request bodies to 1 MiB.
+const maxRequestBodyBytes = 1 << 20
+
+// readJSON decodes a JSON request body with size limits and unknown field rejection.
+func readJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	var extra struct{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		return errors.New("unexpected trailing JSON")
+	}
+	return nil
 }
 
 func (r CreateSessionRequest) validate() error {

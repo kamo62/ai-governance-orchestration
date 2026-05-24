@@ -2,7 +2,6 @@ package governance
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -45,9 +44,11 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return
 	}
-	if !h.service.RequireAuthorizedRequest(w, r) {
+	authReq, ok := h.service.RequireAuthorizedRequest(w, r)
+	if !ok {
 		return
 	}
+	r = authReq
 
 	sessionID := extractSessionID(r.URL.Path, "/v1/sessions/", "/confirm")
 	if sessionID == "" || strings.Contains(sessionID, "/") {
@@ -58,10 +59,8 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Agent string `json:"agent"`
 	}
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+	if err := readJSON(w, r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
 	if req.Agent == "" {
@@ -87,8 +86,27 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Enforce session ownership and state machine transition.
+	actor := actorFromContext(r.Context())
+	if h.service.sessions != nil {
+		record, err := h.service.sessions.Get(r.Context(), sessionID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			return
+		}
+		if record.ActorSubject != actor {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
+			return
+		}
+		if err := h.service.sessions.CompareAndSwapStatus(r.Context(), sessionID, "awaiting_confirmation", "confirming"); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "session state transition failed"})
+			return
+		}
+	}
+
 	// Call Orchestrator to accept the specialist session.
 	if err := h.orch.AcceptSession(r.Context(), sessionID, req.Agent); err != nil {
+		h.service.setSessionStatus(r.Context(), sessionID, "awaiting_confirmation")
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("orchestrator accept failed: %v", err)})
 		return
 	}
@@ -99,15 +117,22 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		EventID:            eventID,
 		SessionID:          sessionID,
 		EventType:          "session.confirmed",
-		Actor:              "local-dev",
+		Actor:              actor,
 		Agent:              req.Agent,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
 	})
 	if err != nil {
+		h.service.setSessionStatus(r.Context(), sessionID, "confirm_failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
+	}
+	if h.service.sessions != nil {
+		if err := h.service.sessions.CompareAndSwapStatus(r.Context(), sessionID, "confirming", "confirmed"); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "session state transition failed"})
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -120,9 +145,12 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// If event store is wired, trigger execution in the background and stream events.
 	if h.events != nil {
 		h.service.forgetPrompt(sessionID)
-		execCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		h.service.setSessionStatus(context.Background(), sessionID, "running")
+		execCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		h.service.registerCancel(sessionID, cancel)
 		go func() {
 			defer cancel()
+			defer h.service.cancelExecution(sessionID)
 			h.triggerExecution(execCtx, sessionID, req.Agent, prompt)
 		}()
 	}
@@ -138,6 +166,7 @@ func (h *ConfirmHandler) triggerExecution(ctx context.Context, sessionID, agent 
 	// Call Orchestrator dispatch to get actual runtime events.
 	result, err := h.orch.Dispatch(ctx, sessionID, agent, prompt)
 	if err != nil {
+		h.service.setSessionStatus(context.Background(), sessionID, "failed")
 		h.events.Publish(sessionID, SessionEvent{
 			Type:      "error",
 			Payload:   fmt.Sprintf("dispatch failed: %v", err),
@@ -166,6 +195,7 @@ func (h *ConfirmHandler) triggerExecution(ctx context.Context, sessionID, agent 
 	})
 
 	h.events.Close(sessionID)
+	h.service.setSessionStatus(context.Background(), sessionID, "done")
 }
 
 func timeNow() time.Time {

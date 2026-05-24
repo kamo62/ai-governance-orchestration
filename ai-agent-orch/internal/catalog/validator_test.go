@@ -89,6 +89,42 @@ func TestValidateCatalogRejectsDuplicateAgentNames(t *testing.T) {
 	}
 }
 
+func TestValidateCatalogRejectsUnknownMCPServer(t *testing.T) {
+	root := t.TempDir()
+	writeMinimalCatalog(t, root)
+	writeAgent(t, root, "temp/bad-agent", "bad-agent", "coding-balanced", "coding-fast", "workspace_write: allow\n", []string{"read_file"}, "# Bad Agent\n\nConfig: `./agent.config.yaml`\n")
+	cfgPath := filepath.Join(root, "agents", "temp", "bad-agent", "agent.config.yaml")
+	cfg := readFile(t, cfgPath)
+	cfg = strings.ReplaceAll(cfg, "  - repo-classification\n", "  - missing-mcp\n")
+	writeFile(t, cfgPath, cfg)
+
+	_, err := Validate(root)
+	if err == nil {
+		t.Fatalf("expected unknown MCP server to fail validation")
+	}
+	if !strings.Contains(err.Error(), "unknown mcp server") {
+		t.Fatalf("expected unknown-mcp error, got %v", err)
+	}
+}
+
+func TestValidateCatalogRejectsMCPRegistrationThatDoesNotAllowAgent(t *testing.T) {
+	root := t.TempDir()
+	writeMinimalCatalog(t, root)
+	writeFile(t, filepath.Join(root, "mcp", "registrations", "repo-classification.yaml"), `server_id: repo-classification
+allowed_agents:
+  - router-agent
+`)
+	writeAgent(t, root, "temp/bad-agent", "bad-agent", "coding-balanced", "coding-fast", "workspace_write: allow\n", []string{"read_file"}, "# Bad Agent\n\nConfig: `./agent.config.yaml`\n")
+
+	_, err := Validate(root)
+	if err == nil {
+		t.Fatalf("expected disallowed MCP agent to fail validation")
+	}
+	if !strings.Contains(err.Error(), "does not allow agent") {
+		t.Fatalf("expected allowed-agent error, got %v", err)
+	}
+}
+
 func TestValidateCatalogRequiresRouterCasesForTempAgents(t *testing.T) {
 	root := t.TempDir()
 	writeMinimalCatalog(t, root)

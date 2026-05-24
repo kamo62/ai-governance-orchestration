@@ -41,7 +41,8 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "package": "bunx @vscode/vsce package --out ai-agent-bridge.vsix"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.0.13-alpha - 2026-05-24 (Patch)
+
+Release impact: Patch because this fixes local governance, audit, catalog validation, and Compose regressions without changing the documented external API shape.
+
+- Fixed compile regressions in Governance Shell session handling.
+- Restored fail-closed behaviour when no local dev token or OIDC authorizer is configured.
+- Ensured session records are persisted only after the authoritative `session.created` audit event succeeds.
+- Added durable session ownership and state-machine guards for routing, confirmation, abort, and patch-decision flows.
+- Hardened local SQLite session-store setup with directory creation and restricted database-file permissions.
+- Fixed Orchestrator audit-store selection so `.db` audit paths use SQLite instead of appending JSONL to a database file.
+- Added catalog validation for MCP registration existence and per-agent MCP allow-lists.
+- Restored Docker Compose defaults so cost-cap enforcement is disabled unless explicitly enabled.
+- Kept Phase 2 read-only MCP stubs behind the `phase2` Compose profile.
+- Tightened local secret/build hygiene for `.env.*`, generated VSIX files, and temporary review artifacts.
+
 ## v0.0.10-alpha - 2026-05-24 (Patch)
 
 Release impact: Patch because this fixes local auth, audit, catalog, CLI and Compose regressions without changing the documented public API shape.

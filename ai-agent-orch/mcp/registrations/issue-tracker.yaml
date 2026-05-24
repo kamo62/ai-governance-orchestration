@@ -9,6 +9,8 @@ allowed_agents:
   - documentation
   - security-scan
   - architecture-review
+  - security-review
+  - terraform-review
 tool_policy:
   default_approval: auto
   allow:

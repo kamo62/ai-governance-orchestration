@@ -35,11 +35,15 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite audit db: %w", err)
 	}
+	db.SetMaxOpenConns(1)
 
 	// WAL mode for better concurrent read/write performance.
-	if _, err := db.Exec(`PRAGMA journal_mode = WAL;`); err != nil {
+	if _, err := db.Exec(`
+		PRAGMA journal_mode = WAL;
+		PRAGMA busy_timeout = 5000;
+	`); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("enable sqlite wal mode: %w", err)
+		return nil, fmt.Errorf("configure sqlite audit db: %w", err)
 	}
 
 	store := &SQLiteStore{

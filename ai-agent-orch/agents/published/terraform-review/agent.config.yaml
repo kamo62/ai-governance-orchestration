@@ -9,6 +9,9 @@ model:
 mcp_servers:
   - repo-classification
   - engineering-standards-kb
+  - issue-tracker
+  - documentation
+  - test-management
 tools_allowed:
   - read_file
 permissions:

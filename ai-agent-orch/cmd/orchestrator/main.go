@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"ai-agent-orch/internal/appconfig"
 	"ai-agent-orch/internal/audit"
@@ -30,7 +31,10 @@ func main() {
 		return server.CatalogSummary{Agents: len(report.Agents), Models: len(report.ModelAliases)}, nil
 	})
 
-	auditStore := audit.NewFileStore(cfg.AuditPath)
+	auditStore, err := audit.NewStore(cfg.AuditPath)
+	if err != nil {
+		log.Fatal(err)
+	}
 	sessionIntake := orchestrator.NewSessionIntake(orchestrator.SessionIntakeConfig{
 		Audit: auditStore,
 	})
@@ -46,6 +50,13 @@ func main() {
 	handler.Handle("/v1/orchestrator/route", httpauth.RequireBearerToken(cfg.ServiceToken, orchestrator.NewRouterHandler(router)))
 	handler.Handle("/v1/orchestrator/dispatch", httpauth.RequireBearerToken(cfg.ServiceToken, orchestrator.NewDispatchHandler(dispatcher, auditStore)))
 
+	srv := &http.Server{
+		Addr:         cfg.Addr,
+		Handler:      handler,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
 	log.Printf("orchestrator listening on %s", cfg.Addr)
-	log.Fatal(http.ListenAndServe(cfg.Addr, handler))
+	log.Fatal(srv.ListenAndServe())
 }

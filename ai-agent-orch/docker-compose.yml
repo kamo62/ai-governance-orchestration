@@ -3,7 +3,7 @@ name: ai-agent-orch
 x-app-environment: &app-environment
   AI_ORCH_ADDR: :8080
   AI_ORCH_CATALOG_ROOT: /app
-  AI_ORCH_AUDIT_PATH: /app/var/audit/audit.jsonl
+  AI_ORCH_AUDIT_PATH: /app/var/audit/audit.db
   AI_ORCH_SERVICE_TOKEN: ${AI_ORCH_SERVICE_TOKEN:-local-service-token}
 
 x-mcp-environment: &mcp-environment

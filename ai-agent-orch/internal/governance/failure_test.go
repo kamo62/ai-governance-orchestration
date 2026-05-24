@@ -24,6 +24,7 @@ func TestAllBoundariesFailClosedUnderFailure(t *testing.T) {
 	t.Run("audit_write_failure_blocks_session_creation", testAuditFailureBlocksCreate)
 	t.Run("audit_write_failure_blocks_routing", testAuditFailureBlocksRouting)
 	t.Run("audit_write_failure_blocks_confirmation", testAuditFailureBlocksConfirm)
+	t.Run("audit_write_failure_blocks_abort", testAuditFailureBlocksAbort)
 	t.Run("audit_write_failure_blocks_patch_decision", testAuditFailureBlocksPatch)
 	t.Run("orchestrator_unreachable_returns_502", testOrchestratorUnreachable)
 	t.Run("orchestrator_dispatch_failure_streams_error", testDispatchFailure)
@@ -94,17 +95,48 @@ func testAuditFailureBlocksConfirm(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	// Confirm handler calls orch.AcceptSession first, then audit.
-	// If orch succeeds but audit fails, it should still return 500.
-	// The current implementation returns 200 then tries audit... this needs fixing.
-	// For now, we accept that AcceptSession is called before audit.
-	// The important thing is that if audit fails, the response doesn't claim success.
-	if rec.Code == http.StatusInternalServerError {
-		// Correct fail-closed behaviour.
-		return
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when confirmation audit fails, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if rec.Code == http.StatusOK {
-		t.Fatal("confirm must fail closed when audit write fails")
+}
+
+func testAuditFailureBlocksAbort(t *testing.T) {
+	store, err := NewSQLiteSessionStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	defer store.Close()
+	if err := store.Create(context.Background(), SessionRecord{
+		SessionID:      "sess_abort",
+		ActorSubject:   "local-dev",
+		Agent:          "test-generation",
+		Classification: "internal",
+		PromptSHA256:   "abc123",
+		Status:         "running",
+		CreatedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    failingAuditStore{},
+		Sessions: store,
+	})
+	handler := NewAbortHandler(service, NewEventStore())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_abort/abort", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	record, err := store.Get(context.Background(), "sess_abort")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if record.Status != "running" {
+		t.Fatalf("abort must not mutate state when audit fails, got %q", record.Status)
 	}
 }
 

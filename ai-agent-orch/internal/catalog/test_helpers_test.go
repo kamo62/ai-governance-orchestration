@@ -9,25 +9,34 @@ import (
 
 func writeMinimalCatalog(t *testing.T, root string) {
 	t.Helper()
-	writeFile(t, filepath.Join(root, "models", "registry.yaml"), `models:
-  - alias: coding-balanced
-    provider: openrouter
-    model_id: test-provider/coding-balanced
-    fallback_alias: coding-fast
-  - alias: coding-fast
-    provider: openrouter
-    model_id: test-provider/coding-fast
-    fallback_alias: null
-  - alias: coding-economy
-    provider: openrouter
-    model_id: test-provider/coding-economy
-    fallback_alias: null
-  - alias: router-small
-    provider: openrouter
-    model_id: test-provider/router-small
-    fallback_alias: null
+	writeFile(t, filepath.Join(root, "models", "registry.yaml"),
+		"models:\n"+
+			"  - alias: coding-balanced\n"+
+			"    provider: openrouter\n"+
+			"    model_id: test-provider/coding-balanced\n"+
+			"    fallback_alias: coding-fast\n"+
+			"  - alias: coding-fast\n"+
+			"    provider: openrouter\n"+
+			"    model_id: test-provider/coding-fast\n"+
+			"    fallback_alias: null\n"+
+			"  - alias: coding-economy\n"+
+			"    provider: openrouter\n"+
+			"    model_id: test-provider/coding-economy\n"+
+			"    fallback_alias: null\n"+
+			"  - alias: router-small\n"+
+			"    provider: openrouter\n"+
+			"    model_id: test-provider/router-small\n"+
+			"    fallback_alias: null\n")
+	writeAgent(t, root, "core/router-agent", "router-agent", "router-small", "coding-economy", "workspace_write: deny\n", []string{"read_file"}, "# Router\n\nConfig: `./agent.config.yaml`\n")
+	writeFile(t, filepath.Join(root, "mcp", "registrations", "repo-classification.yaml"), `server_id: repo-classification
+allowed_agents:
+  - router-agent
+  - bad-agent
+  - read-only
+  - not-tests
+  - duplicate
+  - test-generation
 `)
-	writeFile(t, filepath.Join(root, "agents", "core", "router-agent", "evals", "golden-cases.yaml"), "cases: []\n")
 }
 
 func writeAgent(t *testing.T, root, relDir, name, primary, fallback, workspacePermission string, tools []string, markdown string) {
@@ -77,4 +86,13 @@ func writeFile(t *testing.T, path string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(content)
 }
