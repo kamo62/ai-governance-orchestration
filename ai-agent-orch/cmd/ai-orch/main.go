@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,7 +15,7 @@ import (
 )
 
 const (
-	defaultGovernanceURL = "http://127.0.0.1:8080"
+	defaultGovernanceURL   = "http://127.0.0.1:8080"
 	defaultOrchestratorURL = "http://127.0.0.1:8081"
 )
 
@@ -22,6 +23,16 @@ type Config struct {
 	GovernanceURL   string
 	OrchestratorURL string
 	Token           string
+}
+
+type eventStreamResult struct {
+	Count    int
+	PatchIDs []string
+}
+
+type sessionEvent struct {
+	Type    string `json:"type"`
+	Payload string `json:"payload"`
 }
 
 func loadConfig() Config {
@@ -58,6 +69,8 @@ func main() {
 		handleSmoke(ctx, cfg, os.Args[2:])
 	case "agents":
 		handleAgents(ctx, cfg, os.Args[2:])
+	case "negative":
+		handleNegative(ctx, cfg, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -72,11 +85,13 @@ Usage:
   ai-orch session create --agent <name> --classification <level> --prompt <text>
   ai-orch session message --session-id <id> --prompt <text>
   ai-orch session confirm --session-id <id> --agent <name>
+  ai-orch session events --session-id <id>
   ai-orch audit lookup --session-id <id>
   ai-orch killswitch status
   ai-orch killswitch toggle --scope <scope> --id <id> [--enable|--disable]
-  ai-orch smoke
+  ai-orch smoke [--prompt <text>]
   ai-orch agents list
+  ai-orch negative secret|classification|killswitch|cost
 
 Environment:
   AI_ORCH_GOVERNANCE_URL    Governance Shell base URL (default: http://127.0.0.1:8080)
@@ -86,7 +101,7 @@ Environment:
 
 func handleSession(ctx context.Context, cfg Config, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: ai-orch session create|message|confirm ...")
+		fmt.Fprintln(os.Stderr, "usage: ai-orch session create|message|confirm|events ...")
 		os.Exit(1)
 	}
 	switch args[0] {
@@ -96,6 +111,8 @@ func handleSession(ctx context.Context, cfg Config, args []string) {
 		sendMessage(ctx, cfg, args[1:])
 	case "confirm":
 		confirmSession(ctx, cfg, args[1:])
+	case "events":
+		streamEvents(ctx, cfg, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown session subcommand: %s\n", args[0])
 		os.Exit(1)
@@ -135,8 +152,6 @@ func sendMessage(ctx context.Context, cfg Config, args []string) {
 	body, _ := json.Marshal(map[string]any{
 		"prompt": prompt,
 	})
-	// This POST triggers routing. In a full SSE implementation, the response would stream events.
-	// For the local CLI, we read the non-streaming response.
 	resp, err := doPost(ctx, cfg, fmt.Sprintf("%s/v1/sessions/%s/messages", cfg.GovernanceURL, sessionID), body)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "send message failed: %v\n", err)
@@ -162,6 +177,62 @@ func confirmSession(ctx context.Context, cfg Config, args []string) {
 		os.Exit(1)
 	}
 	prettyPrintJSON(resp)
+}
+
+func streamEvents(ctx context.Context, cfg Config, args []string) {
+	sessionID := flagValue(args, "--session-id")
+	if sessionID == "" {
+		fmt.Fprintln(os.Stderr, "usage: ai-orch session events --session-id <id>")
+		os.Exit(1)
+	}
+
+	url := fmt.Sprintf("%s/v1/sessions/%s/events", cfg.GovernanceURL, sessionID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "events request failed: %v\n", err)
+		os.Exit(1)
+	}
+	token := cfg.Token
+	if token == "" {
+		token = "local-dev"
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "text/event-stream")
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "events stream failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "events stream failed: HTTP %d: %s\n", resp.StatusCode, string(body))
+		os.Exit(1)
+	}
+
+	fmt.Printf("=== SSE stream for session %s ===\n", sessionID)
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			var event map[string]any
+			if err := json.Unmarshal([]byte(data), &event); err == nil {
+				prettyPrintJSON(data)
+			} else {
+				fmt.Println(data)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "events stream error: %v\n", err)
+	}
 }
 
 func handleAudit(ctx context.Context, cfg Config, args []string) {
@@ -250,7 +321,116 @@ func handleAgents(ctx context.Context, cfg Config, args []string) {
 	}
 }
 
+func handleNegative(ctx context.Context, cfg Config, args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: ai-orch negative secret|classification|killswitch|cost")
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "secret":
+		testNegativeSecret(ctx, cfg)
+	case "classification":
+		testNegativeClassification(ctx, cfg)
+	case "killswitch":
+		testNegativeKillSwitch(ctx, cfg)
+	case "cost":
+		testNegativeCost(ctx, cfg)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown negative test: %s\n", args[0])
+		os.Exit(1)
+	}
+}
+
+func testNegativeSecret(ctx context.Context, cfg Config) {
+	fmt.Println("=== negative test: secret detection ===")
+	body, _ := json.Marshal(map[string]any{
+		"agent":          "test-generation",
+		"classification": "internal",
+		"prompt":         "use OPENROUTER_API_KEY=sk-or-v1-test1234567890",
+	})
+	resp, err := doPost(ctx, cfg, cfg.GovernanceURL+"/v1/sessions", body)
+	if err == nil {
+		fmt.Fprintf(os.Stderr, "FAIL: expected secret to be blocked, got: %s\n", resp)
+		os.Exit(1)
+	}
+	if !strings.Contains(err.Error(), "403") {
+		fmt.Fprintf(os.Stderr, "FAIL: expected 403, got: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS: secret blocked")
+}
+
+func testNegativeClassification(ctx context.Context, cfg Config) {
+	fmt.Println("=== negative test: classification ceiling ===")
+	body, _ := json.Marshal(map[string]any{
+		"agent":          "test-generation",
+		"classification": "restricted",
+		"prompt":         "restricted content",
+	})
+	resp, err := doPost(ctx, cfg, cfg.GovernanceURL+"/v1/sessions", body)
+	if err == nil {
+		fmt.Fprintf(os.Stderr, "FAIL: expected classification to be blocked, got: %s\n", resp)
+		os.Exit(1)
+	}
+	if !strings.Contains(err.Error(), "403") {
+		fmt.Fprintf(os.Stderr, "FAIL: expected 403, got: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS: classification blocked")
+}
+
+func testNegativeKillSwitch(ctx context.Context, cfg Config) {
+	fmt.Println("=== negative test: kill switch ===")
+	// Enable kill switch
+	_, _ = doPost(ctx, cfg, cfg.GovernanceURL+"/v1/admin/killswitch/agent/test-generation", nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"agent":          "test-generation",
+		"classification": "internal",
+		"prompt":         "ordinary prompt",
+	})
+	resp, err := doPost(ctx, cfg, cfg.GovernanceURL+"/v1/sessions", body)
+	if err == nil {
+		fmt.Fprintf(os.Stderr, "FAIL: expected kill switch to block, got: %s\n", resp)
+		os.Exit(1)
+	}
+	if !strings.Contains(err.Error(), "423") {
+		fmt.Fprintf(os.Stderr, "FAIL: expected 423, got: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS: kill switch blocked")
+
+	// Disable kill switch
+	_, _ = doRequest(ctx, cfg, http.MethodDelete, cfg.GovernanceURL+"/v1/admin/killswitch/agent/test-generation", nil)
+}
+
+func testNegativeCost(ctx context.Context, cfg Config) {
+	fmt.Println("=== negative test: cost cap ===")
+	body, _ := json.Marshal(map[string]any{
+		"agent":              "test-generation",
+		"classification":     "internal",
+		"prompt":             "expensive prompt",
+		"estimated_cost_usd": 0.50,
+	})
+	resp, err := doPost(ctx, cfg, cfg.GovernanceURL+"/v1/sessions", body)
+	if err == nil {
+		fmt.Fprintf(os.Stderr, "FAIL: expected cost cap to block, got: %s\n", resp)
+		os.Exit(1)
+	}
+	if !strings.Contains(err.Error(), "402") && !strings.Contains(err.Error(), "Payment") {
+		fmt.Fprintf(os.Stderr, "FAIL: expected 402, got: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("PASS: cost cap blocked")
+}
+
 func handleSmoke(ctx context.Context, cfg Config, args []string) {
+	prompt := flagValue(args, "--prompt")
+	if prompt == "" {
+		prompt = "write a smoke test for the login endpoint"
+	}
+
 	fmt.Println("=== ai-orch smoke test ===")
 
 	// 1. Health check
@@ -261,7 +441,7 @@ func handleSmoke(ctx context.Context, cfg Config, args []string) {
 	}
 	fmt.Println("   OK")
 
-	// 2. Catalog validation via Governance Shell readiness
+	// 2. Catalog validation via readyz
 	fmt.Println("\n2. Catalog validation via readyz...")
 	if _, err := doGet(ctx, cfg, cfg.GovernanceURL+"/readyz"); err != nil {
 		fmt.Fprintf(os.Stderr, "governance-shell readyz failed: %v\n", err)
@@ -274,7 +454,7 @@ func handleSmoke(ctx context.Context, cfg Config, args []string) {
 	body, _ := json.Marshal(map[string]any{
 		"agent":          "test-generation",
 		"classification": "internal",
-		"prompt":         "write a smoke test for the login endpoint",
+		"prompt":         prompt,
 	})
 	sessionResp, err := doPost(ctx, cfg, cfg.GovernanceURL+"/v1/sessions", body)
 	if err != nil {
@@ -292,33 +472,169 @@ func handleSmoke(ctx context.Context, cfg Config, args []string) {
 		os.Exit(1)
 	}
 
-	// 4. Audit lookup
-	fmt.Println("\n4. Audit lookup for session...")
+	// 4. Send message (routing)
+	fmt.Println("\n4. Sending message (triggers routing)...")
+	msgBody, _ := json.Marshal(map[string]any{"prompt": prompt})
+	routeResp, err := doPost(ctx, cfg, fmt.Sprintf("%s/v1/sessions/%s/messages", cfg.GovernanceURL, session.SessionID), msgBody)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "send message failed: %v\n", err)
+		os.Exit(1)
+	}
+	prettyPrintJSON(routeResp)
+
+	var routeResult struct {
+		Specialist string `json:"specialist"`
+		Status     string `json:"status"`
+	}
+	_ = json.Unmarshal([]byte(routeResp), &routeResult)
+	if routeResult.Specialist == "" {
+		fmt.Fprintln(os.Stderr, "no specialist returned")
+		os.Exit(1)
+	}
+	fmt.Printf("   Specialist: %s\n", routeResult.Specialist)
+
+	// 5. Confirm specialist
+	fmt.Println("\n5. Confirming specialist...")
+	confirmBody, _ := json.Marshal(map[string]any{"agent": routeResult.Specialist})
+	_, err = doPost(ctx, cfg, fmt.Sprintf("%s/v1/sessions/%s/confirm", cfg.GovernanceURL, session.SessionID), confirmBody)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "confirm session failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("   Confirmed")
+
+	// 6. Stream events (SSE)
+	fmt.Println("\n6. Streaming events (SSE)...")
+	eventsURL := fmt.Sprintf("%s/v1/sessions/%s/events", cfg.GovernanceURL, session.SessionID)
+	eventResult, err := streamEventsFromURL(ctx, cfg, eventsURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "events stream reported failure after %d event(s): %v\n", eventResult.Count, err)
+		os.Exit(1)
+	}
+	fmt.Printf("   Received %d events\n", eventResult.Count)
+	if len(eventResult.PatchIDs) == 0 {
+		fmt.Fprintln(os.Stderr, "no patch event received")
+		os.Exit(1)
+	}
+	patchID := eventResult.PatchIDs[0]
+	fmt.Printf("   Patch: %s\n", patchID)
+
+	// 7. Patch decision
+	fmt.Println("\n7. Submitting patch decision...")
+	patchBody, _ := json.Marshal(map[string]any{
+		"patch_id": patchID,
+		"decision": "applied",
+	})
+	_, err = doPost(ctx, cfg, fmt.Sprintf("%s/v1/sessions/%s/patch-decision", cfg.GovernanceURL, session.SessionID), patchBody)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "patch decision failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("   Applied")
+
+	// 8. Audit lookup
+	fmt.Println("\n8. Audit lookup...")
 	auditResp, err := doGet(ctx, cfg, fmt.Sprintf("%s/v1/audit/sessions/%s", cfg.GovernanceURL, session.SessionID))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "audit lookup failed: %v\n", err)
 		os.Exit(1)
 	}
-	prettyPrintJSON(auditResp)
+	var auditResult struct {
+		Events []map[string]any `json:"events"`
+	}
+	_ = json.Unmarshal([]byte(auditResp), &auditResult)
+	fmt.Printf("   %d audit events found\n", len(auditResult.Events))
 
-	// 5. Agents list
-	fmt.Println("\n5. Agents list...")
-	agentsResp, err := doGet(ctx, cfg, cfg.GovernanceURL+"/v1/agents")
+	// 9. Verify no raw prompt in audit
+	if strings.Contains(auditResp, prompt) {
+		fmt.Fprintf(os.Stderr, "FAIL: raw prompt found in audit response\n")
+		os.Exit(1)
+	}
+	fmt.Println("   Raw prompt not in audit: OK")
+
+	// 10. Agents list
+	fmt.Println("\n9. Agents list...")
+	_, err = doGet(ctx, cfg, cfg.GovernanceURL+"/v1/agents")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agents list failed: %v\n", err)
 		os.Exit(1)
 	}
-	prettyPrintJSON(agentsResp)
+	fmt.Println("   OK")
 
-	// 6. Orchestrator health
-	fmt.Println("\n6. Orchestrator health...")
+	// 11. Orchestrator health
+	fmt.Println("\n10. Orchestrator health...")
 	if _, err := doGet(ctx, cfg, cfg.OrchestratorURL+"/healthz"); err != nil {
 		fmt.Fprintf(os.Stderr, "orchestrator health failed: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println("   OK")
 
+	// 12. Metrics
+	fmt.Println("\n11. Metrics...")
+	metricsResp, err := doGet(ctx, cfg, cfg.GovernanceURL+"/metrics")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "metrics failed: %v\n", err)
+		os.Exit(1)
+	}
+	prettyPrintJSON(metricsResp)
+
 	fmt.Println("\n=== smoke test passed ===")
+}
+
+func streamEventsFromURL(ctx context.Context, cfg Config, url string) (eventStreamResult, error) {
+	var result eventStreamResult
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return result, fmt.Errorf("events request failed: %w", err)
+	}
+	token := cfg.Token
+	if token == "" {
+		token = "local-dev"
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "text/event-stream")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return result, fmt.Errorf("events stream failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return result, fmt.Errorf("events stream failed: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			result.Count++
+			var event sessionEvent
+			data := strings.TrimPrefix(line, "data: ")
+			if err := json.Unmarshal([]byte(data), &event); err != nil {
+				return result, fmt.Errorf("decode event: %w", err)
+			}
+			switch event.Type {
+			case "patch":
+				patchID := extractPatchID(event.Payload)
+				if patchID == "" {
+					return result, errors.New("patch event missing patch id")
+				}
+				result.PatchIDs = append(result.PatchIDs, patchID)
+			case "error":
+				if event.Payload == "" {
+					return result, errors.New("runtime emitted error event")
+				}
+				return result, errors.New(event.Payload)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return result, fmt.Errorf("events stream read failed: %w", err)
+	}
+	return result, nil
 }
 
 func doGet(ctx context.Context, cfg Config, url string) (string, error) {
@@ -338,9 +654,12 @@ func doRequest(ctx context.Context, cfg Config, method, url string, body []byte)
 	if err != nil {
 		return "", err
 	}
-	if cfg.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	// Always send a bearer token. The local CLI default matches Docker Compose.
+	token := cfg.Token
+	if token == "" {
+		token = "local-dev"
 	}
+	req.Header.Set("Authorization", "Bearer "+token)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -387,5 +706,16 @@ func hasFlag(args []string, name string) bool {
 	return false
 }
 
-// compile-time interface checks
-var _ = errors.New
+func extractPatchID(payload string) string {
+	var patch struct {
+		PatchIDCamel string `json:"patchId"`
+		PatchIDSnake string `json:"patch_id"`
+	}
+	if err := json.Unmarshal([]byte(payload), &patch); err != nil {
+		return ""
+	}
+	if patch.PatchIDCamel != "" {
+		return patch.PatchIDCamel
+	}
+	return patch.PatchIDSnake
+}

@@ -22,10 +22,13 @@ audit.jsonl
 node_modules/
 **/node_modules/
 dist/
+**/out/
 coverage/
 tmp/
 *.out
 *.tsbuildinfo
+package-lock.json
+**/package-lock.json
 
 # Editor/local tool state
 .idea/

@@ -111,6 +111,35 @@ func TestCreateSessionRejectsInvalidDevTokenBeforeReadingRawPrompt(t *testing.T)
 	}
 }
 
+func TestCreateSessionFailsClosedWhenDevTokenMissingEvenWithBearer(t *testing.T) {
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	service := NewSessionService(SessionConfig{
+		Audit: audit.NewFileStore(auditPath),
+		NewID: fixedIDs(
+			"evt_missing_dev_token",
+		),
+	})
+	handler := NewSessionHandler(service)
+
+	body := []byte(`{"agent":"test-generation","classification":"internal","prompt":"raw prompt must not be processed"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer any-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+	auditText := readAuditText(t, auditPath)
+	if strings.Contains(auditText, "raw prompt must not be processed") {
+		t.Fatalf("missing-token audit must not include request body: %s", auditText)
+	}
+	if !strings.Contains(auditText, `"reason":"dev token not configured"`) {
+		t.Fatalf("expected missing dev token audit event: %s", auditText)
+	}
+}
+
 func TestCreateSessionKillSwitchBlocksBeforeReadingRawPrompt(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	service := NewSessionService(SessionConfig{

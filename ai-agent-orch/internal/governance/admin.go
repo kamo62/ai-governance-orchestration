@@ -85,11 +85,16 @@ func NewAdminHandler(store KillSwitchStore, service *SessionService) http.Handle
 }
 
 func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h.service != nil && h.service.devToken != "" {
-		if !authorizedBearer(r.Header.Get("Authorization"), h.service.devToken) {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
-			return
-		}
+	if h.service == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
+		return
+	}
+	if h.store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "kill switch store unavailable"})
+		return
+	}
+	if !h.service.RequireAuthorizedRequest(w, r) {
+		return
 	}
 
 	path := strings.TrimPrefix(r.URL.Path, "/v1/admin/killswitch")

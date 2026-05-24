@@ -4,7 +4,7 @@ This repository is my proof of concept for an agent orchestration system that I 
 
 The goal is not to rebuild every agent runtime, IDE workflow, or coding assistant stack inside this project. The goal is to test whether a lightweight system layer can give agent work better governance, routing, auditability, and policy control without forcing every team or engineer into one runtime.
 
-Project state: this is a personal-time POC in active early development. The current backbone includes session creation, audit events, policy gates, audit lookup, router selection, Docker Compose, catalogue validation, OpenRouter smoke tooling, a local CLI scaffold, MCP stubs, a VS Code Bridge scaffold, service-token hardening, and the first dispatch/SSE path. A real patch-producing agent flow is next. Not production-ready.
+Project state: this is a personal-time POC in active early development. The current backbone includes session creation, audit events, policy gates, audit lookup, router selection, Docker Compose, catalogue validation, OpenRouter smoke tooling, a local CLI scaffold, MCP stubs, a VS Code Bridge scaffold, service-token hardening, and a dispatch/SSE path with an EchoRuntime patch envelope for local testing. A real OpenRouter/OpenCode patch-producing flow and manual VS Code Bridge validation are next. Not production-ready.
 
 ## What This POC Is Exploring
 
@@ -103,6 +103,7 @@ This repo currently focuses on the system-side foundation:
 - local CLI and VS Code Bridge scaffolds
 - MCP registration and token-guarded stub services
 - first dispatch and SSE event path
+- local EchoRuntime patch envelope and patch-decision audit path
 - audit and policy primitives
 
 The near-term goal is to prove a thin vertical slice rather than overbuild the full system.
@@ -152,6 +153,10 @@ The `ai-orch` CLI scaffold currently covers local smoke tests, audit lookup, kil
 ```sh
 AI_ORCH_DEV_TOKEN=local-dev docker compose --profile tools run --rm ai-orch
 ```
+
+Cost-cap enforcement is intentionally off by default. To test the blocking path locally, start the Governance Shell with `AI_ORCH_COST_CAP_ENABLED=true` and a non-zero `AI_ORCH_SESSION_COST_CAP_USD`.
+
+The VS Code Bridge expects `AI_ORCH_DEV_TOKEN` in the extension host environment; it does not fall back to an implicit token.
 
 ## Guiding Principle
 

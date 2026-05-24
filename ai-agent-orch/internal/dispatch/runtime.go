@@ -14,6 +14,7 @@ type Runtime interface {
 
 // SessionConfig holds the rendered configuration for a runtime session.
 type SessionConfig struct {
+	SessionID     string
 	SystemPrompt  string
 	UserPrompt    string
 	ModelID       string

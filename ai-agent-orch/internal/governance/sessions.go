@@ -43,6 +43,8 @@ type SessionService struct {
 	newID             func(prefix string) string
 	promptMu          sync.Mutex
 	prompts           map[string]string
+	patchMu           sync.Mutex
+	patches           map[string]map[string]struct{}
 }
 
 type CreateSessionRequest struct {
@@ -75,6 +77,7 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 		metrics:           cfg.Metrics,
 		newID:             newID,
 		prompts:           make(map[string]string),
+		patches:           make(map[string]map[string]struct{}),
 	}
 }
 
@@ -93,20 +96,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return
 	}
-	if s.devToken == "" {
-		if err := s.appendDenied(r.Context(), "dev token not configured", nil, ""); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
-			return
-		}
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "dev token not configured"})
-		return
-	}
-	if !s.authorized(r.Header.Get("Authorization")) {
-		if err := s.appendDenied(r.Context(), "invalid dev token", nil, ""); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
-			return
-		}
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+	if !s.RequireAuthorizedRequest(w, r) {
 		return
 	}
 	if blocked, reason := s.blockedByKillSwitch(""); blocked {
@@ -349,6 +339,29 @@ func (s *SessionService) forgetPrompt(sessionID string) {
 	s.promptMu.Lock()
 	defer s.promptMu.Unlock()
 	delete(s.prompts, sessionID)
+}
+
+func (s *SessionService) rememberPatch(sessionID string, patchID string) {
+	if s == nil || sessionID == "" || patchID == "" {
+		return
+	}
+	s.patchMu.Lock()
+	defer s.patchMu.Unlock()
+	if s.patches[sessionID] == nil {
+		s.patches[sessionID] = make(map[string]struct{})
+	}
+	s.patches[sessionID][patchID] = struct{}{}
+}
+
+func (s *SessionService) patchKnown(sessionID string, patchID string) bool {
+	if s == nil || sessionID == "" || patchID == "" {
+		return false
+	}
+	s.patchMu.Lock()
+	defer s.patchMu.Unlock()
+	patches := s.patches[sessionID]
+	_, ok := patches[patchID]
+	return ok
 }
 
 func authorizedBearer(header string, token string) bool {

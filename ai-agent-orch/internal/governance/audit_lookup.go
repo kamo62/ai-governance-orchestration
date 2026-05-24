@@ -49,8 +49,7 @@ func (l *AuditLookup) lookupSession(w http.ResponseWriter, r *http.Request) {
 	if l.devToken == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "dev token not configured"})
 		return
-	}
-	if !authorizedBearer(r.Header.Get("Authorization"), l.devToken) {
+	} else if !authorizedBearer(r.Header.Get("Authorization"), l.devToken) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}

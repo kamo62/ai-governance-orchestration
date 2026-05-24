@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.0.9-alpha - 2026-05-24 (Patch)
+
+Release impact: Patch because this closes fail-open and false-green local workflow gaps without changing the documented API shape.
+
+- Fixed local dev-token handling so session, audit, and admin endpoints fail closed when no token is configured.
+- Fixed the CLI smoke path so runtime error events fail the smoke run and patch decisions use emitted patch IDs instead of hard-coded IDs.
+- Added session-correlated EchoRuntime patch IDs and rejected patch decisions for patches that were never emitted for the session.
+- Fixed Orchestrator dispatch responses so runtime wait failures and runtime error events return failure instead of `completed`.
+- Hardened the VS Code Bridge by removing token fallbacks, avoiding raw prompt logs, escaping audit HTML, replacing runtime `require()` calls, and adding apply, partial, and reject patch-decision flows.
+- Excluded generated Bridge output from TypeScript inputs so repeated extension compiles stay clean.
+- Kept Docker Compose cost-cap enforcement disabled by default while leaving opt-in enforcement available.
+- Added regression coverage for fail-closed auth, prompt handoff, runtime failures, SSE patch IDs, unknown patch decisions, and Bridge lint/typecheck safety.
+
 ## v0.0.8-alpha - 2026-05-24 (Patch)
 
 Release impact: Patch because this tightens local governance, runtime safety, bridge hygiene, and observability without changing the documented user-facing Compose flow.

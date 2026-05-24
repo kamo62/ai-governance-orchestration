@@ -37,6 +37,57 @@ func TestDispatchHandlerFailsClosedWhenAuditWriteFails(t *testing.T) {
 	}
 }
 
+func TestDispatchHandlerFailsWhenRuntimeWaitFails(t *testing.T) {
+	dispatcher := &Dispatcher{
+		catalogRoot: filepath.Join("..", ".."),
+		runtimes: map[string]dispatch.Runtime{
+			"opencode": fakeRuntime{handle: &fakeHandle{
+				events: []dispatch.RuntimeEvent{{Type: "stream", Payload: "started"}},
+				err:    errors.New("runtime failed"),
+			}},
+		},
+	}
+	handler := NewDispatchHandler(dispatcher, audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"test-generation","prompt":"write tests"}`)))
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_dispatch_1")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "runtime failed") {
+		t.Fatalf("expected runtime failure response, got %s", rec.Body.String())
+	}
+}
+
+func TestDispatchHandlerFailsWhenRuntimeEmitsError(t *testing.T) {
+	dispatcher := &Dispatcher{
+		catalogRoot: filepath.Join("..", ".."),
+		runtimes: map[string]dispatch.Runtime{
+			"opencode": fakeRuntime{handle: &fakeHandle{
+				events: []dispatch.RuntimeEvent{{Type: "error", Payload: "tool denied"}},
+			}},
+		},
+	}
+	handler := NewDispatchHandler(dispatcher, audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"test-generation","prompt":"write tests"}`)))
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_dispatch_1")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "tool denied") {
+		t.Fatalf("expected runtime error response, got %s", rec.Body.String())
+	}
+}
+
 type failingAuditStore struct{}
 
 func (failingAuditStore) Append(context.Context, audit.Event) (audit.Event, error) {
@@ -57,9 +108,10 @@ func (f fakeRuntime) StartSession(context.Context, dispatch.SessionConfig) (disp
 
 type fakeHandle struct {
 	events []dispatch.RuntimeEvent
+	err    error
 }
 
-func (h *fakeHandle) Wait() error { return nil }
+func (h *fakeHandle) Wait() error { return h.err }
 
 func (h *fakeHandle) Events() <-chan dispatch.RuntimeEvent {
 	ch := make(chan dispatch.RuntimeEvent, len(h.events))

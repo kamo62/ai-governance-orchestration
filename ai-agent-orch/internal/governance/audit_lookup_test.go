@@ -86,3 +86,18 @@ func TestAuditLookupRejectsInvalidDevToken(t *testing.T) {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestAuditLookupFailsClosedWhenDevTokenMissingEvenWithBearer(t *testing.T) {
+	handler := NewAuditLookupHandler(AuditLookupConfig{
+		Audit: audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/audit/sessions/sess_lookup_1", nil)
+	req.Header.Set("Authorization", "Bearer any-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+}

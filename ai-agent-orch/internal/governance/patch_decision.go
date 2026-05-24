@@ -65,6 +65,10 @@ func (h *PatchDecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("invalid decision %q", req.Decision)})
 		return
 	}
+	if !h.service.patchKnown(sessionID, req.PatchID) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "patch is not known for session"})
+		return
+	}
 
 	eventID := h.newID("evt")
 	_, err := h.service.audit.Append(r.Context(), audit.Event{
@@ -96,4 +100,18 @@ func (h *PatchDecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		"decision":       req.Decision,
 		"audit_event_id": eventID,
 	})
+}
+
+func extractPatchID(payload string) string {
+	var patch struct {
+		PatchIDCamel string `json:"patchId"`
+		PatchIDSnake string `json:"patch_id"`
+	}
+	if err := json.Unmarshal([]byte(payload), &patch); err != nil {
+		return ""
+	}
+	if patch.PatchIDCamel != "" {
+		return patch.PatchIDCamel
+	}
+	return patch.PatchIDSnake
 }

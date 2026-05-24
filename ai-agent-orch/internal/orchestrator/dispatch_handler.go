@@ -67,7 +67,7 @@ func (h *DispatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Start the runtime session asynchronously.
-	handle, err := h.dispatcher.Dispatch(r.Context(), req.Agent, req.Prompt)
+	handle, err := h.dispatcher.Dispatch(r.Context(), sessionID, req.Agent, req.Prompt)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("dispatch failed: %v", err)})
 		return
@@ -76,8 +76,30 @@ func (h *DispatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Collect events from the runtime and write them as a simple JSON response
 	// for the non-streaming Phase 1 fallback. In Phase 2, this would become SSE.
 	var events []dispatch.RuntimeEvent
+	var runtimeError string
 	for event := range handle.Events() {
 		events = append(events, event)
+		if event.Type == "error" && runtimeError == "" {
+			runtimeError = event.Payload
+		}
+	}
+	if err := handle.Wait(); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error":      fmt.Sprintf("runtime failed: %v", err),
+			"session_id": sessionID,
+			"agent":      req.Agent,
+			"events":     events,
+		})
+		return
+	}
+	if runtimeError != "" {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error":      runtimeError,
+			"session_id": sessionID,
+			"agent":      req.Agent,
+			"events":     events,
+		})
+		return
 	}
 
 	// Record specialist execution audit event before reporting completion.

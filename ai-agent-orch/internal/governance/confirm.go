@@ -120,7 +120,11 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// If event store is wired, trigger execution in the background and stream events.
 	if h.events != nil {
 		h.service.forgetPrompt(sessionID)
-		go h.triggerExecution(r.Context(), sessionID, req.Agent, prompt)
+		execCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		go func() {
+			defer cancel()
+			h.triggerExecution(execCtx, sessionID, req.Agent, prompt)
+		}()
 	}
 }
 
@@ -145,6 +149,9 @@ func (h *ConfirmHandler) triggerExecution(ctx context.Context, sessionID, agent 
 
 	// Publish runtime events from the Orchestrator response.
 	for _, event := range result.Events {
+		if event.Type == "patch" {
+			h.service.rememberPatch(sessionID, extractPatchID(event.Payload))
+		}
 		h.events.Publish(sessionID, SessionEvent{
 			Type:      event.Type,
 			Payload:   event.Payload,

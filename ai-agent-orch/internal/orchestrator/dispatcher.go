@@ -43,7 +43,7 @@ func NewDispatcher(catalogRoot string) *Dispatcher {
 	}
 }
 
-func (d *Dispatcher) Dispatch(ctx context.Context, agentName string, prompt string) (dispatch.SessionHandle, error) {
+func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName string, prompt string) (dispatch.SessionHandle, error) {
 	report, err := catalog.Validate(d.catalogRoot)
 	if err != nil {
 		return nil, fmt.Errorf("validate catalog: %w", err)
@@ -64,6 +64,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, agentName string, prompt stri
 	}
 
 	sessionCfg := dispatch.SessionConfig{
+		SessionID:    sessionID,
 		SystemPrompt: agentCfg.SystemPrompt(d.catalogRoot),
 		UserPrompt:   prompt,
 		ModelID:      modelAlias,
@@ -88,7 +89,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, agentName string, prompt stri
 		return runtime.StartSession(ctx, sessionCfg)
 	}
 
-	return nil, fmt.Errorf("no runnable runtime available for agent %q", agentName)
+	// Ultimate fallback: EchoRuntime requires no external APIs.
+	// This allows the full chain to work in local Phase 1 without API keys.
+	echo := dispatch.NewEchoRuntime()
+	return echo.StartSession(ctx, sessionCfg)
 }
 
 func envOrDefault(key, fallback string) string {
