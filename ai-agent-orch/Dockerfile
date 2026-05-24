@@ -17,7 +17,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/catalog
 	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mcp-repo-classification ./cmd/mcp-repo-classification \
 	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mcp-engineering-standards-kb ./cmd/mcp-engineering-standards-kb \
 	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mcp-catalog-introspection ./cmd/mcp-catalog-introspection \
-	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mcp-playwright-cli ./cmd/mcp-playwright-cli
+	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mcp-playwright-cli ./cmd/mcp-playwright-cli \
+	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mcp-issue-tracker ./cmd/mcp-issue-tracker \
+	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mcp-documentation ./cmd/mcp-documentation \
+	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mcp-test-management ./cmd/mcp-test-management
 
 FROM alpine:3.22
 RUN adduser -D -H aiagent
@@ -32,6 +35,9 @@ COPY --from=build /out/mcp-repo-classification /usr/local/bin/mcp-repo-classific
 COPY --from=build /out/mcp-engineering-standards-kb /usr/local/bin/mcp-engineering-standards-kb
 COPY --from=build /out/mcp-catalog-introspection /usr/local/bin/mcp-catalog-introspection
 COPY --from=build /out/mcp-playwright-cli /usr/local/bin/mcp-playwright-cli
+COPY --from=build /out/mcp-issue-tracker /usr/local/bin/mcp-issue-tracker
+COPY --from=build /out/mcp-documentation /usr/local/bin/mcp-documentation
+COPY --from=build /out/mcp-test-management /usr/local/bin/mcp-test-management
 COPY agents /app/agents
 COPY models /app/models
 COPY policies /app/policies

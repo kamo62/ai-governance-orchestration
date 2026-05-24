@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+// Store is the audit persistence interface.
+// Implementations must be safe for concurrent use.
+type Store interface {
+	Append(context.Context, Event) (Event, error)
+	EventsBySession(context.Context, string) ([]Event, error)
+}
+
 type Event struct {
 	EventID            string    `json:"event_id"`
 	SessionID          string    `json:"session_id,omitempty"`
@@ -69,6 +76,47 @@ func (s *FileStore) EventsBySession(ctx context.Context, sessionID string) ([]Ev
 		if event.SessionID == sessionID {
 			events = append(events, event)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan audit file: %w", err)
+	}
+	return events, nil
+}
+
+func (s *FileStore) AllEvents(ctx context.Context) ([]Event, error) {
+	if s == nil {
+		return nil, errors.New("audit store is required")
+	}
+	if s.Path == "" {
+		return nil, errors.New("audit path is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	f, err := os.Open(s.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return []Event{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open audit file: %w", err)
+	}
+	defer f.Close()
+
+	var events []Event
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var event Event
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			return nil, fmt.Errorf("parse audit event: %w", err)
+		}
+		events = append(events, event)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan audit file: %w", err)

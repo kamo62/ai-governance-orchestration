@@ -11,3 +11,7 @@ cases:
     expected_specialist: security-scan
   - prompt: "Review the service boundaries and data flow."
     expected_specialist: architecture-review
+  - prompt: "Perform a full security review of this codebase."
+    expected_specialist: security-review
+  - prompt: "Review this Terraform for security and cost."
+    expected_specialist: terraform-review

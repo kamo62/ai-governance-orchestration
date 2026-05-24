@@ -346,3 +346,7 @@ type failingAuditStore struct{}
 func (failingAuditStore) Append(context.Context, audit.Event) (audit.Event, error) {
 	return audit.Event{}, errors.New("audit unavailable")
 }
+
+func (failingAuditStore) EventsBySession(context.Context, string) ([]audit.Event, error) {
+	return nil, errors.New("audit unavailable")
+}

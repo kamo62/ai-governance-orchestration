@@ -4,11 +4,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"ai-agent-orch/internal/appconfig"
 	"ai-agent-orch/internal/audit"
 	"ai-agent-orch/internal/catalog"
 	"ai-agent-orch/internal/governance"
+	"ai-agent-orch/internal/httpauth"
 	"ai-agent-orch/internal/server"
 )
 
@@ -29,11 +31,29 @@ func main() {
 		return server.CatalogSummary{Agents: len(report.Agents), Models: len(report.ModelAliases)}, nil
 	})
 
-	auditStore := audit.NewFileStore(cfg.AuditPath)
+	auditStore, err := newAuditStore(cfg.AuditPath)
+	if err != nil {
+		log.Fatal(err)
+	}
 	killSwitchStore := governance.NewMemoryKillSwitch()
 	metricsHandler := governance.NewMetricsHandler()
+
+	// OIDC validator: when OIDC_ISSUER_URL and OIDC_CLIENT_ID are set,
+	// Bearer tokens are treated as OIDC id_tokens. Otherwise the
+	// existing dev-token check remains the only gate.
+	oidcValidator := httpauth.NewOIDCTokenValidator(httpauth.OIDCConfig{
+		IssuerURL: os.Getenv("OIDC_ISSUER_URL"),
+		ClientID:  os.Getenv("OIDC_CLIENT_ID"),
+	}, cfg.DevToken)
+	var requestAuthorizer governance.RequestAuthorizer
+	if oidcValidator.IsOIDCEnabled() {
+		log.Println("OIDC auth enabled")
+		requestAuthorizer = oidcValidator
+	}
+
 	sessionService := governance.NewSessionService(governance.SessionConfig{
 		DevToken:          cfg.DevToken,
+		Authorizer:        requestAuthorizer,
 		Audit:             auditStore,
 		ClassificationMax: cfg.ClassificationMax,
 		KillSwitch:        cfg.KillSwitch,
@@ -60,8 +80,9 @@ func main() {
 		events:         eventStore,
 	})
 	handler.Handle("/v1/audit/sessions/", governance.NewAuditLookupHandler(governance.AuditLookupConfig{
-		DevToken: cfg.DevToken,
-		Audit:    auditStore,
+		DevToken:   cfg.DevToken,
+		Authorizer: requestAuthorizer,
+		Audit:      auditStore,
 	}))
 	handler.Handle("/v1/admin/killswitch", governance.NewAdminHandler(killSwitchStore, sessionService))
 	handler.Handle("/v1/admin/killswitch/", governance.NewAdminHandler(killSwitchStore, sessionService))
@@ -100,4 +121,23 @@ func (sr *sessionSubrouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func containsSuffix(path, suffix string) bool {
 	return len(path) > len(suffix) && path[len(path)-len(suffix):] == suffix
+}
+
+func newAuditStore(auditPath string) (audit.Store, error) {
+	// If the path ends with .db or .sqlite, use SQLite.
+	// Otherwise default to the append-only JSONL file store.
+	if hasSQLiteExt(auditPath) {
+		store, err := audit.NewSQLiteStore(auditPath)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("using sqlite audit store: %s", auditPath)
+		return store, nil
+	}
+	return audit.NewFileStore(auditPath), nil
+}
+
+func hasSQLiteExt(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.HasSuffix(lower, ".db") || strings.HasSuffix(lower, ".sqlite") || strings.HasSuffix(lower, ".sqlite3")
 }

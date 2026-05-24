@@ -1,0 +1,18 @@
+cases:
+  - prompt: "Review this Terraform for security issues."
+    expected_behavior: "Finds IAM over-permissions, missing encryption, and hardcoded secrets."
+    required_findings:
+      - category: iam_risk
+      - category: encryption
+  - prompt: "Check this infrastructure for cost optimization."
+    expected_behavior: "Identifies oversized resources, unused assets, and expensive defaults."
+    required_findings:
+      - category: cost_optimization
+  - prompt: "Review this Terraform module for reliability."
+    expected_behavior: "Finds missing redundancy, single points of failure, and lack of health checks."
+    required_findings:
+      - category: reliability
+  - prompt: "Audit this state management configuration."
+    expected_behavior: "Flags insecure state storage, lack of locking, or versioning gaps."
+    required_findings:
+      - category: state_security

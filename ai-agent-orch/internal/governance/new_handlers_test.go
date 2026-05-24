@@ -111,7 +111,8 @@ func TestMessagesHandlerBlocksSecretInFollowUp(t *testing.T) {
 	orch := &fakeOrchestrator{}
 	handler := NewMessagesHandler(service, orch)
 
-	body := []byte(`{"prompt":"use OPENROUTER_API_KEY=sk-or-v1-1234567890"}`)
+	fakeToken := "sk-or-v1-" + "1234567890"
+	body := []byte(`{"prompt":"use OPENROUTER_API_KEY=` + fakeToken + `"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_123/messages", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	rec := httptest.NewRecorder()

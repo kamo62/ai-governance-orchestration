@@ -138,6 +138,51 @@ services:
       timeout: 3s
       retries: 3
 
+  mcp-issue-tracker:
+    profiles: ["phase2"]
+    build:
+      context: .
+    command: ["mcp-issue-tracker"]
+    environment:
+      <<: *mcp-environment
+    ports:
+      - "127.0.0.1:8095:8095"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8095/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  mcp-documentation:
+    profiles: ["phase2"]
+    build:
+      context: .
+    command: ["mcp-documentation"]
+    environment:
+      <<: *mcp-environment
+    ports:
+      - "127.0.0.1:8096:8096"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8096/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  mcp-test-management:
+    profiles: ["phase2"]
+    build:
+      context: .
+    command: ["mcp-test-management"]
+    environment:
+      <<: *mcp-environment
+    ports:
+      - "127.0.0.1:8097:8097"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8097/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
   ai-orch:
     profiles: ["tools"]
     build:

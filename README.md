@@ -4,7 +4,7 @@ This repository is my proof of concept for an agent orchestration system that I 
 
 The goal is not to rebuild every agent runtime, IDE workflow, or coding assistant stack inside this project. The goal is to test whether a lightweight system layer can give agent work better governance, routing, auditability, and policy control without forcing every team or engineer into one runtime.
 
-Project state: this is a personal-time POC in active early development. The current backbone includes session creation, audit events, policy gates, audit lookup, router selection, Docker Compose, catalogue validation, OpenRouter smoke tooling, a local CLI scaffold, MCP stubs, a VS Code Bridge scaffold, service-token hardening, and a dispatch/SSE path with an EchoRuntime patch envelope for local testing. A real OpenRouter/OpenCode patch-producing flow and manual VS Code Bridge validation are next. Not production-ready.
+Project state: this is a personal-time POC in active early development. The current backbone includes session creation, audit events, policy gates, audit lookup, router selection, Docker Compose, catalogue validation, OpenRouter smoke tooling, a local CLI scaffold, MCP stubs, optional SQLite audit storage, optional OIDC token-validation scaffolding, a VS Code Bridge scaffold, service-token hardening, and a dispatch/SSE path with an EchoRuntime patch envelope for local testing. A real OpenRouter/OpenCode patch-producing flow and manual VS Code Bridge validation are next. Not production-ready.
 
 ## What This POC Is Exploring
 
@@ -148,11 +148,19 @@ OpenRouter smoke testing requires `OPENROUTER_API_KEY`:
 OPENROUTER_API_KEY=... docker compose --profile tools run --rm openrouter-smoke
 ```
 
+For local repeated testing, keep secrets in an ignored root `.env.dev` file and pass it to Compose:
+
+```sh
+docker compose --env-file ../.env.dev --profile tools run --rm openrouter-smoke
+```
+
 The `ai-orch` CLI scaffold currently covers local smoke tests, audit lookup, kill-switch checks, session commands, and agent listing:
 
 ```sh
 AI_ORCH_DEV_TOKEN=local-dev docker compose --profile tools run --rm ai-orch
 ```
+
+Phase 2 read-only MCP stubs for issue tracker, documentation, and test-management context are available behind the `phase2` Compose profile. They are local token-guarded stubs only; user-scoped OAuth is still pending.
 
 Cost-cap enforcement is intentionally off by default. To test the blocking path locally, start the Governance Shell with `AI_ORCH_COST_CAP_ENABLED=true` and a non-zero `AI_ORCH_SESSION_COST_CAP_USD`.
 

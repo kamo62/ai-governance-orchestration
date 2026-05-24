@@ -57,27 +57,39 @@ func Validate(root string) (Report, error) {
 	}
 	sort.Strings(report.ModelAliases)
 
-	var tempAgents []string
+	var tempAgents, publishedAgents []string
+	seenAgents := make(map[string]string)
 	for _, dir := range agentDirs {
 		cfg, err := validateAgentDir(root, dir, aliases)
 		if err != nil {
 			return Report{}, err
 		}
-		rel, _ := filepath.Rel(root, dir)
+		relPath := filepath.ToSlash(rel(root, dir))
+		if firstPath, exists := seenAgents[cfg.Name]; exists {
+			return Report{}, fmt.Errorf("duplicate agent name %q in %s and %s", cfg.Name, firstPath, relPath)
+		}
+		seenAgents[cfg.Name] = relPath
 		report.Agents = append(report.Agents, AgentSummary{
 			Name:          cfg.Name,
-			Path:          filepath.ToSlash(rel),
+			Path:          relPath,
 			WorkspaceMode: cfg.Permissions.WorkspaceWrite,
 		})
-		if strings.Contains(filepath.ToSlash(rel), "agents/temp/") {
+		if strings.Contains(relPath, "agents/temp/") {
 			tempAgents = append(tempAgents, cfg.Name)
+		}
+		if strings.Contains(relPath, "agents/published/") {
+			publishedAgents = append(publishedAgents, cfg.Name)
 		}
 	}
 
 	sort.Slice(report.Agents, func(i, j int) bool { return report.Agents[i].Name < report.Agents[j].Name })
 	sort.Strings(tempAgents)
+	sort.Strings(publishedAgents)
 
-	if err := validateRouterCoverage(root, tempAgents); err != nil {
+	if err := validateRouterCoverage(root, "temp", tempAgents); err != nil {
+		return Report{}, err
+	}
+	if err := validateRouterCoverage(root, "published", publishedAgents); err != nil {
 		return Report{}, err
 	}
 
@@ -104,7 +116,7 @@ func loadModelAliases(path string) (map[string]struct{}, error) {
 
 func discoverAgentDirs(root string) ([]string, error) {
 	var dirs []string
-	for _, group := range []string{"core", "temp"} {
+	for _, group := range []string{"core", "temp", "published"} {
 		matches, err := filepath.Glob(filepath.Join(root, group, "*"))
 		if err != nil {
 			return nil, err
@@ -174,11 +186,31 @@ func validateAgentDir(root string, dir string, aliases map[string]struct{}) (Age
 		return AgentConfig{}, fmt.Errorf("%s: only test-generation can run Playwright", rel(root, cfgPath))
 	}
 
+	// Stricter validation for published agents.
+	if strings.Contains(filepath.ToSlash(rel(root, dir)), "agents/published/") {
+		if err := validatePublishedAgent(cfg); err != nil {
+			return AgentConfig{}, fmt.Errorf("%s: %w", rel(root, cfgPath), err)
+		}
+	}
+
 	return cfg, nil
 }
 
-func validateRouterCoverage(root string, tempAgents []string) error {
-	if len(tempAgents) == 0 {
+func validatePublishedAgent(cfg AgentConfig) error {
+	if cfg.Phase != "published" {
+		return fmt.Errorf("published agent must have phase: published, got %q", cfg.Phase)
+	}
+	if !cfg.Evals.RequiredForPhase0 {
+		return errors.New("published agent must have evals.required_for_phase0: true")
+	}
+	if cfg.Version == "" || cfg.Version[0] == '0' {
+		return fmt.Errorf("published agent version must be >= 1.0.0, got %q", cfg.Version)
+	}
+	return nil
+}
+
+func validateRouterCoverage(root string, group string, agents []string) error {
+	if len(agents) == 0 {
 		return nil
 	}
 	var evals struct {
@@ -196,9 +228,9 @@ func validateRouterCoverage(root string, tempAgents []string) error {
 			covered[c.ExpectedSpecialist] = struct{}{}
 		}
 	}
-	for _, agent := range tempAgents {
+	for _, agent := range agents {
 		if _, ok := covered[agent]; !ok {
-			return fmt.Errorf("router golden cases do not cover temp agent %q", agent)
+			return fmt.Errorf("router golden cases do not cover %s agent %q", group, agent)
 		}
 	}
 	return nil
@@ -206,16 +238,17 @@ func validateRouterCoverage(root string, tempAgents []string) error {
 
 // SystemPrompt reads the agent's prose instructions from agent.md.
 func (cfg AgentConfig) SystemPrompt(root string) string {
-	// This is a simplified read. In production, this would parse the markdown.
-	path := filepath.Join(root, "agents", "temp", cfg.Name, "agent.md")
-	if _, err := os.Stat(path); err != nil {
-		path = filepath.Join(root, "agents", "core", cfg.Name, "agent.md")
+	// Search published first, then temp, then core.
+	for _, group := range []string{"published", "temp", "core"} {
+		path := filepath.Join(root, "agents", group, cfg.Name, "agent.md")
+		if _, err := os.Stat(path); err == nil {
+			b, err := os.ReadFile(path)
+			if err == nil {
+				return string(b)
+			}
+		}
 	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return string(b)
+	return ""
 }
 
 // LoadAgentConfig loads an agent configuration by name from the catalog.
@@ -225,8 +258,8 @@ func LoadAgentConfig(root, name string) (AgentConfig, error) {
 		return AgentConfig{}, err
 	}
 
-	// Try temp agents first, then core.
-	for _, group := range []string{"temp", "core"} {
+	// Try published first, then temp, then core.
+	for _, group := range []string{"published", "temp", "core"} {
 		dir := filepath.Join(root, "agents", group, name)
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
 			return validateAgentDir(root, dir, aliases)

@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.0.10-alpha - 2026-05-24 (Patch)
+
+Release impact: Patch because this fixes local auth, audit, catalog, CLI and Compose regressions without changing the documented public API shape.
+
+- Fixed OIDC wiring so the optional OIDC authorizer is only active when OIDC is configured, preserving fail-closed dev-token behavior otherwise.
+- Fixed OIDC JWT validation to verify signatures against the raw JWT signing input, avoid startup discovery fetches and avoid network fetches for malformed tokens or exact dev-token matches.
+- Added optional SQLite audit storage with private database-file permissions and fail-fast startup behavior for invalid SQLite audit paths.
+- Fixed the `ai-orch killswitch toggle` command so `--enable` blocks via `POST` and `--disable` unblocks via `DELETE`.
+- Kept Docker Compose cost-cap enforcement disabled by default while leaving opt-in enforcement available.
+- Moved Phase 2 issue-tracker, documentation and test-management MCP stubs behind the `phase2` Compose profile and standardised their registrations on the existing MCP schema.
+- Added published security-review and terraform-review catalog scaffolds while rejecting duplicate agent names to avoid ambiguous specialist resolution.
+- Ignored generated local Go binaries in Git and Docker build context.
+- Documented the ignored `.env.dev` workflow for repeated local OpenRouter smoke testing.
+- Added regression coverage for OIDC validation, SQLite audit storage, audit-store selection, duplicate agent names and kill-switch CLI toggles.
+
 ## v0.0.9-alpha - 2026-05-24 (Patch)
 
 Release impact: Patch because this closes fail-open and false-green local workflow gaps without changing the documented API shape.

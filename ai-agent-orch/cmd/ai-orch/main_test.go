@@ -50,3 +50,23 @@ func TestStreamEventsFromURLReturnsPatchesWithoutError(t *testing.T) {
 		t.Fatalf("expected patch_2, got %#v", result.PatchIDs)
 	}
 }
+
+func TestKillSwitchToggleRequestUsesPostToEnableAndDeleteToDisable(t *testing.T) {
+	cfg := Config{GovernanceURL: "http://governance"}
+
+	method, url := killSwitchToggleRequest(cfg, "agent", "test-generation", true)
+	if method != http.MethodPost {
+		t.Fatalf("enable method = %s, want POST", method)
+	}
+	if url != "http://governance/v1/admin/killswitch/agent/test-generation" {
+		t.Fatalf("unexpected enable url %q", url)
+	}
+
+	method, url = killSwitchToggleRequest(cfg, "agent", "test-generation", false)
+	if method != http.MethodDelete {
+		t.Fatalf("disable method = %s, want DELETE", method)
+	}
+	if url != "http://governance/v1/admin/killswitch/agent/test-generation" {
+		t.Fatalf("unexpected disable url %q", url)
+	}
+}

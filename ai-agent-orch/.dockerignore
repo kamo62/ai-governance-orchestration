@@ -9,3 +9,9 @@ node_modules/
 **/node_modules/
 *.tsbuildinfo
 .DS_Store
+ai-orch
+catalog-validator
+governance-shell
+openrouter-smoke
+orchestrator
+mcp-*

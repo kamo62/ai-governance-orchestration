@@ -1,0 +1,21 @@
+server_id: test-management
+category: external-read-only-stub
+transport: http
+endpoint: http://localhost:8097
+auth_mode: local-dev-token
+credential_scope: user-scoped-read-only-stub
+allowed_agents:
+  - test-generation
+  - code-review
+  - security-scan
+tool_policy:
+  default_approval: auto
+  allow:
+    - getTestResults
+    - getCoverage
+    - getFlakyTests
+  deny:
+    - createTestCase
+    - updateTestCase
+    - rerunTest
+data_residency: local

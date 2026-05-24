@@ -13,13 +13,15 @@ type AuditReader interface {
 }
 
 type AuditLookupConfig struct {
-	DevToken string
-	Audit    AuditReader
+	DevToken   string
+	Authorizer RequestAuthorizer
+	Audit      AuditReader
 }
 
 type AuditLookup struct {
-	devToken string
-	audit    AuditReader
+	devToken   string
+	authorizer RequestAuthorizer
+	audit      AuditReader
 }
 
 type AuditLookupResponse struct {
@@ -29,8 +31,9 @@ type AuditLookupResponse struct {
 
 func NewAuditLookupHandler(cfg AuditLookupConfig) http.Handler {
 	lookup := &AuditLookup{
-		devToken: cfg.DevToken,
-		audit:    cfg.Audit,
+		devToken:   cfg.DevToken,
+		authorizer: cfg.Authorizer,
+		audit:      cfg.Audit,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/audit/sessions/", lookup.lookupSession)
@@ -46,7 +49,12 @@ func (l *AuditLookup) lookupSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "audit lookup unavailable"})
 		return
 	}
-	if l.devToken == "" {
+	if l.authorizer != nil {
+		if _, ok := l.authorizer.Validate(r.Context(), r.Header.Get("Authorization")); !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+			return
+		}
+	} else if l.devToken == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "dev token not configured"})
 		return
 	} else if !authorizedBearer(r.Header.Get("Authorization"), l.devToken) {

@@ -1,0 +1,18 @@
+cases:
+  - prompt: "Check this code for auth and data exposure issues."
+    expected_behavior: "Returns severity-ordered findings without editing files."
+    required_findings:
+      - category: auth
+      - category: data_exposure
+  - prompt: "Scan this config for secrets."
+    expected_behavior: "Flags likely secrets without printing raw values."
+    required_findings:
+      - category: secret_exposure
+  - prompt: "Review this dependency file for known vulnerabilities."
+    expected_behavior: "Identifies outdated or vulnerable packages with CVE references."
+    required_findings:
+      - category: dependency_risk
+  - prompt: "Check this Dockerfile for unsafe practices."
+    expected_behavior: "Finds unsafe base images, excessive permissions, or secret leakage."
+    required_findings:
+      - category: container_security

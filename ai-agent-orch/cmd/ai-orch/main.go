@@ -281,15 +281,7 @@ func handleKillSwitch(ctx context.Context, cfg Config, args []string) {
 			fmt.Fprintln(os.Stderr, "usage: ai-orch killswitch toggle --scope <scope> --id <id> --enable|--disable")
 			os.Exit(1)
 		}
-		var method string
-		var url string
-		if disable {
-			method = http.MethodPost
-			url = fmt.Sprintf("%s/v1/admin/killswitch/%s/%s", cfg.GovernanceURL, scope, id)
-		} else {
-			method = http.MethodDelete
-			url = fmt.Sprintf("%s/v1/admin/killswitch/%s/%s", cfg.GovernanceURL, scope, id)
-		}
+		method, url := killSwitchToggleRequest(cfg, scope, id, enable)
 		resp, err := doRequest(ctx, cfg, method, url, nil)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "killswitch toggle failed: %v\n", err)
@@ -300,6 +292,14 @@ func handleKillSwitch(ctx context.Context, cfg Config, args []string) {
 		fmt.Fprintf(os.Stderr, "unknown killswitch subcommand: %s\n", args[0])
 		os.Exit(1)
 	}
+}
+
+func killSwitchToggleRequest(cfg Config, scope, id string, enable bool) (method, url string) {
+	url = fmt.Sprintf("%s/v1/admin/killswitch/%s/%s", cfg.GovernanceURL, scope, id)
+	if enable {
+		return http.MethodPost, url
+	}
+	return http.MethodDelete, url
 }
 
 func handleAgents(ctx context.Context, cfg Config, args []string) {
@@ -344,10 +344,11 @@ func handleNegative(ctx context.Context, cfg Config, args []string) {
 
 func testNegativeSecret(ctx context.Context, cfg Config) {
 	fmt.Println("=== negative test: secret detection ===")
+	fakeToken := "sk-or-v1-" + "test1234567890"
 	body, _ := json.Marshal(map[string]any{
 		"agent":          "test-generation",
 		"classification": "internal",
-		"prompt":         "use OPENROUTER_API_KEY=sk-or-v1-test1234567890",
+		"prompt":         "use OPENROUTER_API_KEY=" + fakeToken,
 	})
 	resp, err := doPost(ctx, cfg, cfg.GovernanceURL+"/v1/sessions", body)
 	if err == nil {

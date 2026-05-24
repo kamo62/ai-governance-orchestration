@@ -15,13 +15,14 @@ import (
 	"ai-agent-orch/internal/audit"
 )
 
-type AuditStore interface {
+type AuditAppender interface {
 	Append(context.Context, audit.Event) (audit.Event, error)
 }
 
 type SessionConfig struct {
 	DevToken          string
-	Audit             AuditStore
+	Authorizer        RequestAuthorizer
+	Audit             AuditAppender
 	ClassificationMax string
 	KillSwitch        bool
 	KillSwitchStore   KillSwitchStore
@@ -33,7 +34,8 @@ type SessionConfig struct {
 
 type SessionService struct {
 	devToken          string
-	audit             AuditStore
+	authorizer        RequestAuthorizer
+	audit             AuditAppender
 	classificationMax string
 	killSwitch        bool
 	killSwitchStore   KillSwitchStore
@@ -68,6 +70,7 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 	}
 	return &SessionService{
 		devToken:          cfg.DevToken,
+		authorizer:        cfg.Authorizer,
 		audit:             cfg.Audit,
 		classificationMax: defaultString(cfg.ClassificationMax, "internal"),
 		killSwitch:        cfg.KillSwitch,
@@ -275,6 +278,17 @@ func (s *SessionService) RequireAuthorizedRequest(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return false
 	}
+	if s.authorizer != nil {
+		if _, ok := s.authorizer.Validate(r.Context(), r.Header.Get("Authorization")); ok {
+			return true
+		}
+		if err := s.appendDenied(r.Context(), "invalid bearer token", nil, ""); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			return false
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		return false
+	}
 	if s.devToken == "" {
 		if err := s.appendDenied(r.Context(), "dev token not configured", nil, ""); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
@@ -292,6 +306,10 @@ func (s *SessionService) RequireAuthorizedRequest(w http.ResponseWriter, r *http
 		return false
 	}
 	return true
+}
+
+type RequestAuthorizer interface {
+	Validate(ctx context.Context, header string) (subject string, ok bool)
 }
 
 func (s *SessionService) blockedByKillSwitch(agent string) (bool, string) {

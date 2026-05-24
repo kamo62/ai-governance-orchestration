@@ -1,0 +1,22 @@
+server_id: issue-tracker
+category: external-read-only-stub
+transport: http
+endpoint: http://localhost:8095
+auth_mode: local-dev-token
+credential_scope: user-scoped-read-only-stub
+allowed_agents:
+  - code-review
+  - documentation
+  - security-scan
+  - architecture-review
+tool_policy:
+  default_approval: auto
+  allow:
+    - getIssues
+    - getPullRequests
+    - getIssueComments
+  deny:
+    - createIssue
+    - updateIssue
+    - addComment
+data_residency: local
