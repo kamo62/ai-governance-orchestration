@@ -4,7 +4,7 @@ This repository is my proof of concept for an agent orchestration system that I 
 
 The goal is not to rebuild every agent runtime, IDE workflow, or coding assistant stack inside this project. The goal is to test whether a lightweight system layer can give agent work better governance, routing, auditability, and policy control without forcing every team or engineer into one runtime.
 
-Project state: this is a personal-time POC in active early development. The current backbone includes session creation, audit events, policy gates, audit lookup, router selection, Docker Compose, catalogue validation, and OpenRouter smoke tooling. VS Code Bridge integration and a real patch-producing agent flow are next. Not production-ready.
+Project state: this is a personal-time POC in active early development. The current backbone includes session creation, audit events, policy gates, audit lookup, router selection, Docker Compose, catalogue validation, OpenRouter smoke tooling, a local CLI scaffold, MCP stubs, a VS Code Bridge scaffold, service-token hardening, and the first dispatch/SSE path. A real patch-producing agent flow is next. Not production-ready.
 
 ## What This POC Is Exploring
 
@@ -47,7 +47,7 @@ But those ideas should be absorbed into the Governance Shell and catalogue model
 - Replacing Claude Code, OpenCode, Cursor, Aider, or any other IDE-native agent runtime.
 - Building an autonomous run loop like Symphony inside this repo.
 - Acting as a model gateway in place of OpenRouter, LiteLLM, or provider-native gateways.
-- Owning identity, secrets management, or enterprise token brokering at organization scale.
+- Owning identity, secrets management, or enterprise token brokering at organisation scale.
 - Treating the local POC scaffolding as production-grade deployment infrastructure.
 
 ## Runtime Patterns To Watch
@@ -100,6 +100,9 @@ This repo currently focuses on the system-side foundation:
 - Orchestrator scaffold
 - local Docker Compose workflow
 - OpenRouter-backed model smoke testing
+- local CLI and VS Code Bridge scaffolds
+- MCP registration and token-guarded stub services
+- first dispatch and SSE event path
 - audit and policy primitives
 
 The near-term goal is to prove a thin vertical slice rather than overbuild the full system.
@@ -130,12 +133,13 @@ In another terminal:
 
 ```sh
 curl http://127.0.0.1:8080/readyz
-curl http://127.0.0.1:8081/readyz
 curl -H "Authorization: Bearer local-dev" \
   -H "Content-Type: application/json" \
   -d '{"agent":"test-generation","classification":"internal","prompt":"add regression tests for this module"}' \
   http://127.0.0.1:8080/v1/sessions
 ```
+
+In Docker Compose, the Orchestrator is intentionally kept on the internal Compose network. The Governance Shell reaches it with a service-to-service token.
 
 OpenRouter smoke testing requires `OPENROUTER_API_KEY`:
 
@@ -143,7 +147,11 @@ OpenRouter smoke testing requires `OPENROUTER_API_KEY`:
 OPENROUTER_API_KEY=... docker compose --profile tools run --rm openrouter-smoke
 ```
 
-A small `ai-orch` CLI for headless smoke tests, audit lookup, kill-switch checks, admin operations, and future CI use is on the near-term backlog.
+The `ai-orch` CLI scaffold currently covers local smoke tests, audit lookup, kill-switch checks, session commands, and agent listing:
+
+```sh
+AI_ORCH_DEV_TOKEN=local-dev docker compose --profile tools run --rm ai-orch
+```
 
 ## Guiding Principle
 

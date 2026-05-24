@@ -8,6 +8,7 @@ import (
 	"ai-agent-orch/internal/appconfig"
 	"ai-agent-orch/internal/audit"
 	"ai-agent-orch/internal/catalog"
+	"ai-agent-orch/internal/httpauth"
 	"ai-agent-orch/internal/orchestrator"
 	"ai-agent-orch/internal/server"
 )
@@ -37,10 +38,13 @@ func main() {
 		CatalogRoot: cfg.CatalogRoot,
 		Audit:       auditStore,
 	})
+	dispatcher := orchestrator.NewDispatcher(cfg.CatalogRoot)
+
 	handler := http.NewServeMux()
 	handler.Handle("/", baseHandler)
-	handler.Handle("/v1/orchestrator/sessions", orchestrator.NewSessionIntakeHandler(sessionIntake))
-	handler.Handle("/v1/orchestrator/route", orchestrator.NewRouterHandler(router))
+	handler.Handle("/v1/orchestrator/sessions", httpauth.RequireBearerToken(cfg.ServiceToken, orchestrator.NewSessionIntakeHandler(sessionIntake)))
+	handler.Handle("/v1/orchestrator/route", httpauth.RequireBearerToken(cfg.ServiceToken, orchestrator.NewRouterHandler(router)))
+	handler.Handle("/v1/orchestrator/dispatch", httpauth.RequireBearerToken(cfg.ServiceToken, orchestrator.NewDispatchHandler(dispatcher, auditStore)))
 
 	log.Printf("orchestrator listening on %s", cfg.Addr)
 	log.Fatal(http.ListenAndServe(cfg.Addr, handler))

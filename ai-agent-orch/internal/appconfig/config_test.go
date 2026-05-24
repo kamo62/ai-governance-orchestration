@@ -22,6 +22,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.DevToken != "" {
 		t.Fatalf("expected empty default dev token, got %q", cfg.DevToken)
 	}
+	if cfg.ServiceToken != "" {
+		t.Fatalf("expected empty default service token, got %q", cfg.ServiceToken)
+	}
 	if cfg.ClassificationMax != "internal" {
 		t.Fatalf("expected default classification max internal, got %q", cfg.ClassificationMax)
 	}
@@ -41,12 +44,13 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	t.Setenv("AI_ORCH_CATALOG_ROOT", "/tmp/catalog")
 	t.Setenv("AI_ORCH_AUDIT_PATH", "/tmp/audit.jsonl")
 	t.Setenv("AI_ORCH_DEV_TOKEN", "env-token")
+	t.Setenv("AI_ORCH_SERVICE_TOKEN", "env-service-token")
 	t.Setenv("AI_ORCH_CLASSIFICATION_MAX", "confidential")
 	t.Setenv("AI_ORCH_KILL_SWITCH", "true")
 	t.Setenv("AI_ORCH_COST_CAP_ENABLED", "true")
 	t.Setenv("AI_ORCH_SESSION_COST_CAP_USD", "0.50")
 
-	cfg, err := Load([]string{"-addr", ":7777", "-audit-path", "/tmp/flag-audit.jsonl", "-dev-token", "flag-token", "-classification-max", "restricted", "-kill-switch=false", "-cost-cap-enabled=false", "-session-cost-cap-usd", "0.75"})
+	cfg, err := Load([]string{"-addr", ":7777", "-audit-path", "/tmp/flag-audit.jsonl", "-dev-token", "flag-token", "-service-token", "flag-service-token", "-classification-max", "restricted", "-kill-switch=false", "-cost-cap-enabled=false", "-session-cost-cap-usd", "0.75"})
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -61,6 +65,9 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	}
 	if cfg.DevToken != "flag-token" {
 		t.Fatalf("expected flag dev token to win, got %q", cfg.DevToken)
+	}
+	if cfg.ServiceToken != "flag-service-token" {
+		t.Fatalf("expected flag service token to win, got %q", cfg.ServiceToken)
 	}
 	if cfg.ClassificationMax != "restricted" {
 		t.Fatalf("expected flag classification max to win, got %q", cfg.ClassificationMax)

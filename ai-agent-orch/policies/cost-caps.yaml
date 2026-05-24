@@ -1,0 +1,11 @@
+# Cost caps define default and per-agent budget limits.
+# Governance Shell enforces per-session caps when cost_cap_enabled is true.
+
+defaults:
+  router_agent_cap_usd: 0.02
+  specialist_cap_usd: 0.50
+  self_repair_cap_usd: 0.20
+  max_repair_attempts: 2
+  max_runtime_minutes: 15
+
+# Per-agent overrides are loaded from agent.config.yaml. This file provides system defaults only.

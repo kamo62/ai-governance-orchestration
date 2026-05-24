@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	"ai-agent-orch/internal/audit"
 )
@@ -23,8 +24,10 @@ type SessionConfig struct {
 	Audit             AuditStore
 	ClassificationMax string
 	KillSwitch        bool
+	KillSwitchStore   KillSwitchStore
 	CostCapEnabled    bool
 	SessionCostCapUSD float64
+	Metrics           *MetricsHandler
 	NewID             func(prefix string) string
 }
 
@@ -33,9 +36,13 @@ type SessionService struct {
 	audit             AuditStore
 	classificationMax string
 	killSwitch        bool
+	killSwitchStore   KillSwitchStore
 	costCapEnabled    bool
 	sessionCostCapUSD float64
+	metrics           *MetricsHandler
 	newID             func(prefix string) string
+	promptMu          sync.Mutex
+	prompts           map[string]string
 }
 
 type CreateSessionRequest struct {
@@ -62,9 +69,12 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 		audit:             cfg.Audit,
 		classificationMax: defaultString(cfg.ClassificationMax, "internal"),
 		killSwitch:        cfg.KillSwitch,
+		killSwitchStore:   cfg.KillSwitchStore,
 		costCapEnabled:    cfg.CostCapEnabled,
 		sessionCostCapUSD: cfg.SessionCostCapUSD,
+		metrics:           cfg.Metrics,
 		newID:             newID,
+		prompts:           make(map[string]string),
 	}
 }
 
@@ -99,12 +109,12 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
-	if s.killSwitch {
-		if err := s.appendDenied(r.Context(), "kill switch enabled", nil, ""); err != nil {
+	if blocked, reason := s.blockedByKillSwitch(""); blocked {
+		if err := s.appendDenied(r.Context(), reason, nil, ""); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
-		writeJSON(w, http.StatusLocked, map[string]any{"error": "kill switch enabled"})
+		writeJSON(w, http.StatusLocked, map[string]any{"error": reason})
 		return
 	}
 
@@ -119,6 +129,14 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	if blocked, reason := s.blockedByKillSwitch(request.Agent); blocked {
+		if err := s.appendDenied(r.Context(), reason, nil, request.Classification); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			return
+		}
+		writeJSON(w, http.StatusLocked, map[string]any{"error": reason})
+		return
+	}
 	exceeds, err := classificationExceedsMax(request.Classification, s.classificationMax)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -130,6 +148,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
+		s.recordClassificationBlocked()
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": reason})
 		return
 	}
@@ -138,6 +157,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
+		s.recordSecretBlocked()
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "secret detected"})
 		return
 	}
@@ -146,6 +166,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
+		s.recordCostCapped()
 		writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": "cost cap exceeded"})
 		return
 	}
@@ -171,6 +192,8 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
 	}
+	s.recordSessionCreated()
+	s.rememberPrompt(sessionID, request.Prompt)
 
 	writeJSON(w, http.StatusCreated, CreateSessionResponse{
 		SessionID:    sessionID,
@@ -196,6 +219,9 @@ func (s *SessionService) appendDeniedWithCost(ctx context.Context, reason string
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
 	})
+	if err == nil {
+		s.recordSessionDenied()
+	}
 	return err
 }
 
@@ -214,11 +240,115 @@ func (s *SessionService) appendDenied(ctx context.Context, reason string, findin
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
 	})
+	if err == nil {
+		s.recordSessionDenied()
+	}
 	return err
+}
+
+func (s *SessionService) recordSessionCreated() {
+	if s != nil && s.metrics != nil {
+		s.metrics.RecordSessionCreated()
+	}
+}
+
+func (s *SessionService) recordSessionDenied() {
+	if s != nil && s.metrics != nil {
+		s.metrics.RecordSessionDenied()
+	}
+}
+
+func (s *SessionService) recordSecretBlocked() {
+	if s != nil && s.metrics != nil {
+		s.metrics.RecordSecretBlocked()
+	}
+}
+
+func (s *SessionService) recordClassificationBlocked() {
+	if s != nil && s.metrics != nil {
+		s.metrics.RecordClassificationBlocked()
+	}
+}
+
+func (s *SessionService) recordCostCapped() {
+	if s != nil && s.metrics != nil {
+		s.metrics.RecordCostCapped()
+	}
 }
 
 func (s *SessionService) authorized(header string) bool {
 	return authorizedBearer(header, s.devToken)
+}
+
+func (s *SessionService) RequireAuthorizedRequest(w http.ResponseWriter, r *http.Request) bool {
+	if s == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
+		return false
+	}
+	if s.devToken == "" {
+		if err := s.appendDenied(r.Context(), "dev token not configured", nil, ""); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			return false
+		}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "dev token not configured"})
+		return false
+	}
+	if !s.authorized(r.Header.Get("Authorization")) {
+		if err := s.appendDenied(r.Context(), "invalid dev token", nil, ""); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			return false
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		return false
+	}
+	return true
+}
+
+func (s *SessionService) blockedByKillSwitch(agent string) (bool, string) {
+	if s == nil {
+		return false, ""
+	}
+	if s.killSwitch {
+		return true, "kill switch enabled"
+	}
+	if s.killSwitchStore == nil {
+		return false, ""
+	}
+	if s.killSwitchStore.IsBlocked("global", "all") || s.killSwitchStore.IsBlocked("global", "sessions") {
+		return true, "kill switch enabled"
+	}
+	if agent != "" && s.killSwitchStore.IsBlocked("agent", agent) {
+		return true, fmt.Sprintf("kill switch enabled for agent %s", agent)
+	}
+	return false, ""
+}
+
+func (s *SessionService) rememberPrompt(sessionID string, prompt string) {
+	if s == nil || sessionID == "" || prompt == "" {
+		return
+	}
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+	s.prompts[sessionID] = prompt
+}
+
+func (s *SessionService) promptForSession(sessionID string) (string, bool) {
+	if s == nil || sessionID == "" {
+		return "", false
+	}
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+	prompt, ok := s.prompts[sessionID]
+	return prompt, ok
+}
+
+func (s *SessionService) forgetPrompt(sessionID string) {
+	if s == nil || sessionID == "" {
+		return
+	}
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+	delete(s.prompts, sessionID)
 }
 
 func authorizedBearer(header string, token string) bool {

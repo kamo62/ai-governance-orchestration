@@ -1,0 +1,18 @@
+server_id: playwright-cli
+category: off-the-shelf-hosted
+transport: http
+endpoint: http://localhost:8094
+auth_mode: local-dev-token
+credential_scope: local
+allowed_agents:
+  - test-generation
+tool_policy:
+  default_approval: manual
+  allow:
+    - runPlaywrightTest
+    - listTestFiles
+    - getTestResults
+  deny:
+    - installPackages
+    - executeArbitraryScript
+data_residency: local

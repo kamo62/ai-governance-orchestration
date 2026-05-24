@@ -1,0 +1,18 @@
+# Classification routing rules define how repo/request classifications map to agent ceilings.
+# The Governance Shell enforces: request classification must be <= agent classification_max.
+
+classifications:
+  - name: public
+    rank: 0
+    description: Open source or public-facing code with no sensitive data.
+  - name: internal
+    rank: 1
+    description: Internal tools and shared libraries.
+  - name: confidential
+    rank: 2
+    description: Business logic, customer data schemas, and segment-specific implementations.
+  - name: restricted
+    rank: 3
+    description: Authentication systems, payment processing, PII, and regulated data.
+
+# Default routing: any classification not explicitly mapped falls back to the agent's own ceiling.

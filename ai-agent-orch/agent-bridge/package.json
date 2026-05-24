@@ -1,0 +1,54 @@
+{
+  "name": "ai-agent-bridge",
+  "displayName": "AI Agent Bridge",
+  "description": "Local AI agent orchestration bridge for VS Code",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Debuggers"
+  ],
+  "activationEvents": [
+    "onCommand:aiAgentBridge.invokeAgent"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "aiAgentBridge.invokeAgent",
+        "title": "Invoke AI Agent",
+        "category": "AI Agent"
+      },
+      {
+        "command": "aiAgentBridge.showAudit",
+        "title": "Show Audit Link",
+        "category": "AI Agent"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "aiAgentBridge.invokeAgent",
+        "key": "cmd+shift+i",
+        "mac": "cmd+shift+i",
+        "when": "editorTextFocus"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "bun run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "eslint": "^9.0.0",
+    "typescript-eslint": "^8.0.0",
+    "typescript": "^5.4.0"
+  }
+}

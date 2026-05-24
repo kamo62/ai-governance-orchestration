@@ -126,52 +126,52 @@ func discoverAgentDirs(root string) ([]string, error) {
 	return dirs, nil
 }
 
-func validateAgentDir(root string, dir string, aliases map[string]struct{}) (agentConfig, error) {
+func validateAgentDir(root string, dir string, aliases map[string]struct{}) (AgentConfig, error) {
 	mdPath := filepath.Join(dir, "agent.md")
 	cfgPath := filepath.Join(dir, "agent.config.yaml")
 	evalsPath := filepath.Join(dir, "evals", "golden-cases.yaml")
 
 	for _, path := range []string{mdPath, cfgPath, evalsPath} {
 		if _, err := os.Stat(path); err != nil {
-			return agentConfig{}, fmt.Errorf("%s: required file missing: %w", rel(root, path), err)
+			return AgentConfig{}, fmt.Errorf("%s: required file missing: %w", rel(root, path), err)
 		}
 	}
 
 	md, err := os.ReadFile(mdPath)
 	if err != nil {
-		return agentConfig{}, err
+		return AgentConfig{}, err
 	}
 	mdText := string(md)
 	if !strings.Contains(mdText, "Config: `./agent.config.yaml`") {
-		return agentConfig{}, fmt.Errorf("%s: missing Config reference", rel(root, mdPath))
+		return AgentConfig{}, fmt.Errorf("%s: missing Config reference", rel(root, mdPath))
 	}
 	for _, token := range forbiddenMarkdownTokens {
 		if strings.Contains(mdText, token) {
-			return agentConfig{}, fmt.Errorf("%s: contains executable policy token %q", rel(root, mdPath), token)
+			return AgentConfig{}, fmt.Errorf("%s: contains executable policy token %q", rel(root, mdPath), token)
 		}
 	}
 
 	cfgBytes, err := os.ReadFile(cfgPath)
 	if err != nil {
-		return agentConfig{}, err
+		return AgentConfig{}, err
 	}
 	if strings.Contains(string(cfgBytes), "model_id:") {
-		return agentConfig{}, fmt.Errorf("%s: concrete model_id is only allowed in models/registry.yaml", rel(root, cfgPath))
+		return AgentConfig{}, fmt.Errorf("%s: concrete model_id is only allowed in models/registry.yaml", rel(root, cfgPath))
 	}
 
-	var cfg agentConfig
+	var cfg AgentConfig
 	if err := yaml.Unmarshal(cfgBytes, &cfg); err != nil {
-		return agentConfig{}, fmt.Errorf("%s: parse config: %w", rel(root, cfgPath), err)
+		return AgentConfig{}, fmt.Errorf("%s: parse config: %w", rel(root, cfgPath), err)
 	}
 	if err := cfg.validate(aliases); err != nil {
-		return agentConfig{}, fmt.Errorf("%s: %w", rel(root, cfgPath), err)
+		return AgentConfig{}, fmt.Errorf("%s: %w", rel(root, cfgPath), err)
 	}
 
 	if cfg.Permissions.WorkspaceWrite == "deny" && contains(cfg.ToolsAllowed, "write_file") {
-		return agentConfig{}, fmt.Errorf("%s: read-only agent cannot allow write_file", rel(root, cfgPath))
+		return AgentConfig{}, fmt.Errorf("%s: read-only agent cannot allow write_file", rel(root, cfgPath))
 	}
 	if cfg.Name != "test-generation" && contains(cfg.ToolsAllowed, "run_command:playwright") {
-		return agentConfig{}, fmt.Errorf("%s: only test-generation can run Playwright", rel(root, cfgPath))
+		return AgentConfig{}, fmt.Errorf("%s: only test-generation can run Playwright", rel(root, cfgPath))
 	}
 
 	return cfg, nil
@@ -204,6 +204,46 @@ func validateRouterCoverage(root string, tempAgents []string) error {
 	return nil
 }
 
+// SystemPrompt reads the agent's prose instructions from agent.md.
+func (cfg AgentConfig) SystemPrompt(root string) string {
+	// This is a simplified read. In production, this would parse the markdown.
+	path := filepath.Join(root, "agents", "temp", cfg.Name, "agent.md")
+	if _, err := os.Stat(path); err != nil {
+		path = filepath.Join(root, "agents", "core", cfg.Name, "agent.md")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// LoadAgentConfig loads an agent configuration by name from the catalog.
+func LoadAgentConfig(root, name string) (AgentConfig, error) {
+	aliases, err := loadModelAliases(filepath.Join(root, "models", "registry.yaml"))
+	if err != nil {
+		return AgentConfig{}, err
+	}
+
+	// Try temp agents first, then core.
+	for _, group := range []string{"temp", "core"} {
+		dir := filepath.Join(root, "agents", group, name)
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return validateAgentDir(root, dir, aliases)
+		}
+	}
+
+	// Try router-agent specifically.
+	if name == "router-agent" {
+		dir := filepath.Join(root, "agents", "core", "router-agent")
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return validateAgentDir(root, dir, aliases)
+		}
+	}
+
+	return AgentConfig{}, fmt.Errorf("agent %q not found", name)
+}
+
 func readYAML(path string, out any) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -229,7 +269,8 @@ func contains(items []string, want string) bool {
 	return false
 }
 
-type agentConfig struct {
+// AgentConfig is the exported agent configuration loaded from agent.config.yaml.
+type AgentConfig struct {
 	Name         string   `yaml:"name"`
 	Version      string   `yaml:"version"`
 	Phase        string   `yaml:"phase"`
@@ -260,7 +301,7 @@ type modelRef struct {
 	Fallback string `yaml:"fallback"`
 }
 
-func (cfg agentConfig) validate(aliases map[string]struct{}) error {
+func (cfg AgentConfig) validate(aliases map[string]struct{}) error {
 	required := map[string]string{
 		"name":                          cfg.Name,
 		"version":                       cfg.Version,

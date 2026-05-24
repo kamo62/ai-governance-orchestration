@@ -1,0 +1,22 @@
+server_id: repo-classification
+category: internal-hosted
+transport: http
+endpoint: http://localhost:8091
+auth_mode: local-dev-token
+credential_scope: local
+allowed_agents:
+  - router-agent
+  - test-generation
+  - code-review
+  - documentation
+  - refactor
+  - security-scan
+  - architecture-review
+tool_policy:
+  default_approval: auto
+  allow:
+    - getRepoClassification
+    - getRepoOwner
+    - listClassifiedRepos
+  deny: []
+data_residency: local

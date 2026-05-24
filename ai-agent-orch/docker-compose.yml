@@ -4,6 +4,10 @@ x-app-environment: &app-environment
   AI_ORCH_ADDR: :8080
   AI_ORCH_CATALOG_ROOT: /app
   AI_ORCH_AUDIT_PATH: /app/var/audit/audit.jsonl
+  AI_ORCH_SERVICE_TOKEN: ${AI_ORCH_SERVICE_TOKEN:-local-service-token}
+
+x-mcp-environment: &mcp-environment
+  AI_ORCH_MCP_TOKEN: ${AI_ORCH_MCP_TOKEN:-local-dev-token}
 
 x-catalog-volumes: &catalog-volumes
   - ./agents:/app/agents:ro
@@ -26,6 +30,10 @@ services:
       AI_ORCH_KILL_SWITCH: ${AI_ORCH_KILL_SWITCH:-false}
       AI_ORCH_COST_CAP_ENABLED: ${AI_ORCH_COST_CAP_ENABLED:-false}
       AI_ORCH_SESSION_COST_CAP_USD: ${AI_ORCH_SESSION_COST_CAP_USD:-0}
+      AI_ORCH_ORCHESTRATOR_URL: http://orchestrator:8080
+    depends_on:
+      orchestrator:
+        condition: service_healthy
     ports:
       - "${GOVERNANCE_SHELL_PORT:-8080}:8080"
     volumes: *runtime-volumes
@@ -41,8 +49,6 @@ services:
     command: ["orchestrator"]
     environment:
       <<: *app-environment
-    ports:
-      - "${ORCHESTRATOR_PORT:-8081}:8080"
     volumes: *runtime-volumes
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
@@ -75,6 +81,77 @@ services:
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
       OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-ai-agent-orch-local}
     volumes: *catalog-volumes
+
+  mcp-repo-classification:
+    build:
+      context: .
+    command: ["mcp-repo-classification"]
+    environment:
+      <<: *mcp-environment
+    ports:
+      - "127.0.0.1:8091:8091"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8091/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  mcp-engineering-standards-kb:
+    build:
+      context: .
+    command: ["mcp-engineering-standards-kb"]
+    environment:
+      <<: *mcp-environment
+    ports:
+      - "127.0.0.1:8092:8092"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8092/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  mcp-catalog-introspection:
+    build:
+      context: .
+    command: ["mcp-catalog-introspection"]
+    environment:
+      <<: *mcp-environment
+    ports:
+      - "127.0.0.1:8093:8093"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8093/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  mcp-playwright-cli:
+    build:
+      context: .
+    command: ["mcp-playwright-cli"]
+    environment:
+      <<: *mcp-environment
+    ports:
+      - "127.0.0.1:8094:8094"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8094/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  ai-orch:
+    profiles: ["tools"]
+    build:
+      context: .
+    command: ["ai-orch", "smoke"]
+    environment:
+      AI_ORCH_GOVERNANCE_URL: http://governance-shell:8080
+      AI_ORCH_ORCHESTRATOR_URL: http://orchestrator:8080
+      AI_ORCH_DEV_TOKEN: ${AI_ORCH_DEV_TOKEN:-}
+    depends_on:
+      governance-shell:
+        condition: service_healthy
+      orchestrator:
+        condition: service_healthy
 
 volumes:
   audit-data:

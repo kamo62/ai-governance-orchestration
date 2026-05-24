@@ -12,6 +12,7 @@ type Config struct {
 	CatalogRoot       string
 	AuditPath         string
 	DevToken          string
+	ServiceToken      string
 	ClassificationMax string
 	KillSwitch        bool
 	CostCapEnabled    bool
@@ -36,6 +37,7 @@ func Load(args []string) (Config, error) {
 		CatalogRoot:       envOrDefault("AI_ORCH_CATALOG_ROOT", "."),
 		AuditPath:         envOrDefault("AI_ORCH_AUDIT_PATH", "var/audit/audit.jsonl"),
 		DevToken:          envOrDefault("AI_ORCH_DEV_TOKEN", ""),
+		ServiceToken:      envOrDefault("AI_ORCH_SERVICE_TOKEN", ""),
 		ClassificationMax: envOrDefault("AI_ORCH_CLASSIFICATION_MAX", "internal"),
 		KillSwitch:        killSwitch,
 		CostCapEnabled:    costCapEnabled,
@@ -47,6 +49,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.CatalogRoot, "catalog-root", cfg.CatalogRoot, "catalog root directory")
 	fs.StringVar(&cfg.AuditPath, "audit-path", cfg.AuditPath, "append-only JSONL audit path")
 	fs.StringVar(&cfg.DevToken, "dev-token", cfg.DevToken, "local development bearer token")
+	fs.StringVar(&cfg.ServiceToken, "service-token", cfg.ServiceToken, "local service-to-service bearer token")
 	fs.StringVar(&cfg.ClassificationMax, "classification-max", cfg.ClassificationMax, "maximum allowed classification")
 	fs.BoolVar(&cfg.KillSwitch, "kill-switch", cfg.KillSwitch, "block new session creation")
 	fs.BoolVar(&cfg.CostCapEnabled, "cost-cap-enabled", cfg.CostCapEnabled, "enforce the session cost cap")

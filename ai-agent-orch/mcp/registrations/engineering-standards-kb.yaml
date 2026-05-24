@@ -1,0 +1,21 @@
+server_id: engineering-standards-kb
+category: internal-hosted
+transport: http
+endpoint: http://localhost:8092
+auth_mode: local-dev-token
+credential_scope: local
+allowed_agents:
+  - test-generation
+  - code-review
+  - documentation
+  - refactor
+  - security-scan
+  - architecture-review
+tool_policy:
+  default_approval: auto
+  allow:
+    - getStandard
+    - listStandards
+    - searchStandards
+  deny: []
+data_residency: local

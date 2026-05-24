@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.0.8-alpha - 2026-05-24 (Patch)
+
+Release impact: Patch because this tightens local governance, runtime safety, bridge hygiene, and observability without changing the documented user-facing Compose flow.
+
+- Fixed specialist dispatch to fail closed when the execution audit event cannot be written.
+- Added service-to-service bearer protection for Orchestrator endpoints and token propagation from the Governance Shell.
+- Added bearer-token checks to MCP stub tool endpoints while leaving health checks available for Compose.
+- Applied the ACP runtime timeout during subprocess execution and surfaced initialization/prompt send failures.
+- Wired real Governance Shell request paths into `/metrics` counters and bounded completed SSE session history.
+- Removed raw prompt logging from the VS Code Bridge and escaped audit JSON before rendering it in a webview.
+- Tightened Docker build context ignores for bridge dependency and TypeScript output folders.
+
+## v0.0.7-alpha - 2026-05-24 (Minor)
+
+Release impact: Minor because this adds the local CLI, bridge scaffold, MCP stubs, dispatch endpoints, and streaming session path, while preserving existing API compatibility.
+
+- Added local `ai-orch` CLI scaffolding for smoke tests, audit lookup, kill-switch checks, session flow commands, and agent listing.
+- Added VS Code Bridge and MCP stub scaffolds for local catalogue, standards, repo classification, and Playwright surfaces.
+- Added orchestrator dispatch wiring and Governance Shell session subroutes for messages, confirmation, patch decisions, and SSE events.
+- Fixed SSE event replay so late subscribers can still read completed session events.
+- Fixed specialist dispatch so the confirmed runtime receives the user's transient prompt without storing it in audit.
+- Fixed Docker Compose service wiring so the Governance Shell calls the orchestrator service inside the compose network.
+- Replaced old system wording in MCP registration defaults.
+- Added bridge lint configuration and ignored local Node dependency and TypeScript build outputs.
+
 ## v0.0.6-alpha - 2026-05-23 (Patch)
 
 Release impact: Patch because this tightens README wording, status framing, and local-run examples without changing runtime behaviour.
@@ -16,7 +41,7 @@ Release impact: Patch because this neutralises project naming and removes local 
 - Renamed the Go module and runnable scaffold directory to neutral `ai-agent-orch` naming.
 - Renamed the router agent area to `agents/core/router-agent`.
 - Removed the local source PDF artifact from the workspace and replaced the specific ignore rule with a generic PDF ignore.
-- Scrubbed organization-specific and old internal naming from current docs, code, config, and local planning artifacts.
+- Scrubbed organisation-specific and old internal naming from current docs, code, config, and local planning artifacts.
 
 ## v0.0.4-alpha - 2026-05-23 (Patch)
 

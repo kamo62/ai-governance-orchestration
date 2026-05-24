@@ -19,10 +19,13 @@ audit.jsonl
 *.jsonl
 
 # Build and test outputs
+node_modules/
+**/node_modules/
 dist/
 coverage/
 tmp/
 *.out
+*.tsbuildinfo
 
 # Editor/local tool state
 .idea/
