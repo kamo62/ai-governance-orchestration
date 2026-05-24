@@ -20,6 +20,8 @@ interface PatchFile {
     path?: string;
     filename?: string;
     action?: string;
+    originalContentHash?: string;
+    proposedContentHash?: string;
     newContent?: string;
     new_content?: string;
 }
@@ -27,6 +29,8 @@ interface PatchFile {
 interface PatchEnvelope {
     patchId?: string;
     patch_id?: string;
+    bufferId?: string;
+    buffer_id?: string;
     files?: PatchFile[];
 }
 
@@ -282,9 +286,10 @@ async function connectToEvents(sessionId: string, outputChannel: vscode.OutputCh
 }
 
 async function reviewPatchFlow(sessionId: string, patches: PatchEnvelope[], outputChannel: vscode.OutputChannel): Promise<void> {
-    const totalFiles = patches.reduce((sum, patch) => sum + (patch.files?.length || 0), 0);
+    const fullPatches = await hydratePatches(sessionId, patches, outputChannel);
+    const totalFiles = fullPatches.reduce((sum, patch) => sum + (patch.files?.length || 0), 0);
     const review = await vscode.window.showInformationMessage(
-        `Execution complete. ${totalFiles} file(s) proposed in ${patches.length} patch(es).`,
+        `Execution complete. ${totalFiles} file(s) proposed in ${fullPatches.length} patch(es).`,
         'Review Diff',
         'Show Audit',
         'Dismiss'
@@ -299,7 +304,7 @@ async function reviewPatchFlow(sessionId: string, patches: PatchEnvelope[], outp
         return;
     }
 
-    await showPatchDiffs(patches, outputChannel);
+    await showPatchDiffs(fullPatches, outputChannel);
 
     const decision = await vscode.window.showWarningMessage(
         'Record a patch decision for this session.',
@@ -314,20 +319,47 @@ async function reviewPatchFlow(sessionId: string, patches: PatchEnvelope[], outp
     }
 
     if (decision === 'Apply') {
-        await applyPatches(patches, outputChannel);
-        await submitPatchDecisions(sessionId, patches, 'applied');
+        await applyPatches(fullPatches, outputChannel);
+        await submitPatchDecisions(sessionId, fullPatches, 'applied');
         vscode.window.showInformationMessage('Patch applied and audit decision recorded.');
         return;
     }
 
     if (decision === 'Mark Partially Applied') {
-        await submitPatchDecisions(sessionId, patches, 'partially_applied', 'User marked the patch as partially applied in VS Code.');
+        await submitPatchDecisions(sessionId, fullPatches, 'partially_applied', 'User marked the patch as partially applied in VS Code.');
         vscode.window.showInformationMessage('Partial patch decision recorded.');
         return;
     }
 
-    await submitPatchDecisions(sessionId, patches, 'rejected');
+    await submitPatchDecisions(sessionId, fullPatches, 'rejected');
     vscode.window.showInformationMessage('Patch rejected and audit decision recorded.');
+}
+
+async function hydratePatches(sessionId: string, patches: PatchEnvelope[], outputChannel: vscode.OutputChannel): Promise<PatchEnvelope[]> {
+    const hydrated: PatchEnvelope[] = [];
+    for (const patch of patches) {
+        const id = patchID(patch);
+        outputChannel.appendLine(`[patch] Fetching buffered patch ${id}`);
+        hydrated.push(await fetchPatch(sessionId, id));
+    }
+    return hydrated;
+}
+
+async function fetchPatch(sessionId: string, id: string): Promise<PatchEnvelope> {
+    if (!id || id === 'unknown') {
+        throw new Error('Patch fetch requires a patch ID.');
+    }
+    const response = await fetch(`${GOVERNANCE_URL}/v1/sessions/${encodeURIComponent(sessionId)}/patches/${encodeURIComponent(id)}`, {
+        method: 'GET',
+        headers: authHeaders()
+    });
+
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Patch fetch failed: ${response.status} ${text}`);
+    }
+
+    return response.json() as Promise<PatchEnvelope>;
 }
 
 async function showPatchDiffs(patches: PatchEnvelope[], outputChannel: vscode.OutputChannel): Promise<void> {

@@ -26,11 +26,17 @@ services:
     environment:
       <<: *app-environment
       AI_ORCH_DEV_TOKEN: ${AI_ORCH_DEV_TOKEN:-local-dev}
+      AI_ORCH_MCP_TOKEN: ${AI_ORCH_MCP_TOKEN:-local-dev-token}
       AI_ORCH_CLASSIFICATION_MAX: ${AI_ORCH_CLASSIFICATION_MAX:-internal}
       AI_ORCH_KILL_SWITCH: ${AI_ORCH_KILL_SWITCH:-false}
       AI_ORCH_COST_CAP_ENABLED: ${AI_ORCH_COST_CAP_ENABLED:-false}
       AI_ORCH_SESSION_COST_CAP_USD: ${AI_ORCH_SESSION_COST_CAP_USD:-0}
+      AI_ORCH_POLICY_ENGINE: ${AI_ORCH_POLICY_ENGINE:-native}
+      AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX: ${AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX:-15}
       AI_ORCH_ORCHESTRATOR_URL: http://orchestrator:8080
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-ai-agent-orch-local}
     depends_on:
       orchestrator:
         condition: service_healthy
@@ -49,6 +55,11 @@ services:
     command: ["orchestrator"]
     environment:
       <<: *app-environment
+      AI_ORCH_MODEL_PROXY_URL: http://governance-shell:8080/internal/v1/model
+      AI_ORCH_MCP_PROXY_URL: http://governance-shell:8080/internal/v1/mcp
+      AI_ORCH_MODEL_ALIAS_OVERRIDE: ${AI_ORCH_MODEL_ALIAS_OVERRIDE:-}
+      AI_ORCH_OPENROUTER_REASONING_EFFORT: ${AI_ORCH_OPENROUTER_REASONING_EFFORT:-}
+      AI_ORCH_OPENROUTER_REASONING_EXCLUDE: ${AI_ORCH_OPENROUTER_REASONING_EXCLUDE:-true}
     volumes: *runtime-volumes
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]

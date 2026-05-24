@@ -376,7 +376,8 @@ type AgentConfig struct {
 		ClassificationMax string `yaml:"classification_max"`
 	} `yaml:"governance"`
 	Cost struct {
-		PerInvocationCapUSD float64 `yaml:"per_invocation_cap_usd"`
+		PerInvocationCapUSD    float64 `yaml:"per_invocation_cap_usd"`
+		ConsecutiveToolCallMax int     `yaml:"consecutive_tool_call_max"`
 	} `yaml:"cost"`
 	Evals struct {
 		Path              string `yaml:"path"`
@@ -415,6 +416,9 @@ func (cfg AgentConfig) validate(aliases map[string]struct{}) error {
 	}
 	if cfg.Cost.PerInvocationCapUSD <= 0 {
 		return errors.New("cost.per_invocation_cap_usd must be positive")
+	}
+	if cfg.Cost.ConsecutiveToolCallMax <= 0 {
+		return errors.New("cost.consecutive_tool_call_max must be positive")
 	}
 	if _, ok := aliases[cfg.Model.Primary]; !ok {
 		return fmt.Errorf("unknown primary model alias %q", cfg.Model.Primary)

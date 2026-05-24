@@ -768,7 +768,7 @@ func (f *fakeOrchestrator) Dispatch(ctx context.Context, sessionID string, agent
 		Agent:     agent,
 		Events: []DispatchEvent{
 			{Type: "stream", Payload: "mock execution started"},
-			{Type: "patch", Payload: `{"patchId":"patch_1","files":[]}`},
+			{Type: "patch", Payload: `{"protocolVersion":1,"patchId":"patch_1","files":[{"path":"tests/example_test.go","action":"create","newContent":"package tests\n"}]}`},
 			{Type: "done", Payload: "mock execution complete"},
 		},
 	}, nil
@@ -798,7 +798,7 @@ func (o *contextProbeOrchestrator) Dispatch(ctx context.Context, sessionID strin
 			Status:    "completed",
 			Agent:     agent,
 			Events: []DispatchEvent{
-				{Type: "patch", Payload: `{"patchId":"patch_ctx","files":[]}`},
+				{Type: "patch", Payload: `{"protocolVersion":1,"patchId":"patch_ctx","files":[{"path":"tests/context_test.go","action":"create","newContent":"package tests\n"}]}`},
 				{Type: "done", Payload: "ok"},
 			},
 		}, nil

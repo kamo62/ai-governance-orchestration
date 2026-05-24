@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ai-agent-orch/internal/audit"
+	"ai-agent-orch/internal/policyengine"
 )
 
 type AuditAppender interface {
@@ -54,6 +55,9 @@ type SessionConfig struct {
 	KillSwitchStore   KillSwitchStore
 	CostCapEnabled    bool
 	SessionCostCapUSD float64
+	PolicyEngine      policyengine.Engine
+	ToolLoopMax       int
+	PatchBuffer       *PatchBuffer
 	Metrics           *MetricsHandler
 	NewID             func(prefix string) string
 }
@@ -68,6 +72,9 @@ type SessionService struct {
 	killSwitchStore   KillSwitchStore
 	costCapEnabled    bool
 	sessionCostCapUSD float64
+	policyEngine      policyengine.Engine
+	toolLoopMax       int
+	patchBuffer       *PatchBuffer
 	metrics           *MetricsHandler
 	newID             func(prefix string) string
 	promptMu          sync.Mutex
@@ -128,6 +135,18 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 	if newID == nil {
 		newID = randomID
 	}
+	engine := cfg.PolicyEngine
+	if engine == nil {
+		engine, _ = policyengine.New("native")
+	}
+	patchBuffer := cfg.PatchBuffer
+	if patchBuffer == nil {
+		patchBuffer = NewPatchBuffer()
+	}
+	toolLoopMax := cfg.ToolLoopMax
+	if toolLoopMax <= 0 {
+		toolLoopMax = 15
+	}
 	return &SessionService{
 		devToken:          cfg.DevToken,
 		authorizer:        cfg.Authorizer,
@@ -138,6 +157,9 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 		killSwitchStore:   cfg.KillSwitchStore,
 		costCapEnabled:    cfg.CostCapEnabled,
 		sessionCostCapUSD: cfg.SessionCostCapUSD,
+		policyEngine:      engine,
+		toolLoopMax:       toolLoopMax,
+		patchBuffer:       patchBuffer,
 		metrics:           cfg.Metrics,
 		newID:             newID,
 		prompts:           make(map[string]string),
@@ -206,13 +228,42 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": reason})
 		return
 	}
-	if findings := detectSecrets(request.Prompt); len(findings) > 0 {
-		if err := s.appendDenied(r.Context(), "secret detected", findings, request.Classification); err != nil {
+	findings := detectSecrets(request.Prompt)
+	decision, err := s.evaluatePolicy(r.Context(), policyengine.Request{
+		AgentName:      request.Agent,
+		ActionType:     "session.create",
+		Classification: request.Classification,
+		Findings:       findings,
+		Metadata: map[string]any{
+			"prompt_length": len(request.Prompt),
+		},
+	})
+	if err != nil {
+		if auditErr := s.appendDenied(r.Context(), "policy engine unavailable", nil, request.Classification); auditErr != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
-		s.recordSecretBlocked()
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "secret detected"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "policy engine unavailable"})
+		return
+	}
+	if !decision.Allowed {
+		reason := decision.Reason
+		if reason == "" {
+			reason = "policy denied"
+		}
+		if len(findings) > 0 {
+			reason = "secret detected"
+		}
+		if err := s.appendDenied(r.Context(), reason, findings, request.Classification); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			return
+		}
+		if len(findings) > 0 {
+			s.recordSecretBlocked()
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "secret detected"})
+			return
+		}
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": reason})
 		return
 	}
 	if s.costCapEnabled && s.sessionCostCapUSD > 0 && request.EstimatedCostUSD > s.sessionCostCapUSD {
@@ -329,6 +380,16 @@ func (s *SessionService) appendDenied(ctx context.Context, reason string, findin
 		s.recordSessionDenied()
 	}
 	return err
+}
+
+func (s *SessionService) evaluatePolicy(ctx context.Context, req policyengine.Request) (policyengine.Decision, error) {
+	if s == nil || s.policyEngine == nil {
+		return policyengine.Decision{Allowed: true, Reason: "allowed", Engine: "native"}, nil
+	}
+	if req.UserID == "" {
+		req.UserID = actorFromContext(ctx)
+	}
+	return s.policyEngine.Evaluate(ctx, req)
 }
 
 func (s *SessionService) recordSessionCreated() {

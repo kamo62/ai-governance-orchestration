@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.2.0-alpha - 2026-05-24 (Minor)
+
+Release impact: Minor because this adds new governed runtime boundaries for model proxying, MCP proxying, staged patch retrieval, and tool-loop control without breaking the existing local CLI flow.
+
+- Added selectable native policy-engine wiring, with AGT reserved as a fail-closed future adapter until implemented.
+- Added a Governance Shell model proxy so runtime-facing services can call OpenRouter through a service-token boundary without receiving the provider API key.
+- Added model proxy audit metadata with provider, alias, resolved model, request/response hashes, proxy call IDs, and token-usage metadata.
+- Added an MCP proxy stub with explicit `oauth-user` fail-closed behaviour when a user token is missing, with no platform-token fallback for that mode.
+- Added a staged patch buffer so SSE patch events carry sanitized metadata while full patch content is fetched from the Governance Shell during review/apply.
+- Added a consecutive tool/MCP-call cap with a default of 15 and catalog validation for per-agent `cost.consecutive_tool_call_max`.
+- Updated Docker Compose so OpenRouter credentials live on the Governance Shell side of the model proxy instead of the Orchestrator container.
+- Updated the VS Code Bridge to fetch buffered patch content before rendering native diffs or applying proposed changes.
+- Added regression coverage for the policy engine boundary, model proxy, MCP `oauth-user` fail-closed contract, patch buffer/fetch flow, and tool-loop cap.
+
+## v0.1.0-alpha - 2026-05-24 (Minor)
+
+Release impact: Minor because this adds opt-in OpenRouter reasoning-effort and model-alias override support for CLI-driven orchestration tests without breaking existing defaults.
+
+- Added a `coding-gpt55` OpenRouter model alias for local GPT-5.5 orchestration validation.
+- Added DirectRuntime support for OpenRouter `reasoning.effort`, defaulting reasoning output exclusion on when enabled.
+- Added model-usage runtime events with model, token, reasoning-token and cost metadata.
+- Added an Orchestrator model-alias override for explicit smoke-test runs.
+- Passed OpenRouter and reasoning override environment into the Docker Compose Orchestrator service.
+- Added regression coverage for reasoning request payloads, reasoning usage parsing and model-alias override routing.
+- Updated the README project state and local run instructions for CLI and OpenRouter smoke testing.
+- Normalised DirectRuntime patch extraction for source-aware CLI runs that return common `changes`/`op` or `operation` envelopes instead of canonical `files`/`action` envelopes.
+- Documented that current source-aware CLI tests require selected source excerpts in the prompt until workspace-context packaging lands.
+
 ## v0.0.13-alpha - 2026-05-24 (Patch)
 
 Release impact: Patch because this fixes local governance, audit, catalog validation, and Compose regressions without changing the documented external API shape.

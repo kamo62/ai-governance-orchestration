@@ -17,8 +17,8 @@ func TestValidateCatalogAcceptsCurrentPhase0Catalog(t *testing.T) {
 	if len(report.Agents) != 9 {
 		t.Fatalf("expected 9 agents, got %d: %#v", len(report.Agents), report.Agents)
 	}
-	if len(report.ModelAliases) != 6 {
-		t.Fatalf("expected 6 model aliases, got %d: %#v", len(report.ModelAliases), report.ModelAliases)
+	if len(report.ModelAliases) != 7 {
+		t.Fatalf("expected 7 model aliases, got %d: %#v", len(report.ModelAliases), report.ModelAliases)
 	}
 	if !report.HasAgent("test-generation") {
 		t.Fatalf("expected test-generation agent in report")

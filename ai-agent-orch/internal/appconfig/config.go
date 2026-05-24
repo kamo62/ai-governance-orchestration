@@ -17,6 +17,8 @@ type Config struct {
 	KillSwitch        bool
 	CostCapEnabled    bool
 	SessionCostCapUSD float64
+	PolicyEngine      string
+	ToolLoopMax       int
 }
 
 func Load(args []string) (Config, error) {
@@ -32,6 +34,10 @@ func Load(args []string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	toolLoopMax, err := envInt("AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX", 15)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		Addr:              envOrDefault("AI_ORCH_ADDR", ":8080"),
 		CatalogRoot:       envOrDefault("AI_ORCH_CATALOG_ROOT", "."),
@@ -42,6 +48,8 @@ func Load(args []string) (Config, error) {
 		KillSwitch:        killSwitch,
 		CostCapEnabled:    costCapEnabled,
 		SessionCostCapUSD: sessionCostCapUSD,
+		PolicyEngine:      envOrDefault("AI_ORCH_POLICY_ENGINE", "native"),
+		ToolLoopMax:       toolLoopMax,
 	}
 
 	fs := flag.NewFlagSet("ai-agent-orch", flag.ContinueOnError)
@@ -54,6 +62,8 @@ func Load(args []string) (Config, error) {
 	fs.BoolVar(&cfg.KillSwitch, "kill-switch", cfg.KillSwitch, "block new session creation")
 	fs.BoolVar(&cfg.CostCapEnabled, "cost-cap-enabled", cfg.CostCapEnabled, "enforce the session cost cap")
 	fs.Float64Var(&cfg.SessionCostCapUSD, "session-cost-cap-usd", cfg.SessionCostCapUSD, "maximum estimated cost per session")
+	fs.StringVar(&cfg.PolicyEngine, "policy-engine", cfg.PolicyEngine, "policy engine adapter (native; agt is reserved)")
+	fs.IntVar(&cfg.ToolLoopMax, "consecutive-tool-call-max", cfg.ToolLoopMax, "maximum consecutive tool/MCP calls before output")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -77,6 +87,18 @@ func envOrDefault(key string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envInt(key string, fallback int) (int, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
+	}
+	return parsed, nil
 }
 
 func envBool(key string, fallback bool) (bool, error) {

@@ -37,6 +37,12 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.SessionCostCapUSD != 0 {
 		t.Fatalf("expected default session cost cap 0 when disabled, got %v", cfg.SessionCostCapUSD)
 	}
+	if cfg.PolicyEngine != "native" {
+		t.Fatalf("expected default policy engine native, got %q", cfg.PolicyEngine)
+	}
+	if cfg.ToolLoopMax != 15 {
+		t.Fatalf("expected default tool loop max 15, got %d", cfg.ToolLoopMax)
+	}
 }
 
 func TestLoadUsesEnvAndFlags(t *testing.T) {
@@ -49,8 +55,10 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	t.Setenv("AI_ORCH_KILL_SWITCH", "true")
 	t.Setenv("AI_ORCH_COST_CAP_ENABLED", "true")
 	t.Setenv("AI_ORCH_SESSION_COST_CAP_USD", "0.50")
+	t.Setenv("AI_ORCH_POLICY_ENGINE", "agt")
+	t.Setenv("AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX", "7")
 
-	cfg, err := Load([]string{"-addr", ":7777", "-audit-path", "/tmp/flag-audit.jsonl", "-dev-token", "flag-token", "-service-token", "flag-service-token", "-classification-max", "restricted", "-kill-switch=false", "-cost-cap-enabled=false", "-session-cost-cap-usd", "0.75"})
+	cfg, err := Load([]string{"-addr", ":7777", "-audit-path", "/tmp/flag-audit.jsonl", "-dev-token", "flag-token", "-service-token", "flag-service-token", "-classification-max", "restricted", "-kill-switch=false", "-cost-cap-enabled=false", "-session-cost-cap-usd", "0.75", "-policy-engine", "native", "-consecutive-tool-call-max", "11"})
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -80,5 +88,11 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	}
 	if cfg.SessionCostCapUSD != 0.75 {
 		t.Fatalf("expected flag session cost cap to win, got %v", cfg.SessionCostCapUSD)
+	}
+	if cfg.PolicyEngine != "native" {
+		t.Fatalf("expected flag policy engine to win, got %q", cfg.PolicyEngine)
+	}
+	if cfg.ToolLoopMax != 11 {
+		t.Fatalf("expected flag tool loop max to win, got %d", cfg.ToolLoopMax)
 	}
 }

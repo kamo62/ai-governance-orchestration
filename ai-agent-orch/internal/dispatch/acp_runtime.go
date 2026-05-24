@@ -109,7 +109,7 @@ func (h *acpHandle) sendInitialize() {
 			"capabilities":    map[string]any{},
 			"clientInfo": map[string]string{
 				"name":    "ai-agent-orch",
-				"version": "0.1.0",
+				"version": "0.2.0-alpha",
 			},
 		},
 	}

@@ -2,7 +2,7 @@
   "name": "ai-agent-bridge",
   "displayName": "AI Agent Bridge",
   "description": "Local AI agent orchestration bridge for VS Code",
-  "version": "0.1.0",
+  "version": "0.2.0-alpha",
   "engines": {
     "vscode": "^1.90.0"
   },

@@ -2,21 +2,24 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"ai-agent-orch/internal/catalog"
 	"ai-agent-orch/internal/openrouter"
+	patchproto "ai-agent-orch/internal/patch"
 )
 
 // DirectRuntime calls OpenRouter directly without an ACP subprocess.
 // It is the Phase 1 fallback when OpenCode is not installed.
 type DirectRuntime struct {
-	client      *openrouter.Client
+	client      openrouter.ChatClient
 	catalogRoot string
 }
 
-func NewDirectRuntime(client *openrouter.Client, catalogRoot string) *DirectRuntime {
+func NewDirectRuntime(client openrouter.ChatClient, catalogRoot string) *DirectRuntime {
 	return &DirectRuntime{
 		client:      client,
 		catalogRoot: catalogRoot,
@@ -42,7 +45,7 @@ func (r *DirectRuntime) StartSession(ctx context.Context, cfg SessionConfig) (Se
 }
 
 type directHandle struct {
-	client  *openrouter.Client
+	client  openrouter.ChatClient
 	config  SessionConfig
 	modelID string
 	events  chan RuntimeEvent
@@ -73,13 +76,18 @@ func (h *directHandle) run(ctx context.Context) {
 	}
 
 	req := openrouter.ChatCompletionRequest{
-		Model: h.modelID,
+		SessionID:  h.config.SessionID,
+		ModelAlias: h.config.ModelID,
+		Model:      h.modelID,
 		Messages: []openrouter.Message{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: defaultUserPrompt(h.config.UserPrompt)},
 		},
 		Temperature: 0.2,
 		MaxTokens:   4096,
+	}
+	if reasoning := openRouterReasoningConfig(); reasoning != nil {
+		req.Reasoning = reasoning
 	}
 
 	resp, err := h.client.ChatCompletion(ctx, req)
@@ -93,13 +101,28 @@ func (h *directHandle) run(ctx context.Context) {
 	}
 
 	content := resp.FirstContent()
+	patch := h.tryExtractPatch(content)
+	usagePayload, _ := json.Marshal(map[string]any{
+		"model":             resp.Model,
+		"requested_model":   h.modelID,
+		"reasoning_effort":  reasoningEffort(),
+		"prompt_tokens":     resp.Usage.PromptTokens,
+		"completion_tokens": resp.Usage.CompletionTokens,
+		"reasoning_tokens":  resp.Usage.CompletionTokensDetails.ReasoningTokens,
+		"total_tokens":      resp.Usage.TotalTokens,
+		"cost_usd":          resp.Usage.Cost,
+	})
+	h.events <- RuntimeEvent{
+		Type:    "model_usage",
+		Payload: string(usagePayload),
+	}
+
 	h.events <- RuntimeEvent{
 		Type:    "stream",
-		Payload: content,
+		Payload: directStreamPayload(content, patch),
 	}
 
 	// Try to extract a patch envelope from the response.
-	patch := h.tryExtractPatch(content)
 	if patch != "" {
 		h.events <- RuntimeEvent{
 			Type:    "patch",
@@ -113,16 +136,157 @@ func (h *directHandle) run(ctx context.Context) {
 	}
 }
 
-func (h *directHandle) tryExtractPatch(content string) string {
-	// Simple heuristic: look for JSON-like patch structure.
-	if strings.Contains(content, `"files"`) && strings.Contains(content, `"action"`) {
-		start := strings.Index(content, "{")
-		end := strings.LastIndex(content, "}")
-		if start >= 0 && end > start {
-			return content[start : end+1]
-		}
+func directStreamPayload(content string, patch string) string {
+	if patch == "" {
+		return content
 	}
-	return ""
+	return "Patch proposal received."
+}
+
+func (h *directHandle) tryExtractPatch(content string) string {
+	raw := extractJSONObject(content)
+	if raw == "" {
+		return ""
+	}
+	patch, ok := normalizePatchEnvelope(raw)
+	if !ok {
+		return ""
+	}
+	return patch
+}
+
+func extractJSONObject(content string) string {
+	start := strings.Index(content, "{")
+	end := strings.LastIndex(content, "}")
+	if start < 0 || end <= start {
+		return ""
+	}
+	return content[start : end+1]
+}
+
+type modelPatchEnvelope struct {
+	ProtocolVersion int              `json:"protocolVersion"`
+	PatchID         string           `json:"patchId"`
+	PatchIDSnake    string           `json:"patch_id"`
+	SessionID       string           `json:"sessionId"`
+	Summary         string           `json:"summary"`
+	Rationale       string           `json:"rationale"`
+	Files           []modelPatchFile `json:"files"`
+	Changes         []modelPatchFile `json:"changes"`
+}
+
+type modelPatchFile struct {
+	Path                string `json:"path"`
+	Action              string `json:"action"`
+	Op                  string `json:"op"`
+	Operation           string `json:"operation"`
+	OriginalContentHash string `json:"originalContentHash"`
+	ProposedContentHash string `json:"proposedContentHash"`
+	OriginalContent     string `json:"originalContent"`
+	NewContent          string `json:"newContent"`
+	Content             string `json:"content"`
+}
+
+func normalizePatchEnvelope(raw string) (string, bool) {
+	var in modelPatchEnvelope
+	if err := json.Unmarshal([]byte(raw), &in); err != nil {
+		return "", false
+	}
+
+	patchID := in.PatchID
+	if patchID == "" {
+		patchID = in.PatchIDSnake
+	}
+	if patchID == "" {
+		return "", false
+	}
+
+	files := in.Files
+	if len(files) == 0 {
+		files = in.Changes
+	}
+	if len(files) == 0 {
+		return "", false
+	}
+
+	version := in.ProtocolVersion
+	if version == 0 {
+		version = 1
+	}
+
+	out := patchproto.PatchEnvelope{
+		ProtocolVersion: version,
+		PatchID:         patchID,
+		SessionID:       in.SessionID,
+		Summary:         in.Summary,
+		Rationale:       in.Rationale,
+		Files:           make([]patchproto.PatchFile, 0, len(files)),
+	}
+	for _, file := range files {
+		action := file.Action
+		if action == "" {
+			action = file.Op
+		}
+		if action == "" {
+			action = file.Operation
+		}
+		if file.Path == "" || action == "" {
+			continue
+		}
+		newContent := file.NewContent
+		if newContent == "" {
+			newContent = file.Content
+		}
+		out.Files = append(out.Files, patchproto.PatchFile{
+			Path:                file.Path,
+			Action:              action,
+			OriginalContentHash: file.OriginalContentHash,
+			ProposedContentHash: file.ProposedContentHash,
+			OriginalContent:     file.OriginalContent,
+			NewContent:          newContent,
+		})
+	}
+	if len(out.Files) == 0 {
+		return "", false
+	}
+
+	normalized, err := json.Marshal(out)
+	if err != nil {
+		return "", false
+	}
+	return string(normalized), true
+}
+
+func openRouterReasoningConfig() *openrouter.ReasoningConfig {
+	effort := reasoningEffort()
+	if effort == "" {
+		return nil
+	}
+	return &openrouter.ReasoningConfig{
+		Effort:  effort,
+		Exclude: envBoolDefault("AI_ORCH_OPENROUTER_REASONING_EXCLUDE", true),
+	}
+}
+
+func reasoningEffort() string {
+	if effort := os.Getenv("AI_ORCH_OPENROUTER_REASONING_EFFORT"); effort != "" {
+		return effort
+	}
+	return os.Getenv("OPENROUTER_REASONING_EFFORT")
+}
+
+func envBoolDefault(key string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch value {
+	case "":
+		return fallback
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func (h *directHandle) Wait() error {

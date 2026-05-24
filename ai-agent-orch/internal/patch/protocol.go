@@ -4,6 +4,7 @@ package patch
 type PatchEnvelope struct {
 	ProtocolVersion int         `json:"protocolVersion"`
 	PatchID         string      `json:"patchId"`
+	BufferID        string      `json:"bufferId,omitempty"`
 	SessionID       string      `json:"sessionId"`
 	Summary         string      `json:"summary"`
 	Rationale       string      `json:"rationale"`

@@ -26,8 +26,9 @@ type Config struct {
 }
 
 type eventStreamResult struct {
-	Count    int
-	PatchIDs []string
+	Count      int
+	PatchIDs   []string
+	ModelUsage []string
 }
 
 type sessionEvent struct {
@@ -513,6 +514,9 @@ func handleSmoke(ctx context.Context, cfg Config, args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("   Received %d events\n", eventResult.Count)
+	for _, usage := range eventResult.ModelUsage {
+		fmt.Printf("   Model usage: %s\n", strings.TrimSpace(usage))
+	}
 	if len(eventResult.PatchIDs) == 0 {
 		fmt.Fprintln(os.Stderr, "no patch event received")
 		os.Exit(1)
@@ -624,6 +628,10 @@ func streamEventsFromURL(ctx context.Context, cfg Config, url string) (eventStre
 					return result, errors.New("patch event missing patch id")
 				}
 				result.PatchIDs = append(result.PatchIDs, patchID)
+			case "model_usage":
+				if event.Payload != "" {
+					result.ModelUsage = append(result.ModelUsage, event.Payload)
+				}
 			case "error":
 				if event.Payload == "" {
 					return result, errors.New("runtime emitted error event")

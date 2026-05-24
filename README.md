@@ -4,7 +4,39 @@ This repository is my proof of concept for an agent orchestration system that I 
 
 The goal is not to rebuild every agent runtime, IDE workflow, or coding assistant stack inside this project. The goal is to test whether a lightweight system layer can give agent work better governance, routing, auditability, and policy control without forcing every team or engineer into one runtime.
 
-Project state: this is a personal-time POC in active early development. The current backbone includes session creation, session ownership and state guards, audit events, policy gates, audit lookup, router selection, Docker Compose, catalogue validation, OpenRouter smoke tooling, a local CLI scaffold, MCP stubs, optional SQLite audit storage, optional OIDC token-validation scaffolding, a VS Code Bridge scaffold, service-token hardening, and a dispatch/SSE path with an EchoRuntime patch envelope for local testing. A real OpenRouter/OpenCode patch-producing flow and manual VS Code Bridge validation are next. Not production-ready.
+## Project State
+
+Current as of 2026-05-24: this is a personal-time POC in active early development, with `v0.2.0-alpha` as the current version.
+
+Implemented:
+
+- Phase 0 catalogue and agent-definition foundation
+- session creation, session ownership, and state guards
+- audit events, audit lookup, policy gates, and service-token hardening
+- router selection, specialist dispatch, and SSE event streaming
+- Docker Compose local runner and catalogue validation tooling
+- OpenRouter model smoke tooling
+- opt-in OpenRouter-backed CLI orchestration smoke path
+- source-aware CLI smoke testing when selected code excerpts are included in the prompt
+- Governance Shell model proxy for OpenRouter calls, so the Orchestrator does not need the provider API key
+- staged patch buffering, with sanitized SSE metadata and governed patch fetch before Bridge apply/review
+- MCP proxy stub with `oauth-user` fail-closed behaviour when user OAuth is absent
+- native policy-engine boundary with AGT reserved as a future adapter
+- consecutive tool/MCP-call cap controls
+- EchoRuntime and DirectRuntime patch envelopes for local testing
+- local CLI, VS Code Bridge, and MCP stub scaffolds
+- optional SQLite audit storage and optional OIDC token-validation scaffolding
+
+Next:
+
+- real OpenCode patch-producing flow
+- linked router, specialist, and patch-decision audit envelopes
+- automatic workspace/source-context packaging for CLI runs
+- manual VS Code Bridge validation
+- broader CLI coverage for admin and CI-shaped workflows
+- real user OAuth token acquisition for `oauth-user` MCPs
+
+Not production-ready.
 
 ## What This POC Is Exploring
 
@@ -99,9 +131,12 @@ This repo currently focuses on the system-side foundation:
 - Governance Shell scaffold
 - Orchestrator scaffold
 - local Docker Compose workflow
-- OpenRouter-backed model smoke testing
+- OpenRouter-backed model and CLI orchestration smoke testing
+- Governance Shell-owned OpenRouter model proxy
+- staged patch buffer and patch fetch endpoint
 - local CLI and VS Code Bridge scaffolds
 - MCP registration and token-guarded stub services
+- MCP proxy stub for later user-scoped tool calls
 - first dispatch and SSE event path
 - local EchoRuntime patch envelope and patch-decision audit path
 - audit and policy primitives
@@ -142,16 +177,43 @@ curl -H "Authorization: Bearer local-dev" \
 
 In Docker Compose, the Orchestrator is intentionally kept on the internal Compose network. The Governance Shell reaches it with a service-to-service token.
 
+OpenRouter credentials are intentionally attached to the Governance Shell service, not the Orchestrator. Full orchestration model calls go through the internal model proxy at `/internal/v1/model/chat`.
+
 OpenRouter smoke testing requires `OPENROUTER_API_KEY`:
 
 ```sh
 OPENROUTER_API_KEY=... docker compose --profile tools run --rm openrouter-smoke
 ```
 
-For local repeated testing, keep secrets in an ignored root `.env.dev` file and pass it to Compose:
+For local repeated testing, keep secrets in an ignored root `.env.dev` file and pass it to Compose. The file should contain `OPENROUTER_API_KEY`; do not commit it.
 
 ```sh
 docker compose --env-file ../.env.dev --profile tools run --rm openrouter-smoke
+```
+
+To smoke test a specific OpenRouter model alias through the registry:
+
+```sh
+docker compose --env-file ../.env.dev --profile tools run --rm openrouter-smoke \
+  openrouter-smoke -catalog-root /app \
+  -model-alias coding-gpt55 \
+  -prompt 'Reply with exactly: gpt55-alias-ok'
+```
+
+To force a local CLI orchestration smoke through GPT-5.5 with high reasoning effort, start the Orchestrator with explicit overrides. These overrides are opt-in test settings; they are not the default runtime policy.
+
+```sh
+AI_ORCH_MODEL_ALIAS_OVERRIDE=coding-gpt55 \
+AI_ORCH_OPENROUTER_REASONING_EFFORT=high \
+AI_ORCH_OPENROUTER_REASONING_EXCLUDE=true \
+docker compose --env-file ../.env.dev up -d governance-shell orchestrator
+```
+
+Then run the CLI smoke command:
+
+```sh
+docker compose --env-file ../.env.dev --profile tools run --rm ai-orch \
+  ai-orch smoke --prompt 'Return only this JSON object and no markdown: {"protocolVersion":1,"patchId":"readme_smoke","summary":"CLI orchestration smoke patch","files":[{"path":"SMOKE_TEST.md","action":"create","content":"CLI orchestration smoke passed."}]}'
 ```
 
 The `ai-orch` CLI scaffold currently covers local smoke tests, audit lookup, kill-switch checks, session commands, and agent listing:
@@ -160,9 +222,17 @@ The `ai-orch` CLI scaffold currently covers local smoke tests, audit lookup, kil
 AI_ORCH_DEV_TOKEN=local-dev docker compose --profile tools run --rm ai-orch
 ```
 
+The CLI sends the prompt text through the governed workflow. Until the OpenCode or Bridge path supplies workspace context automatically, include selected source excerpts in the prompt when running source-aware CLI tests.
+
+The CLI receives sanitized patch metadata over SSE and records the patch decision by ID. The VS Code Bridge fetches full buffered patch content from `GET /v1/sessions/{session_id}/patches/{patch_id}` before rendering diffs or applying changes.
+
 Phase 2 read-only MCP stubs for issue tracker, documentation, and test-management context are available behind the `phase2` Compose profile. They are local token-guarded stubs only; user-scoped OAuth is still pending.
 
+The MCP proxy already fails closed for `oauth-user` registrations when user OAuth is absent. That contract is tested with fake token stores; real OAuth acquisition remains Phase 2 work.
+
 Cost-cap enforcement is intentionally off by default. To test the blocking path locally, start the Governance Shell with `AI_ORCH_COST_CAP_ENABLED=true` and a non-zero `AI_ORCH_SESSION_COST_CAP_USD`.
+
+Tool-loop enforcement is on by default with `AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX=15`, blocking a runtime that keeps issuing tool/MCP calls without producing output.
 
 The VS Code Bridge expects `AI_ORCH_DEV_TOKEN` in the extension host environment; it does not fall back to an implicit token.
 

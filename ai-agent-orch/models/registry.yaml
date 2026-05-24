@@ -58,3 +58,13 @@ models:
     cost:
       pricing_source: openrouter
       verified_on: 2026-05-23
+
+  - alias: coding-gpt55
+    provider: openrouter
+    model_id: openai/gpt-5.5
+    purpose: GPT-5.5 coding validation alias for local orchestration smoke tests.
+    allowed_classifications: [public, internal]
+    fallback_alias: coding-balanced
+    cost:
+      pricing_source: openrouter
+      verified_on: 2026-05-24

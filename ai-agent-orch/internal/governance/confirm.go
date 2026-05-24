@@ -177,9 +177,59 @@ func (h *ConfirmHandler) triggerExecution(ctx context.Context, sessionID, agent 
 	}
 
 	// Publish runtime events from the Orchestrator response.
+	toolLoop := NewToolLoopCounter(h.service.toolLoopMax)
 	for _, event := range result.Events {
+		if toolLoop.Observe(event.Type) {
+			reason := fmt.Sprintf("consecutive tool call cap exceeded (%d)", h.service.toolLoopMax)
+			_, _ = h.service.audit.Append(ctx, audit.Event{
+				EventID:            h.newID("evt"),
+				SessionID:          sessionID,
+				EventType:          "runtime.denied",
+				Actor:              "runtime",
+				Agent:              agent,
+				Reason:             reason,
+				RawPromptStored:    false,
+				RawResponseStored:  false,
+				CorrelationSubject: "governance-shell",
+			})
+			h.service.setSessionStatus(context.Background(), sessionID, "failed")
+			h.events.Publish(sessionID, SessionEvent{
+				Type:      "error",
+				Payload:   reason,
+				Timestamp: timeNow(),
+			})
+			h.events.Close(sessionID)
+			return
+		}
 		if event.Type == "patch" {
+			sanitized, err := h.service.patchBuffer.Store(ctx, sessionID, event.Payload)
+			if err != nil {
+				reason := fmt.Sprintf("patch rejected: %v", err)
+				_, _ = h.service.audit.Append(ctx, audit.Event{
+					EventID:            h.newID("evt"),
+					SessionID:          sessionID,
+					EventType:          "patch.rejected",
+					Actor:              "runtime",
+					Agent:              agent,
+					Reason:             reason,
+					RawPromptStored:    false,
+					RawResponseStored:  false,
+					CorrelationSubject: "governance-shell",
+				})
+				h.service.setSessionStatus(context.Background(), sessionID, "failed")
+				h.events.Publish(sessionID, SessionEvent{
+					Type:      "error",
+					Payload:   reason,
+					Timestamp: timeNow(),
+				})
+				h.events.Close(sessionID)
+				return
+			}
+			event.Payload = sanitized
 			h.service.rememberPatch(sessionID, extractPatchID(event.Payload))
+		}
+		if event.Type == "stream" {
+			event.Payload = sanitizeRuntimeStreamPayload(event.Payload)
 		}
 		h.events.Publish(sessionID, SessionEvent{
 			Type:      event.Type,
@@ -196,6 +246,13 @@ func (h *ConfirmHandler) triggerExecution(ctx context.Context, sessionID, agent 
 
 	h.events.Close(sessionID)
 	h.service.setSessionStatus(context.Background(), sessionID, "done")
+}
+
+func sanitizeRuntimeStreamPayload(payload string) string {
+	if strings.Contains(payload, `"patchId"`) && strings.Contains(payload, `"files"`) {
+		return "Patch proposal received."
+	}
+	return payload
 }
 
 func timeNow() time.Time {

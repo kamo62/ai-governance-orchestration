@@ -12,6 +12,7 @@ import (
 func TestChatCompletionSendsOpenRouterRequest(t *testing.T) {
 	var gotModel string
 	var gotPrompt string
+	var gotReasoning *ReasoningConfig
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -36,6 +37,7 @@ func TestChatCompletionSendsOpenRouterRequest(t *testing.T) {
 			t.Fatalf("expected one message, got %d", len(body.Messages))
 		}
 		gotPrompt = body.Messages[0].Content
+		gotReasoning = body.Reasoning
 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
@@ -44,7 +46,13 @@ func TestChatCompletionSendsOpenRouterRequest(t *testing.T) {
 			"choices": [
 				{"message": {"role": "assistant", "content": "smoke-ok"}}
 			],
-			"usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
+			"usage": {
+				"prompt_tokens": 5,
+				"completion_tokens": 2,
+				"total_tokens": 7,
+				"cost": 0.001,
+				"completion_tokens_details": {"reasoning_tokens": 1}
+			}
 		}`))
 	}))
 	defer srv.Close()
@@ -61,6 +69,10 @@ func TestChatCompletionSendsOpenRouterRequest(t *testing.T) {
 			{Role: "user", Content: "Reply with smoke-ok."},
 		},
 		MaxTokens: 16,
+		Reasoning: &ReasoningConfig{
+			Effort:  "high",
+			Exclude: true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("ChatCompletion returned error: %v", err)
@@ -71,11 +83,17 @@ func TestChatCompletionSendsOpenRouterRequest(t *testing.T) {
 	if gotPrompt != "Reply with smoke-ok." {
 		t.Fatalf("unexpected prompt %q", gotPrompt)
 	}
+	if gotReasoning == nil || gotReasoning.Effort != "high" || !gotReasoning.Exclude {
+		t.Fatalf("unexpected reasoning config %#v", gotReasoning)
+	}
 	if response.FirstContent() != "smoke-ok" {
 		t.Fatalf("unexpected response content %q", response.FirstContent())
 	}
 	if response.Usage.TotalTokens != 7 {
 		t.Fatalf("unexpected total tokens %d", response.Usage.TotalTokens)
+	}
+	if response.Usage.CompletionTokensDetails.ReasoningTokens != 1 {
+		t.Fatalf("unexpected reasoning tokens %d", response.Usage.CompletionTokensDetails.ReasoningTokens)
 	}
 }
 

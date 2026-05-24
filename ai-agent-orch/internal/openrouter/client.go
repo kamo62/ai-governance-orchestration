@@ -30,16 +30,28 @@ type Client struct {
 	appTitle   string
 }
 
+type ChatClient interface {
+	ChatCompletion(context.Context, ChatCompletionRequest) (ChatCompletionResponse, error)
+}
+
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
 type ChatCompletionRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Temperature float64   `json:"temperature,omitempty"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
+	SessionID   string           `json:"-"`
+	ModelAlias  string           `json:"-"`
+	Model       string           `json:"model"`
+	Messages    []Message        `json:"messages"`
+	Temperature float64          `json:"temperature,omitempty"`
+	MaxTokens   int              `json:"max_tokens,omitempty"`
+	Reasoning   *ReasoningConfig `json:"reasoning,omitempty"`
+}
+
+type ReasoningConfig struct {
+	Effort  string `json:"effort,omitempty"`
+	Exclude bool   `json:"exclude,omitempty"`
 }
 
 type ChatCompletionResponse struct {
@@ -52,9 +64,13 @@ type ChatCompletionResponse struct {
 }
 
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            int     `json:"prompt_tokens"`
+	CompletionTokens        int     `json:"completion_tokens"`
+	TotalTokens             int     `json:"total_tokens"`
+	Cost                    float64 `json:"cost,omitempty"`
+	CompletionTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	} `json:"completion_tokens_details,omitempty"`
 }
 
 func NewClient(cfg Config) *Client {

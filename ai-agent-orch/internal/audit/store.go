@@ -20,21 +20,31 @@ type Store interface {
 }
 
 type Event struct {
-	EventID            string    `json:"event_id"`
-	SessionID          string    `json:"session_id,omitempty"`
-	EventType          string    `json:"event_type"`
-	Actor              string    `json:"actor,omitempty"`
-	Agent              string    `json:"agent,omitempty"`
-	Classification     string    `json:"classification,omitempty"`
-	Reason             string    `json:"reason,omitempty"`
-	Findings           []string  `json:"findings,omitempty"`
-	PromptSHA256       string    `json:"prompt_sha256,omitempty"`
-	EstimatedCostUSD   float64   `json:"estimated_cost_usd,omitempty"`
-	CostCapUSD         float64   `json:"cost_cap_usd,omitempty"`
-	RawPromptStored    bool      `json:"raw_prompt_stored"`
-	RawResponseStored  bool      `json:"raw_response_stored"`
-	CorrelationSubject string    `json:"correlation_subject,omitempty"`
-	RecordedAt         time.Time `json:"recorded_at"`
+	EventID            string         `json:"event_id"`
+	SessionID          string         `json:"session_id,omitempty"`
+	EventType          string         `json:"event_type"`
+	Actor              string         `json:"actor,omitempty"`
+	Agent              string         `json:"agent,omitempty"`
+	Classification     string         `json:"classification,omitempty"`
+	Reason             string         `json:"reason,omitempty"`
+	Findings           []string       `json:"findings,omitempty"`
+	PromptSHA256       string         `json:"prompt_sha256,omitempty"`
+	EstimatedCostUSD   float64        `json:"estimated_cost_usd,omitempty"`
+	CostCapUSD         float64        `json:"cost_cap_usd,omitempty"`
+	ProxyCallID        string         `json:"proxy_call_id,omitempty"`
+	Provider           string         `json:"provider,omitempty"`
+	ModelAlias         string         `json:"model_alias,omitempty"`
+	ModelResolved      string         `json:"model_resolved,omitempty"`
+	RequestSHA256      string         `json:"request_sha256,omitempty"`
+	ResponseSHA256     string         `json:"response_sha256,omitempty"`
+	MCPServerID        string         `json:"mcp_server_id,omitempty"`
+	MCPToolName        string         `json:"mcp_tool_name,omitempty"`
+	AuthMode           string         `json:"auth_mode,omitempty"`
+	TokenUsage         map[string]any `json:"token_usage,omitempty"`
+	RawPromptStored    bool           `json:"raw_prompt_stored"`
+	RawResponseStored  bool           `json:"raw_response_stored"`
+	CorrelationSubject string         `json:"correlation_subject,omitempty"`
+	RecordedAt         time.Time      `json:"recorded_at"`
 }
 
 func (s *FileStore) EventsBySession(ctx context.Context, sessionID string) ([]Event, error) {

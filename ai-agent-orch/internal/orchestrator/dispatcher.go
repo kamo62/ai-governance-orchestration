@@ -26,16 +26,20 @@ func NewDispatcher(catalogRoot string) *Dispatcher {
 	// but we register it. The dispatch will try it and fall back if it fails.
 	runtimes["opencode"] = acp
 
-	// Direct OpenRouter fallback.
-	apiKey := os.Getenv("OPENROUTER_API_KEY")
-	if apiKey != "" {
-		client := openrouter.NewClient(openrouter.Config{
+	// Model calls should normally flow through the Governance Shell model proxy,
+	// so runtime-facing services never need provider API keys.
+	if proxyURL := os.Getenv("AI_ORCH_MODEL_PROXY_URL"); proxyURL != "" {
+		runtimes["direct"] = dispatch.NewDirectRuntime(openrouter.NewProxyClient(openrouter.ProxyConfig{
+			BaseURL:      proxyURL,
+			ServiceToken: os.Getenv("AI_ORCH_SERVICE_TOKEN"),
+		}), catalogRoot)
+	} else if apiKey := os.Getenv("OPENROUTER_API_KEY"); apiKey != "" {
+		runtimes["direct"] = dispatch.NewDirectRuntime(openrouter.NewClient(openrouter.Config{
 			APIKey:   apiKey,
 			BaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
 			Referer:  os.Getenv("OPENROUTER_HTTP_REFERER"),
 			AppTitle: envOrDefault("OPENROUTER_APP_TITLE", "ai-agent-orch-local"),
-		})
-		runtimes["direct"] = dispatch.NewDirectRuntime(client, catalogRoot)
+		}), catalogRoot)
 	}
 
 	return &Dispatcher{
@@ -60,6 +64,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 	}
 
 	modelAlias := agentCfg.Model.Primary
+	if override := os.Getenv("AI_ORCH_MODEL_ALIAS_OVERRIDE"); override != "" {
+		modelAlias = override
+	}
 	if modelAlias == "" {
 		return nil, fmt.Errorf("agent %q has no primary model", agentName)
 	}

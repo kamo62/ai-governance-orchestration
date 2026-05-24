@@ -7,5 +7,6 @@ defaults:
   self_repair_cap_usd: 0.20
   max_repair_attempts: 2
   max_runtime_minutes: 15
+  consecutive_tool_call_max: 15
 
 # Per-agent overrides are loaded from agent.config.yaml. This file provides system defaults only.

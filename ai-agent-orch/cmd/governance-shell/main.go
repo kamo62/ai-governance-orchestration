@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"ai-agent-orch/internal/appconfig"
@@ -11,6 +12,8 @@ import (
 	"ai-agent-orch/internal/catalog"
 	"ai-agent-orch/internal/governance"
 	"ai-agent-orch/internal/httpauth"
+	"ai-agent-orch/internal/openrouter"
+	"ai-agent-orch/internal/policyengine"
 	"ai-agent-orch/internal/server"
 )
 
@@ -37,6 +40,10 @@ func main() {
 	}
 	killSwitchStore := governance.NewMemoryKillSwitch()
 	metricsHandler := governance.NewMetricsHandler()
+	policyEngine, err := policyengine.New(cfg.PolicyEngine)
+	if err != nil {
+		log.Fatalf("policy engine init failed: %v", err)
+	}
 
 	// OIDC validator: when OIDC_ISSUER_URL and OIDC_CLIENT_ID are set,
 	// Bearer tokens are treated as OIDC id_tokens. Otherwise the
@@ -71,6 +78,8 @@ func main() {
 		KillSwitchStore:   killSwitchStore,
 		CostCapEnabled:    cfg.CostCapEnabled,
 		SessionCostCapUSD: cfg.SessionCostCapUSD,
+		PolicyEngine:      policyEngine,
+		ToolLoopMax:       cfg.ToolLoopMax,
 		Metrics:           metricsHandler,
 	})
 	eventStore := governance.NewEventStore()
@@ -97,6 +106,22 @@ func main() {
 	}))
 	handler.Handle("/v1/admin/killswitch", governance.NewAdminHandler(killSwitchStore, sessionService))
 	handler.Handle("/v1/admin/killswitch/", governance.NewAdminHandler(killSwitchStore, sessionService))
+	handler.Handle("/internal/v1/model/", governance.NewModelProxyHandler(governance.ModelProxyConfig{
+		ServiceToken: cfg.ServiceToken,
+		OpenRouter: openrouter.NewClient(openrouter.Config{
+			APIKey:   os.Getenv("OPENROUTER_API_KEY"),
+			BaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
+			Referer:  os.Getenv("OPENROUTER_HTTP_REFERER"),
+			AppTitle: envOrDefault("OPENROUTER_APP_TITLE", "ai-agent-orch-local"),
+		}),
+		Audit: auditStore,
+	}))
+	handler.Handle("/internal/v1/mcp/", governance.NewMCPProxyHandler(governance.MCPProxyConfig{
+		ServiceToken:  cfg.ServiceToken,
+		Audit:         auditStore,
+		Registrations: defaultMCPRegistrations(),
+		UserTokens:    governance.StaticUserTokenStore{},
+	}))
 	handler.Handle("/metrics", metricsHandler)
 
 	srv := &http.Server{
@@ -132,6 +157,8 @@ func (sr *sessionSubrouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		governance.NewConfirmHandlerWithEvents(sr.sessionService, sr.orchClient, sr.events).ServeHTTP(w, r)
 	case containsSuffix(path, "/patch-decision"):
 		governance.NewPatchDecisionHandler(sr.sessionService).ServeHTTP(w, r)
+	case strings.Contains(path, "/patches/"):
+		governance.NewPatchFetchHandler(sr.sessionService).ServeHTTP(w, r)
 	case containsSuffix(path, "/events"):
 		governance.NewEventsHandler(sr.events).ServeHTTP(w, r)
 	case containsSuffix(path, "/abort"):
@@ -143,6 +170,26 @@ func (sr *sessionSubrouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func containsSuffix(path, suffix string) bool {
 	return len(path) > len(suffix) && path[len(path)-len(suffix):] == suffix
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func defaultMCPRegistrations() map[string]governance.MCPProxyRegistration {
+	platformToken := os.Getenv("AI_ORCH_MCP_TOKEN")
+	return map[string]governance.MCPProxyRegistration{
+		"repo-classification":      {Endpoint: "http://mcp-repo-classification:8091", AuthMode: "platform", PlatformToken: platformToken},
+		"engineering-standards-kb": {Endpoint: "http://mcp-engineering-standards-kb:8092", AuthMode: "platform", PlatformToken: platformToken},
+		"catalog-introspection":    {Endpoint: "http://mcp-catalog-introspection:8093", AuthMode: "platform", PlatformToken: platformToken},
+		"playwright-cli":           {Endpoint: "http://mcp-playwright-cli:8094", AuthMode: "platform", PlatformToken: platformToken},
+		"issue-tracker":            {Endpoint: "http://mcp-issue-tracker:8095", AuthMode: "oauth-user"},
+		"documentation":            {Endpoint: "http://mcp-documentation:8096", AuthMode: "oauth-user"},
+		"test-management":          {Endpoint: "http://mcp-test-management:8097", AuthMode: "oauth-user"},
+	}
 }
 
 func newAuditStore(auditPath string) (audit.Store, error) {
