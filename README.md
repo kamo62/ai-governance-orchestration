@@ -6,7 +6,7 @@ The goal is not to rebuild every agent runtime, IDE workflow, or coding assistan
 
 ## Project State
 
-Current as of 2026-05-24: this is a personal-time POC in active early development, with `v0.2.0-alpha` as the current version.
+Current as of 2026-05-25: this is a personal-time POC in active early development, with `v0.2.0-alpha` as the current version.
 
 Implemented:
 
@@ -19,7 +19,7 @@ Implemented:
 - opt-in OpenRouter-backed CLI orchestration smoke path
 - source-aware CLI smoke testing when selected code excerpts are included in the prompt
 - Governance Shell model proxy for OpenRouter calls, so the Orchestrator does not need the provider API key
-- staged patch buffering, with sanitized SSE metadata and governed patch fetch before Bridge apply/review
+- staged patch buffering, with sanitised SSE metadata and governed patch fetch before Bridge apply/review
 - MCP proxy stub with `oauth-user` fail-closed behaviour when user OAuth is absent
 - native policy-engine boundary with AGT reserved as a future adapter
 - consecutive tool/MCP-call cap controls
@@ -55,6 +55,23 @@ That shape is intentional.
 The word "system" is deliberate here: this is still a local POC, not a broader shared product.
 
 The system abstraction is more enterprise-shaped: policy, audit, model routing, catalogue validation, runtime boundaries, and future organisational controls. Some of the runtime patterns I am looking at are more engineer-workspace-shaped, which is useful, but different.
+
+## External Governance Work I Am Watching
+
+This POC is not being built in isolation. Part of the investigation is watching where the wider agent ecosystem is moving, then deciding what to borrow without letting the repo become a wrapper around someone else's stack.
+
+The most relevant governance-shaped reference right now is [Microsoft Agent Governance Toolkit](https://github.com/microsoft/agent-governance-toolkit). Microsoft introduced it as [open-source runtime security for AI agents](https://opensource.microsoft.com/blog/2026/04/02/introducing-the-agent-governance-toolkit-open-source-runtime-security-for-ai-agents/), with policy enforcement, auditability, threat detection, key management, access control, and governance across different agent frameworks. That is close to the problem space this POC cares about.
+
+My current read is:
+
+- AGT is worth tracking closely as a policy-engine candidate.
+- AGT should not be adopted as a hard dependency yet.
+- The local native policy engine stays the default while the POC proves its own boundary.
+- The `agt` policy-engine option is intentionally reserved as a fail-closed adapter path until there is a proper spike.
+
+That distinction matters. The Governance Shell is the asset I am trying to prove here. If AGT becomes useful, it should plug into that boundary. It should not quietly replace the `agent.md` + `agent.config.yaml` catalogue, the OpenRouter model proxy, the staged patch buffer, or the audit contract.
+
+I am also watching GitHub's agentic workflow security architecture because it makes the same broad point in another way: agents should not carry broad secrets, and file writes should be staged, reviewed, and mediated rather than trusted by default.
 
 ## What This POC Is Not
 
@@ -224,7 +241,7 @@ AI_ORCH_DEV_TOKEN=local-dev docker compose --profile tools run --rm ai-orch
 
 The CLI sends the prompt text through the governed workflow. Until the OpenCode or Bridge path supplies workspace context automatically, include selected source excerpts in the prompt when running source-aware CLI tests.
 
-The CLI receives sanitized patch metadata over SSE and records the patch decision by ID. The VS Code Bridge fetches full buffered patch content from `GET /v1/sessions/{session_id}/patches/{patch_id}` before rendering diffs or applying changes.
+The CLI receives sanitised patch metadata over SSE and records the patch decision by ID. The VS Code Bridge fetches full buffered patch content from `GET /v1/sessions/{session_id}/patches/{patch_id}` before rendering diffs or applying changes.
 
 Phase 2 read-only MCP stubs for issue tracker, documentation, and test-management context are available behind the `phase2` Compose profile. They are local token-guarded stubs only; user-scoped OAuth is still pending.
 
