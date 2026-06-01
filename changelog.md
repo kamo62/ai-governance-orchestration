@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.2-alpha - 2026-06-01 (Patch)
+
+Release impact: Patch because this restores and clarifies README investigation context without changing runtime behaviour or public API contracts.
+
+- **Restored external governance references in the README**: added direct references to Microsoft Agent Governance Toolkit, GitHub's agentic workflow security architecture, and MCP control-plane thinking.
+- **Clarified the current design thesis**: documented why the repo is building a governance/control plane first and keeping the agent plane deliberately thin.
+- **Added open design questions**: captured current thinking around AGT adoption, runtime isolation, governance UI boundaries, session caching, maturity outputs, and cost/value modelling.
+
 ## v0.5.1-alpha - 2026-06-01 (Patch)
 
 Release impact: Patch because this reorganises documentation without changing runtime behaviour or public API contracts.

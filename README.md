@@ -4,6 +4,8 @@ This repository is a personal-time proof of concept for a governance platform fo
 
 The bet is simple: teams will use different agents, IDEs, CLIs, model providers, and workflow tools. Trying to replace all of that with one new agent runtime is the wrong move. The useful layer is a small, strict control plane that can sit in front of those runtimes and make agent work governable.
 
+This README is also a working view of the current thinking. The operational runbook lives in [deployment.md](deployment.md); this file is meant to explain what is being investigated, what is influencing the design, and what the POC is deliberately avoiding.
+
 ## What This Is
 
 This POC explores whether a lightweight Governance Shell can provide:
@@ -40,7 +42,7 @@ This repo is an attempt to answer those questions without rebuilding the whole d
 
 ## Current State
 
-Current version: `v0.5.1-alpha`.
+Current version: `v0.5.2-alpha`.
 
 This is an early local POC. It is not production-ready.
 
@@ -96,13 +98,51 @@ The current abstraction is deliberately split:
 
 That separation is the important part. It keeps governance strict while allowing the runtime layer to stay flexible.
 
-## Strategic References
+## Current Thinking
 
-This POC is being built while watching adjacent governance and runtime patterns.
+The current direction is to build the governance/control plane first, and keep the agent plane deliberately thin. The system can run agents, but it should not become another general-purpose coding-agent product.
 
-Microsoft Agent Governance Toolkit is the closest governance-shaped reference. The current position is to track it as a possible policy-engine adapter or reference, not to adopt it as a hard dependency. The native policy boundary stays first until the POC proves its own contract.
+The practical shape I want to prove is:
 
-GitHub's agentic workflow security architecture is also relevant because it reinforces the same principle: agents should not carry broad secrets, and writes should be staged, reviewed, and mediated.
+- register use cases and workflows before execution;
+- keep model/provider details behind stable aliases;
+- keep provider, MCP, and OAuth secrets out of the runtime;
+- stage writes and patch content before they reach the IDE;
+- make every meaningful policy decision auditable;
+- attach evidence, cost, and value signals to sessions;
+- emit clean records that a separate engineering governance or maturity system can consume.
+
+The key design tension is context. The IDE or CLI should not fill the model window with every possible governance fact. It should send lightweight identifiers, intent, and bounded source context. The Governance Shell should resolve use-case records, workflow policy, context manifests, cache eligibility, model routing, evidence expectations, and audit metadata behind the boundary.
+
+The cost model also needs to stay honest. Human delivery cost is usually sized in days, rates, story points, or review effort. LLM cost is usage-based and can be tiny per call but expensive at scale or under retries. This POC should record both: model/tool/runtime cost on one side, and estimated human baseline plus review/verification effort on the other.
+
+## External Work I Am Watching
+
+This POC is not being built in isolation. The point is to borrow useful ideas without letting this repo become a wrapper around somebody else's agent stack.
+
+[Microsoft Agent Governance Toolkit](https://github.com/microsoft/agent-governance-toolkit) is the closest governance-shaped reference right now. [Microsoft's launch post](https://opensource.microsoft.com/blog/2026/04/02/introducing-the-agent-governance-toolkit-open-source-runtime-security-for-ai-agents/) describes AGT as an open-source, MIT-licensed runtime security governance project for autonomous agents, designed to work with existing frameworks rather than replace them. That is very close to the boundary this POC is trying to prove: policy before action, auditability, identity, and controlled tool execution.
+
+My current read on AGT:
+
+- track it closely as a policy-engine and MCP-governance reference;
+- keep the native policy engine as the default until this POC proves its own contract;
+- treat an AGT adapter as a spike, not a mandatory dependency;
+- do not replace `agent.md`, `agent.config.yaml`, model aliases, patch buffering, or the audit envelope with AGT-specific structure too early.
+
+[GitHub's Agentic Workflows security architecture](https://github.blog/ai-and-ml/generative-ai/under-the-hood-security-architecture-of-github-agentic-workflows/) is relevant because it validates several design choices already in this repo: zero-secret agent execution, model calls through a proxy, MCP access through a trusted gateway, explicit workflow stages, and staged writes.
+
+The Microsoft write-up on [securing MCP with a control plane](https://developer.microsoft.com/blog/securing-mcp-a-control-plane-for-agent-tool-execution) is also important. MCP standardises tool discovery and invocation, but it does not provide the policy checkpoint by itself. That supports this repo's direction: MCP registrations are useful, but credentialed or risky calls need to go through the Governance Shell.
+
+The takeaway from these references is not "adopt this whole stack". The takeaway is that runtime governance is becoming a recognisable layer of its own. This POC is an attempt to make that layer concrete for engineering workflows.
+
+## Design Questions Still Open
+
+- Should the policy engine remain native long term, or should AGT become a supported adapter once the local contract is stable?
+- Where is the right local isolation line: simple subprocess/CLI execution, container-per-session, or both depending on workflow risk?
+- What belongs in the governance/control plane UI, and what should stay in the IDE or CLI?
+- How much context should be cached per session before the cache becomes a hidden memory product?
+- Which maturity outputs are essential enough to be first-class API records, and which should remain derived reporting views?
+- How should cost and value be shown without pretending token cost maps directly to engineering effort?
 
 ## Governance Outputs
 
