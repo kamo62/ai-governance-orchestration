@@ -88,7 +88,19 @@ func main() {
 	eventStore := governance.NewEventStore()
 	compositionStore := composition.NewCompositionStore()
 	oauthTokenStore := oauth.NewMemoryTokenStore()
-	registryStore := governance.NewRegistryStore()
+	var registryStore governance.RegistryStoreInterface
+	if hasSQLiteExt(cfg.AuditPath) {
+		durableStore, err := governance.NewDurableRegistryStore(cfg.AuditPath)
+		if err != nil {
+			log.Printf("durable registry store init failed, falling back to memory: %v", err)
+			registryStore = governance.NewRegistryStore()
+		} else {
+			log.Printf("using durable registry store: %s", cfg.AuditPath)
+			registryStore = durableStore
+		}
+	} else {
+		registryStore = governance.NewRegistryStore()
+	}
 
 	orchestratorURL := os.Getenv("AI_ORCH_ORCHESTRATOR_URL")
 	if orchestratorURL == "" {
@@ -115,7 +127,7 @@ func main() {
 	handler.Handle("/v1/admin/audit/retention", governance.NewAdminAuditHandler(auditStore, sessionService))
 	handler.Handle("/v1/compositions", governance.NewCompositionHandler(sessionService, compositionStore))
 	handler.Handle("/v1/compositions/", governance.NewCompositionHandler(sessionService, compositionStore))
-	registerRegistryHandlers(handler, governance.NewRegistryHandler(registryStore, sessionService))
+	registerRegistryHandlers(handler, governance.NewRegistryHandlerWithMetrics(registryStore, sessionService, metricsHandler))
 	handler.Handle("/internal/v1/model/", governance.NewModelProxyHandler(governance.ModelProxyConfig{
 		ServiceToken: cfg.ServiceToken,
 		OpenRouter: openrouter.NewClient(openrouter.Config{

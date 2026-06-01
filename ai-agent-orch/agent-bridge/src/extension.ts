@@ -3,8 +3,10 @@ import * as http from 'http';
 import * as https from 'https';
 import * as vscode from 'vscode';
 
-const GOVERNANCE_URL = vscode.workspace.getConfiguration('aiAgentBridge').get<string>('governanceUrl') || 'http://127.0.0.1:8080';
-const DEV_TOKEN = process.env.AI_ORCH_DEV_TOKEN || '';
+const config = vscode.workspace.getConfiguration('aiAgentBridge');
+const GOVERNANCE_URL = config.get<string>('governanceUrl') || 'http://127.0.0.1:8080';
+const DEV_TOKEN = config.get<string>('devToken') || process.env.AI_ORCH_DEV_TOKEN || '';
+const IDENTITY = config.get<string>('identity') || 'developer';
 
 interface AgentSession {
     session_id: string;
@@ -503,6 +505,7 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
     }
     return {
         'Authorization': `Bearer ${token}`,
+        'X-AI-Orch-Local-Identity': IDENTITY,
         ...extra
     };
 }

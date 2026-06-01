@@ -158,6 +158,23 @@ func NewRegistryStore() *RegistryStore {
 	}
 }
 
+// RegistryStoreInterface is the shared interface between in-memory and durable registry stores.
+// Both RegistryStore and DurableRegistryStore satisfy this interface.
+type RegistryStoreInterface interface {
+	RegisterUseCase(UseCase) error
+	GetUseCase(string) (UseCase, bool)
+	RegisterWorkflow(Workflow) error
+	GetWorkflow(string) (Workflow, bool)
+	CreateManifest(ContextManifest) error
+	GetManifest(string) (ContextManifest, bool)
+	AppendCacheOutcome(CacheOutcome) error
+	CacheOutcomes() ([]CacheOutcome, error)
+	AppendEvidence(EvidenceRecord) error
+	Evidence() ([]EvidenceRecord, error)
+	AppendExport(MaturityExportRecord) error
+	Exports() ([]MaturityExportRecord, error)
+}
+
 // UseCase methods.
 
 func (s *RegistryStore) RegisterUseCase(uc UseCase) error {
@@ -241,72 +258,85 @@ func (s *RegistryStore) GetManifest(id string) (ContextManifest, bool) {
 
 // CacheOutcome methods.
 
-func (s *RegistryStore) AppendCacheOutcome(c CacheOutcome) {
+func (s *RegistryStore) AppendCacheOutcome(c CacheOutcome) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if c.RecordedAt.IsZero() {
 		c.RecordedAt = time.Now().UTC()
 	}
 	s.cacheOutcomes = append(s.cacheOutcomes, c)
+	return nil
 }
 
-func (s *RegistryStore) CacheOutcomes() []CacheOutcome {
+func (s *RegistryStore) CacheOutcomes() ([]CacheOutcome, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]CacheOutcome, len(s.cacheOutcomes))
 	copy(out, s.cacheOutcomes)
-	return out
+	return out, nil
 }
 
 // Evidence methods.
 
-func (s *RegistryStore) AppendEvidence(e EvidenceRecord) {
+func (s *RegistryStore) AppendEvidence(e EvidenceRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e.RecordedAt.IsZero() {
 		e.RecordedAt = time.Now().UTC()
 	}
 	s.evidence = append(s.evidence, e)
+	return nil
 }
 
-func (s *RegistryStore) Evidence() []EvidenceRecord {
+func (s *RegistryStore) Evidence() ([]EvidenceRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]EvidenceRecord, len(s.evidence))
 	copy(out, s.evidence)
-	return out
+	return out, nil
 }
 
 // MaturityExport methods.
 
-func (s *RegistryStore) AppendExport(r MaturityExportRecord) {
+func (s *RegistryStore) AppendExport(r MaturityExportRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if r.RecordedAt.IsZero() {
 		r.RecordedAt = time.Now().UTC()
 	}
 	s.exports = append(s.exports, r)
+	return nil
 }
 
-func (s *RegistryStore) Exports() []MaturityExportRecord {
+func (s *RegistryStore) Exports() ([]MaturityExportRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]MaturityExportRecord, len(s.exports))
 	copy(out, s.exports)
-	return out
+	return out, nil
 }
 
 // RegistryHandler serves the control-plane registry APIs.
 type RegistryHandler struct {
-	store   *RegistryStore
+	store   RegistryStoreInterface
 	service *SessionService
+	metrics *MetricsHandler
 	newID   func(prefix string) string
 }
 
-func NewRegistryHandler(store *RegistryStore, service *SessionService) http.Handler {
+func NewRegistryHandler(store RegistryStoreInterface, service *SessionService) http.Handler {
 	return &RegistryHandler{
 		store:   store,
 		service: service,
+		newID:   randomID,
+	}
+}
+
+func NewRegistryHandlerWithMetrics(store RegistryStoreInterface, service *SessionService, metrics *MetricsHandler) http.Handler {
+	return &RegistryHandler{
+		store:   store,
+		service: service,
+		metrics: metrics,
 		newID:   randomID,
 	}
 }
@@ -376,6 +406,9 @@ func (h *RegistryHandler) createUseCase(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	if h.metrics != nil {
+		h.metrics.RecordUseCaseRegistered()
+	}
 	writeJSON(w, http.StatusCreated, uc)
 }
 
@@ -413,6 +446,9 @@ func (h *RegistryHandler) createWorkflow(w http.ResponseWriter, r *http.Request)
 	if err := h.store.RegisterWorkflow(wf); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
+	}
+	if h.metrics != nil {
+		h.metrics.RecordWorkflowRegistered()
 	}
 	writeJSON(w, http.StatusCreated, wf)
 }
@@ -457,6 +493,9 @@ func (h *RegistryHandler) createManifest(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	if h.metrics != nil {
+		h.metrics.RecordManifestCreated()
+	}
 	writeJSON(w, http.StatusCreated, m)
 }
 
@@ -475,11 +514,37 @@ func (h *RegistryHandler) getManifest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *RegistryHandler) listMaturityExports(w http.ResponseWriter, r *http.Request) {
-	exports := h.store.Exports()
+	exports, err := h.store.Exports()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"exports": exports,
 		"count":   len(exports),
 	})
+}
+
+func (h *RegistryHandler) requireOwnedSession(w http.ResponseWriter, r *http.Request, sessionID string) bool {
+	if h.service == nil || h.service.sessions == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session store unavailable"})
+		return false
+	}
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id is required"})
+		return false
+	}
+	record, err := h.service.sessions.Get(r.Context(), sessionID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+		return false
+	}
+	actor := actorFromContext(r.Context())
+	if record.ActorSubject != actor {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
+		return false
+	}
+	return true
 }
 
 func (h *RegistryHandler) createCacheOutcome(w http.ResponseWriter, r *http.Request) {
@@ -492,11 +557,11 @@ func (h *RegistryHandler) createCacheOutcome(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id is required"})
 		return
 	}
-	if c.CacheKeyHash == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cache_key_hash is required"})
+	if !h.requireOwnedSession(w, r, c.SessionID) {
 		return
 	}
-	if !h.requireOwnedSession(w, r, c.SessionID) {
+	if c.CacheKeyHash == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cache_key_hash is required"})
 		return
 	}
 	if c.ID == "" {
@@ -505,12 +570,26 @@ func (h *RegistryHandler) createCacheOutcome(w http.ResponseWriter, r *http.Requ
 	if c.RecordedAt.IsZero() {
 		c.RecordedAt = time.Now().UTC()
 	}
-	h.store.AppendCacheOutcome(c)
+	if err := h.store.AppendCacheOutcome(c); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if h.metrics != nil {
+		if c.Hit {
+			h.metrics.RecordCacheHit()
+		} else {
+			h.metrics.RecordCacheMiss()
+		}
+	}
 	writeJSON(w, http.StatusCreated, c)
 }
 
 func (h *RegistryHandler) listCacheOutcomes(w http.ResponseWriter, r *http.Request) {
-	outcomes := h.store.CacheOutcomes()
+	outcomes, err := h.store.CacheOutcomes()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"outcomes": outcomes,
 		"count":    len(outcomes),
@@ -527,11 +606,11 @@ func (h *RegistryHandler) createEvidence(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id is required"})
 		return
 	}
-	if e.EvidenceType == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "evidence_type is required"})
+	if !h.requireOwnedSession(w, r, e.SessionID) {
 		return
 	}
-	if !h.requireOwnedSession(w, r, e.SessionID) {
+	if e.EvidenceType == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "evidence_type is required"})
 		return
 	}
 	if e.ID == "" {
@@ -540,31 +619,24 @@ func (h *RegistryHandler) createEvidence(w http.ResponseWriter, r *http.Request)
 	if e.RecordedAt.IsZero() {
 		e.RecordedAt = time.Now().UTC()
 	}
-	h.store.AppendEvidence(e)
+	if err := h.store.AppendEvidence(e); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if h.metrics != nil {
+		h.metrics.RecordEvidenceRecorded()
+	}
 	writeJSON(w, http.StatusCreated, e)
 }
 
 func (h *RegistryHandler) listEvidence(w http.ResponseWriter, r *http.Request) {
-	ev := h.store.Evidence()
+	ev, err := h.store.Evidence()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"evidence": ev,
 		"count":    len(ev),
 	})
-}
-
-func (h *RegistryHandler) requireOwnedSession(w http.ResponseWriter, r *http.Request, sessionID string) bool {
-	if h.service == nil || h.service.sessions == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session store unavailable"})
-		return false
-	}
-	record, err := h.service.sessions.Get(r.Context(), sessionID)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
-		return false
-	}
-	if record.ActorSubject != actorFromContext(r.Context()) {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "session not owned by requester"})
-		return false
-	}
-	return true
 }

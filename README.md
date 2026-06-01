@@ -6,7 +6,7 @@ The goal is not to rebuild every agent runtime, IDE workflow, or coding assistan
 
 ## Project State
 
-Current as of 2026-06-01: this is a personal-time POC in active early development, with `v0.4.0-alpha` as the current version.
+Current as of 2026-06-01: this is a personal-time POC in active early development, with `v0.5.0-alpha` as the current version.
 
 Implemented:
 
@@ -26,18 +26,21 @@ Implemented:
 - consecutive tool/MCP-call cap controls
 - command allow-list enforcement against agent permissions
 - Phase 1F use-case, workflow, context-manifest, cache-outcome, evidence, and maturity-governance APIs
+- SQLite-backed registry storage for use cases, workflows, context manifests, cache outcomes, evidence, and maturity exports
+- registry and maturity metrics for registered use cases, workflows, manifests, cache outcomes, evidence, and exports
 - local-state TTL documentation and eviction for prompts, patches, cancellations, and patch buffers
+- ACP JSON-RPC request/response and notification routing, with permission requests failing closed until brokered
 - experimental composition APIs and assembly-line reference scaffolding with human gates
 - authenticated audit-retention administration for SQLite audit storage
 - EchoRuntime and DirectRuntime patch envelopes for local testing
-- local CLI, VS Code Bridge, and MCP stub scaffolds
+- local CLI, configurable VS Code Bridge, and MCP stub scaffolds
 - optional SQLite audit storage and optional OIDC token-validation scaffolding
 
 Next:
 
 - real OpenCode patch-producing flow
 - durable audit-chain state for restart and multi-instance use
-- durable registry storage for team use
+- dedicated registry database configuration, or Postgres, for multi-instance team use
 - manual VS Code Bridge validation
 - broader CLI coverage for admin and CI-shaped workflows
 - real user OAuth token acquisition for `oauth-user` MCPs
@@ -163,6 +166,16 @@ These outputs should be exportable to a maturity governance system that already 
 Caching is part of the governance boundary, not a hidden memory product. The first cache should be session-scoped and policy-aware: it can reuse safe context summaries, model-call metadata, and connector read results inside one governed session, but it must record provenance, classification, actor scope, expiry, invalidation, and estimated savings. Cross-session or semantic caching should only be added later with explicit approval rules.
 
 The current hardening line is audit, context, and state integrity. This branch starts that work with local audit hash chaining, explicit local-state lifecycle documentation, command allow-list enforcement, and control-plane registry outputs. Before this POC can be treated as more than a local experiment, those local stores still need durable multi-instance backing and restart-aware chain state.
+
+## Governance Insight And Memory Direction
+
+The next investigation area is Governance Insight Projection: deterministic reporting over governed audit, session, registry, evidence, cache, and cost records. This should come before semantic memory.
+
+The current storage recommendation is conservative on purpose: keep SQLite and the existing `modernc.org/sqlite` driver for local and early team hardening, use normal SQL views and queries first, add SQLite FTS5 for approved evidence recall next, and only spike vector recall after that. If vector recall becomes justified, test `modernc.org/sqlite/vec` before adding a C extension or a separate vector service.
+
+This is not agent memory. Runtime agents should not get hidden cross-session recall. Any memory-like capability must be a rebuildable projection of governed records, scoped by classification, actor, repository, and workflow, with recommendations routed to a human gate.
+
+Detailed notes: [Governance Insight And Memory Direction](ai-agent-orch/docs/governance-insight-and-memory.md).
 
 ## Current POC Direction
 

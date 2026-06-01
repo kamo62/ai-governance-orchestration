@@ -289,6 +289,99 @@ func TestCreateSessionRecordsEstimatedCostWithoutEnforcingCapByDefault(t *testin
 	}
 }
 
+func TestCreateSessionLocalIdentityHeaderOverridesDevTokenActorOnly(t *testing.T) {
+	store := &recordingSessionStore{}
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+		Sessions: store,
+		NewID: fixedIDs(
+			"sess_requested_by",
+			"evt_requested_by",
+		),
+	})
+	handler := NewSessionHandler(service)
+
+	req := authorizedSessionRequest(`{"agent":"test-generation","classification":"internal","prompt":"ordinary prompt"}`)
+	req.Header.Set("X-AI-Orch-Local-Identity", "developer:local")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("expected session to persist once, got %d", len(store.created))
+	}
+	if store.created[0].ActorSubject != "developer:local" {
+		t.Fatalf("expected local identity header actor for dev token, got %q", store.created[0].ActorSubject)
+	}
+}
+
+func TestCreateSessionRequestedByCannotOverrideOIDCSubject(t *testing.T) {
+	store := &recordingSessionStore{}
+	service := NewSessionService(SessionConfig{
+		Authorizer: fixedAuthorizer{subject: "oidc-user"},
+		Audit:      audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+		Sessions:   store,
+		NewID: fixedIDs(
+			"sess_oidc_subject",
+			"evt_oidc_subject",
+		),
+	})
+	handler := NewSessionHandler(service)
+
+	body := []byte(`{"agent":"test-generation","classification":"internal","prompt":"ordinary prompt","requested_by":"spoofed-user"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer oidc-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("expected session to persist once, got %d", len(store.created))
+	}
+	if store.created[0].ActorSubject != "oidc-user" {
+		t.Fatalf("expected OIDC subject to win, got %q", store.created[0].ActorSubject)
+	}
+}
+
+func TestCreateSessionRejectsInvalidLocalIdentityHeader(t *testing.T) {
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+	})
+	handler := NewSessionHandler(service)
+
+	req := authorizedSessionRequest(`{"agent":"test-generation","classification":"internal","prompt":"ordinary prompt"}`)
+	req.Header.Set("X-AI-Orch-Local-Identity", "bad actor")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateSessionRejectsInvalidRequestedBy(t *testing.T) {
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+	})
+	handler := NewSessionHandler(service)
+
+	req := authorizedSessionRequest("{\"agent\":\"test-generation\",\"classification\":\"internal\",\"prompt\":\"ordinary prompt\",\"requested_by\":\"bad actor\"}")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCreateSessionFailsClosedWhenAuditWriteFails(t *testing.T) {
 	service := NewSessionService(SessionConfig{
 		DevToken: "local-test-token",
@@ -395,4 +488,12 @@ func (s *recordingSessionStore) UpdateStatus(context.Context, string, string) er
 
 func (s *recordingSessionStore) CompareAndSwapStatus(context.Context, string, string, string) error {
 	return nil
+}
+
+type fixedAuthorizer struct {
+	subject string
+}
+
+func (f fixedAuthorizer) Validate(context.Context, string) (string, bool) {
+	return f.subject, f.subject != ""
 }

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.5.0-alpha - 2026-06-01 (Minor)
+
+Release impact: Minor because this adds durable SQLite registry storage, registry metrics, configurable Bridge identity settings, and safer ACP JSON-RPC handling while preserving existing API contracts.
+
+- **Added durable registry storage**: SQLite-backed storage now persists use cases, workflows, context manifests, cache outcomes, evidence records, and maturity export records when the Governance Shell runs with a SQLite audit database.
+- **Added registry metrics**: `/metrics` now includes registered use cases, workflows, manifests, cache hits/misses, evidence records, and maturity exports.
+- **Hardened registry ownership and IDs**: cache outcomes and evidence records fail closed when session ownership cannot be verified, and generated record IDs are restored before persistence.
+- **Hardened local identity mapping**: `X-AI-Orch-Local-Identity` can label local dev-token sessions for audit attribution, but it cannot override OIDC subjects and is restricted to a safe actor-label character set.
+- **Improved ACP runtime handling**: ACP responses are routed by request ID, session updates are streamed, tool-call events are surfaced for loop-cap enforcement, and permission requests fail closed until they can pass through the governed tool broker.
+- **Added Bridge configuration**: VS Code settings can now configure the Governance Shell URL, local dev token, and local identity label.
+- **Added Governance Insight and Memory research doc**: documents the SQLite-first recommendation, FTS5-before-vector build order, vector-store options, and human-gated self-improvement boundary.
+- **Updated README project direction**: summarises Governance Insight Projection as the next investigation area and links to the detailed doc.
+- **Clarified memory boundary**: memory is a rebuildable governance projection, not agent cross-session memory or an autonomous self-modification loop.
+
 ## v0.4.0-alpha - 2026-06-01 (Minor)
 
 Release impact: Minor because this adds tamper-evident audit hash chains, catalog validation caching, local-state TTL/eviction, command-allowlist enforcement, and full Phase 1F control-plane context foundation (use-case/workflow/context-manifest/cost-value/maturity-export/cache-outcome/evidence APIs).

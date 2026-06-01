@@ -174,6 +174,8 @@ type CreateSessionRequest struct {
 	Classification   string  `json:"classification"`
 	Prompt           string  `json:"prompt"`
 	EstimatedCostUSD float64 `json:"estimated_cost_usd,omitempty"`
+	// Deprecated local identity hint. Authoritative actor identity comes from auth context.
+	RequestedBy string `json:"requested_by,omitempty"`
 	// Phase 1F control-plane bindings.
 	UseCaseID  string `json:"use_case_id,omitempty"`
 	WorkflowID string `json:"workflow_id,omitempty"`
@@ -360,11 +362,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 	eventID := s.newID("evt")
 	promptHash := sha256.Sum256([]byte(request.Prompt))
 
-	authInfo, _ := AuthInfoFromContext(r.Context())
-	actor := authInfo.Subject
-	if actor == "" {
-		actor = "local-dev"
-	}
+	actor := actorFromContext(r.Context())
 
 	event, err := s.audit.Append(r.Context(), audit.Event{
 		EventID:            eventID,
@@ -559,7 +557,19 @@ func (s *SessionService) RequireAuthorizedRequest(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return r, false
 	}
-	r = r.WithContext(WithAuthInfo(r.Context(), AuthInfo{Subject: "local-dev", Method: "dev"}))
+	subject := "local-dev"
+	if localIdentity := r.Header.Get("X-AI-Orch-Local-Identity"); localIdentity != "" {
+		if !validActorLabel(localIdentity) {
+			if err := s.appendDenied(r.Context(), "invalid local identity", nil, ""); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+				return r, false
+			}
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid local identity"})
+			return r, false
+		}
+		subject = localIdentity
+	}
+	r = r.WithContext(WithAuthInfo(r.Context(), AuthInfo{Subject: subject, Method: "dev"}))
 	return r, true
 }
 
@@ -704,7 +714,27 @@ func (r CreateSessionRequest) validate() error {
 	if r.Prompt == "" {
 		return errors.New("prompt is required")
 	}
+	if r.RequestedBy != "" && !validActorLabel(r.RequestedBy) {
+		return errors.New("requested_by may only contain letters, numbers, '.', '_', '@', ':' and '-'")
+	}
 	return nil
+}
+
+func validActorLabel(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '.', r == '_', r == '@', r == ':', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

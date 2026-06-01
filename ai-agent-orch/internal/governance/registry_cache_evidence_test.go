@@ -51,6 +51,9 @@ func TestRegistryHandler_CreateAndListCacheOutcome(t *testing.T) {
 	if resp.Count != 1 {
 		t.Fatalf("expected 1 outcome, got %d", resp.Count)
 	}
+	if resp.Outcomes[0].ID == "" {
+		t.Fatal("expected generated cache outcome ID")
+	}
 	if !resp.Outcomes[0].Hit {
 		t.Fatal("expected cache hit")
 	}
@@ -92,6 +95,9 @@ func TestRegistryHandler_CreateAndListEvidence(t *testing.T) {
 	if resp.Count != 1 {
 		t.Fatalf("expected 1 evidence, got %d", resp.Count)
 	}
+	if resp.Evidence[0].ID == "" {
+		t.Fatal("expected generated evidence ID")
+	}
 	if resp.Evidence[0].EvidenceType != "test_result" {
 		t.Fatalf("unexpected evidence type: %s", resp.Evidence[0].EvidenceType)
 	}
@@ -113,6 +119,28 @@ func TestRegistryHandler_EvidenceRequiresSessionOwnership(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for non-owned session, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRegistryHandler_EvidenceFailsClosedWithoutSessionStore(t *testing.T) {
+	store := NewRegistryStore()
+	svc := NewSessionService(SessionConfig{
+		DevToken: "test",
+		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+	})
+	h := NewRegistryHandler(store, svc)
+
+	body, _ := json.Marshal(map[string]any{
+		"session_id":    "sess_1",
+		"evidence_type": "test_result",
+		"description":   "unit tests passed",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/evidence", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when session store is unavailable, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
