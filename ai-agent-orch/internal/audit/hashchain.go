@@ -63,9 +63,32 @@ func (c *ChainAppender) Append(ctx context.Context, event Event) (Event, error) 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Link to the latest persisted hash for this session.  This refreshes
-	// process-local state on every append so separate wrappers over the same
-	// store do not create independent chains during the local two-process flow.
+	type compareAppender interface {
+		AppendIfPrev(context.Context, Event, string) (Event, bool, error)
+	}
+	if store, ok := c.store.(compareAppender); ok && event.SessionID != "" {
+		for attempt := 0; attempt < 3; attempt++ {
+			latest, err := c.latestHash(ctx, event.SessionID)
+			if err != nil {
+				return Event{}, err
+			}
+			candidate := event
+			candidate.PrevEventHash = latest
+			candidate.EventHash = canonicalHash(candidate)
+			persisted, appended, err := store.AppendIfPrev(ctx, candidate, latest)
+			if err != nil {
+				return Event{}, fmt.Errorf("chain append: %w", err)
+			}
+			if appended {
+				c.lastHash[persisted.SessionID] = persisted.EventHash
+				return persisted, nil
+			}
+		}
+		return Event{}, errors.New("chain append: concurrent append conflict")
+	}
+
+	// Link to the latest persisted hash for this session. This is process-local
+	// for stores that do not expose a compare-and-append primitive.
 	if event.SessionID != "" {
 		latest, err := c.latestHash(ctx, event.SessionID)
 		if err != nil {
@@ -73,17 +96,12 @@ func (c *ChainAppender) Append(ctx context.Context, event Event) (Event, error) 
 		}
 		event.PrevEventHash = latest
 	}
-
-	// Compute the event hash on the canonical form.
 	event.EventHash = canonicalHash(event)
 
-	// Persist through the underlying store.
 	persisted, err := c.store.Append(ctx, event)
 	if err != nil {
 		return Event{}, fmt.Errorf("chain append: %w", err)
 	}
-
-	// Update the last known hash for this session.
 	if persisted.SessionID != "" && persisted.EventHash != "" {
 		c.lastHash[persisted.SessionID] = persisted.EventHash
 	}
@@ -129,20 +147,21 @@ func (c *ChainAppender) AllEvents(ctx context.Context) ([]Event, error) {
 	return nil, errors.New("chain appender: underlying store does not support AllEvents")
 }
 
-// RetentionPolicy delegates audit retention to the underlying store when the
-// concrete backend supports it.
+// RetentionPolicy applies chain-aware audit retention. Linked session events
+// must be purged as whole chains, otherwise verification of surviving events is
+// permanently broken.
 func (c *ChainAppender) RetentionPolicy(ctx context.Context, maxAge time.Duration) (int64, error) {
 	if c == nil || c.store == nil {
 		return 0, errors.New("chain appender: store is nil")
 	}
-	type retentionPurger interface {
-		RetentionPolicy(context.Context, time.Duration) (int64, error)
+	type chainRetentionPurger interface {
+		ChainRetentionPolicy(context.Context, time.Duration) (int64, error)
 	}
-	store, ok := c.store.(retentionPurger)
+	store, ok := c.store.(chainRetentionPurger)
 	if !ok {
-		return 0, errors.New("chain appender: underlying store does not support retention")
+		return 0, errors.New("chain appender: underlying store does not support chain-aware retention")
 	}
-	return store.RetentionPolicy(ctx, maxAge)
+	return store.ChainRetentionPolicy(ctx, maxAge)
 }
 
 // canonicalHash returns a SHA-256 hex hash of the event's canonical JSON

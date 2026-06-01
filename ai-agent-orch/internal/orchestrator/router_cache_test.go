@@ -1,18 +1,14 @@
 package orchestrator
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
-
-	"ai-agent-orch/internal/catalog"
 )
 
-func realCatalogRoot() string {
-	return "../.."
-}
-
 func TestRouterCachedCatalog_Hit(t *testing.T) {
-	root := realCatalogRoot()
+	root := createTempCatalog(t)
 
 	r := NewRouter(RouterConfig{CatalogRoot: root})
 	_, err := r.cachedCatalog()
@@ -59,7 +55,7 @@ func TestRouterCachedCatalog_ErrorCached(t *testing.T) {
 }
 
 func TestRouterCachedCatalog_InvalidatesAfterTTL(t *testing.T) {
-	root := realCatalogRoot()
+	root := createTempCatalog(t)
 
 	r := NewRouter(RouterConfig{CatalogRoot: root})
 	_, err := r.cachedCatalog()
@@ -86,8 +82,70 @@ func TestRouterCachedCatalog_InvalidatesAfterTTL(t *testing.T) {
 	}
 }
 
-func mustCreateMinimalCatalog(t *testing.T, root string) {
+func realCatalogRoot() string {
+	return "../.."
+}
+
+func createTempCatalog(t *testing.T) string {
 	t.Helper()
-	_ = root
-	_ = catalog.Report{}
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "models", "registry.yaml"), `
+models:
+  - alias: coding-balanced
+    provider: openrouter
+    model_id: test/model
+`)
+	writeTestFile(t, filepath.Join(root, "mcp", "registrations", "catalog-introspection.yaml"), `
+server_id: catalog-introspection
+allowed_agents:
+  - router-agent
+`)
+	writeTestFile(t, filepath.Join(root, "agents", "core", "router-agent", "agent.md"), `# Router Agent
+
+Config: `+"`./agent.config.yaml`"+`
+
+## Goal
+Route requests to a specialist.
+`)
+	writeTestFile(t, filepath.Join(root, "agents", "core", "router-agent", "agent.config.yaml"), `
+name: router-agent
+version: 0.1.0
+phase: core
+owner: local
+runtime: opencode
+model:
+  primary: coding-balanced
+mcp_servers:
+  - catalog-introspection
+tools_allowed:
+  - read_file
+permissions:
+  network: deny
+  workspace_write: deny
+  outside_workspace_write: deny
+governance:
+  classification_max: internal
+cost:
+  per_invocation_cap_usd: 0.01
+  consecutive_tool_call_max: 3
+evals:
+  path: ./evals/
+  required_for_phase0: false
+`)
+	writeTestFile(t, filepath.Join(root, "agents", "core", "router-agent", "evals", "golden-cases.yaml"), `
+cases:
+  - prompt: "review this code"
+    expected_specialist: code-review
+`)
+	return root
+}
+
+func writeTestFile(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create test dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write test file %s: %v", path, err)
+	}
 }

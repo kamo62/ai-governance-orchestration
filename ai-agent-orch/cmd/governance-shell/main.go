@@ -92,8 +92,7 @@ func main() {
 	if hasSQLiteExt(cfg.AuditPath) {
 		durableStore, err := governance.NewDurableRegistryStore(cfg.AuditPath)
 		if err != nil {
-			log.Printf("durable registry store init failed, falling back to memory: %v", err)
-			registryStore = governance.NewRegistryStore()
+			log.Fatalf("durable registry store init failed for %s: %v", cfg.AuditPath, err)
 		} else {
 			log.Printf("using durable registry store: %s", cfg.AuditPath)
 			registryStore = durableStore

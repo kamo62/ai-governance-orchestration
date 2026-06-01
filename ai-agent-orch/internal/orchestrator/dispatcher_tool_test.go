@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -64,7 +65,7 @@ func TestDispatcher_ToolBrokerLoadedFromPolicies(t *testing.T) {
 	root := realCatalogRoot()
 	// Verify the policy file exists.
 	path := filepath.Join(root, "policies", "command-allowlists.yaml")
-	if _, err := filepath.Abs(path); err != nil {
+	if _, err := os.Stat(path); err != nil {
 		t.Skip("policies path not available")
 	}
 	d := NewDispatcher(root)

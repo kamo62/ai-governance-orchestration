@@ -1,7 +1,9 @@
 package dispatch
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -13,6 +15,26 @@ func TestLoadCommandAllowlist(t *testing.T) {
 	}
 	if len(list.SystemCommands) == 0 {
 		t.Fatal("expected system commands")
+	}
+}
+
+func TestLoadCommandAllowlistRejectsUnknownFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "command-allowlists.yaml")
+	if err := os.WriteFile(path, []byte(`
+system_commands:
+  - name: read_file
+    description: Read files.
+    default: allow
+    surprise: nope
+`), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	_, err := LoadCommandAllowlist(path)
+	if err == nil {
+		t.Fatal("expected unknown field to be rejected")
+	}
+	if !strings.Contains(err.Error(), "field surprise not found") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -349,13 +349,13 @@ Phase 2R spike.
 
 ## Sources Checked
 
-- `modernc.org/sqlite`: https://pkg.go.dev/modernc.org/sqlite
-- `modernc.org/sqlite/vec`: https://pkg.go.dev/modernc.org/sqlite/vec
-- SQLite FTS5: https://www.sqlite.org/fts5.html
-- SQLite WAL: https://www.sqlite.org/wal.html
-- `sqlite-vec`: https://github.com/asg017/sqlite-vec
-- `viant/sqlite-vec`: https://github.com/viant/sqlite-vec
-- `hugot`: https://github.com/knights-analytics/hugot
-- `pgvector`: https://github.com/pgvector/pgvector
-- Chroma docs: https://docs.trychroma.com/docs/overview/introduction
-- Qdrant: https://qdrant.tech/
+- `modernc.org/sqlite` v1.50.1: https://pkg.go.dev/modernc.org/sqlite@v1.50.1
+- `modernc.org/sqlite/vec` with `modernc.org/sqlite` v1.50.1: https://pkg.go.dev/modernc.org/sqlite@v1.50.1/vec
+- SQLite FTS5 docs, checked 2026-06-01: https://www.sqlite.org/fts5.html
+- SQLite WAL docs, checked 2026-06-01: https://www.sqlite.org/wal.html
+- `sqlite-vec` v0.1.9: https://github.com/asg017/sqlite-vec/releases/tag/v0.1.9
+- `viant/sqlite-vec` v0.3.0: https://github.com/viant/sqlite-vec/releases/tag/v0.3.0
+- `hugot` v0.7.4: https://github.com/knights-analytics/hugot/releases/tag/v0.7.4
+- `pgvector` v0.8.2: https://github.com/pgvector/pgvector/releases/tag/v0.8.2
+- Chroma docs / release 1.5.9, checked 2026-06-01: https://github.com/chroma-core/chroma/releases/tag/1.5.9
+- Qdrant v1.18.1: https://github.com/qdrant/qdrant/releases/tag/v1.18.1

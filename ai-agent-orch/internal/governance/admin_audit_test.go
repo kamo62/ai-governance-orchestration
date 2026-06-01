@@ -45,7 +45,7 @@ func TestAdminAuditHandler_RequiresAuthorization(t *testing.T) {
 	}
 }
 
-func TestAdminAuditHandler_RetentionPurgesOldEvents(t *testing.T) {
+func TestAdminAuditHandler_RetentionPreservesLiveSessionChains(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "audit.db")
 	store, err := audit.NewSQLiteStore(dbPath)
 	if err != nil {
@@ -86,20 +86,17 @@ func TestAdminAuditHandler_RetentionPurgesOldEvents(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"purged":1`) {
-		t.Fatalf("expected 1 purged event: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"purged":0`) {
+		t.Fatalf("expected live chain to be retained: %s", rec.Body.String())
 	}
 
-	// Verify only recent event remains.
+	// Verify the full live session chain remains.
 	events, err := store.EventsBySession(context.Background(), "sess_retention")
 	if err != nil {
 		t.Fatalf("query events: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 remaining event, got %d", len(events))
-	}
-	if events[0].EventID != "evt_recent" {
-		t.Fatalf("expected evt_recent, got %s", events[0].EventID)
+	if len(events) != 2 {
+		t.Fatalf("expected 2 remaining events, got %d", len(events))
 	}
 }
 

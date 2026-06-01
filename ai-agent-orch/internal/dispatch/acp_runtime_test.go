@@ -1,6 +1,8 @@
 package dispatch
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -58,6 +60,68 @@ func TestACPHandle_sendRequest_Timeout(t *testing.T) {
 	}
 	if err.Error() != "request 1 timed out" {
 		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestACPHandle_sendRequest_ContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	h := &acpHandle{
+		ctx:            ctx,
+		events:         make(chan RuntimeEvent, 64),
+		done:           make(chan struct{}),
+		stdin:          &fakeWriteCloser{},
+		requestTimeout: time.Minute,
+	}
+	cancel()
+
+	req := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": map[string]any{}}
+	_, err := h.sendRequest(req)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if _, ok := h.pending[1]; ok {
+		t.Fatal("pending request should be removed after cancellation")
+	}
+}
+
+func TestACPHandle_failPendingUnblocksRequests(t *testing.T) {
+	h := &acpHandle{
+		events: make(chan RuntimeEvent, 64),
+		done:   make(chan struct{}),
+		stdin:  &fakeWriteCloser{},
+	}
+	respCh := make(chan *jsonRPCMessage, 1)
+	h.pending = map[int]chan *jsonRPCMessage{1: respCh}
+	h.failPending(errors.New("stream closed"))
+
+	resp := <-respCh
+	if resp.Error == nil || resp.Error.Message != "stream closed" {
+		t.Fatalf("expected synthetic stream-closed error, got %#v", resp)
+	}
+	if len(h.pending) != 0 {
+		t.Fatal("pending map should be empty")
+	}
+}
+
+func TestACPHandle_WorkspaceAndMCPParams(t *testing.T) {
+	h := &acpHandle{
+		config: SessionConfig{
+			WorkspacePath: "/workspace/project",
+			MCPEndpoints: map[string]string{
+				"zeta":  "http://zeta",
+				"alpha": "http://alpha",
+			},
+		},
+	}
+	if got := h.workspacePath(); got != "/workspace/project" {
+		t.Fatalf("unexpected workspace path: %s", got)
+	}
+	servers := acpMCPServers(h.config.MCPEndpoints)
+	if len(servers) != 2 {
+		t.Fatalf("expected 2 MCP servers, got %d", len(servers))
+	}
+	if servers[0]["name"] != "alpha" || servers[0]["url"] != "http://alpha" {
+		t.Fatalf("expected deterministic alpha server first, got %#v", servers[0])
 	}
 }
 
@@ -219,6 +283,11 @@ func TestExtractPatchFromText(t *testing.T) {
 			name: "simple patch envelope",
 			text: `Some text {"patch":"abc123","files":[{"file_path":"foo.go","diff":"+bar"}]} more text`,
 			want: `{"patch":"abc123","files":[{"file_path":"foo.go","diff":"+bar"}]}`,
+		},
+		{
+			name: "patchId envelope",
+			text: `{"patchId":"abc123","files":[{"path":"foo.go","action":"modify","newContent":"bar"}]}`,
+			want: `{"patchId":"abc123","files":[{"path":"foo.go","action":"modify","newContent":"bar"}]}`,
 		},
 		{
 			name: "no patch",

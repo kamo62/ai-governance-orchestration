@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +49,7 @@ func (r *ACPRuntime) StartSession(ctx context.Context, cfg SessionConfig) (Sessi
 	}
 
 	handle := &acpHandle{
+		ctx:    runCtx,
 		config: cfg,
 		events: make(chan RuntimeEvent, 64),
 		done:   make(chan struct{}),
@@ -87,6 +89,7 @@ func (r *ACPRuntime) StartSession(ctx context.Context, cfg SessionConfig) (Sessi
 }
 
 type acpHandle struct {
+	ctx       context.Context
 	config    SessionConfig
 	stdin     io.WriteCloser
 	stdout    io.ReadCloser
@@ -151,8 +154,8 @@ func (h *acpHandle) runSession() {
 		"id":      h.allocID(),
 		"method":  "session/new",
 		"params": map[string]any{
-			"cwd":        "/tmp",
-			"mcpServers": []any{},
+			"cwd":        h.workspacePath(),
+			"mcpServers": acpMCPServers(h.config.MCPEndpoints),
 		},
 	}
 	newSessionResp, err := h.sendRequest(newSessionReq)
@@ -247,9 +250,18 @@ func (h *acpHandle) sendRequest(req map[string]any) (*jsonRPCMessage, error) {
 	if timeout == 0 {
 		timeout = 5 * time.Minute
 	}
+	ctx := h.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	select {
 	case resp := <-respCh:
 		return resp, nil
+	case <-ctx.Done():
+		h.pendingMu.Lock()
+		delete(h.pending, idVal)
+		h.pendingMu.Unlock()
+		return nil, ctx.Err()
 	case <-time.After(timeout):
 		h.pendingMu.Lock()
 		delete(h.pending, idVal)
@@ -281,6 +293,7 @@ func (h *acpHandle) readLoop(stdout, stderr io.ReadCloser) {
 	}()
 
 	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
@@ -324,7 +337,10 @@ func (h *acpHandle) readLoop(stdout, stderr io.ReadCloser) {
 		h.err = err
 		h.mu.Unlock()
 		h.emitError(fmt.Sprintf("ACP stream error: %v", err))
+		h.failPending(fmt.Errorf("ACP stream error: %w", err))
+		return
 	}
+	h.failPending(io.EOF)
 }
 
 func (h *acpHandle) handleNotification(msg *jsonRPCMessage) {
@@ -514,7 +530,59 @@ func extractPatchFromText(text string) string {
 }
 
 func containsPatchKey(s string) bool {
-	return len(s) > 20 && strings.Contains(s, "\"patch\"")
+	if len(s) <= 20 || !strings.Contains(s, "\"files\"") {
+		return false
+	}
+	return strings.Contains(s, "\"patch\"") ||
+		strings.Contains(s, "\"patchId\"") ||
+		strings.Contains(s, "\"patch_id\"")
+}
+
+func (h *acpHandle) workspacePath() string {
+	if h != nil && h.config.WorkspacePath != "" {
+		return h.config.WorkspacePath
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	return "."
+}
+
+func acpMCPServers(endpoints map[string]string) []map[string]string {
+	if len(endpoints) == 0 {
+		return []map[string]string{}
+	}
+	names := make([]string, 0, len(endpoints))
+	for name := range endpoints {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	servers := make([]map[string]string, 0, len(names))
+	for _, name := range names {
+		if endpoints[name] == "" {
+			continue
+		}
+		servers = append(servers, map[string]string{
+			"name": name,
+			"url":  endpoints[name],
+		})
+	}
+	return servers
+}
+
+func (h *acpHandle) failPending(err error) {
+	if h == nil {
+		return
+	}
+	if err == nil {
+		err = io.EOF
+	}
+	h.pendingMu.Lock()
+	defer h.pendingMu.Unlock()
+	for id, ch := range h.pending {
+		ch <- &jsonRPCMessage{Error: &jsonRPCError{Code: -32000, Message: err.Error()}}
+		delete(h.pending, id)
+	}
 }
 
 type jsonRPCMessage struct {

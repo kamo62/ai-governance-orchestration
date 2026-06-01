@@ -87,7 +87,7 @@ type SessionService struct {
 	promptTimes       map[string]time.Time
 	patchMu           sync.Mutex
 	patches           map[string]map[string]struct{}
-	patchTimes        map[string]time.Time
+	patchTimes        map[string]map[string]time.Time
 	cancelMu          sync.Mutex
 	cancels           map[string]context.CancelFunc
 	cancelTimes       map[string]time.Time
@@ -242,7 +242,7 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 		prompts:           make(map[string]string),
 		promptTimes:       make(map[string]time.Time),
 		patches:           make(map[string]map[string]struct{}),
-		patchTimes:        make(map[string]time.Time),
+		patchTimes:        make(map[string]map[string]time.Time),
 		cancels:           make(map[string]context.CancelFunc),
 		cancelTimes:       make(map[string]time.Time),
 		localStateTTL:     ttl,
@@ -649,8 +649,11 @@ func (s *SessionService) rememberPatch(sessionID string, patchID string) {
 	if s.patches[sessionID] == nil {
 		s.patches[sessionID] = make(map[string]struct{})
 	}
+	if s.patchTimes[sessionID] == nil {
+		s.patchTimes[sessionID] = make(map[string]time.Time)
+	}
 	s.patches[sessionID][patchID] = struct{}{}
-	s.patchTimes[sessionID] = time.Now().UTC()
+	s.patchTimes[sessionID][patchID] = time.Now().UTC()
 }
 
 func (s *SessionService) patchKnown(sessionID string, patchID string) bool {
@@ -670,10 +673,18 @@ func (s *SessionService) evictPatchesLocked() {
 		return
 	}
 	cutoff := time.Now().UTC().Add(-s.localStateTTL)
-	for id, t := range s.patchTimes {
-		if t.Before(cutoff) {
-			delete(s.patches, id)
-			delete(s.patchTimes, id)
+	for sessionID, patchTimes := range s.patchTimes {
+		for patchID, t := range patchTimes {
+			if t.Before(cutoff) {
+				delete(s.patches[sessionID], patchID)
+				delete(patchTimes, patchID)
+			}
+		}
+		if len(s.patches[sessionID]) == 0 {
+			delete(s.patches, sessionID)
+		}
+		if len(patchTimes) == 0 {
+			delete(s.patchTimes, sessionID)
 		}
 	}
 }

@@ -92,13 +92,14 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 	}
 
 	sessionCfg := dispatch.SessionConfig{
-		SessionID:    sessionID,
-		SystemPrompt: agentCfg.SystemPrompt(d.catalogRoot),
-		UserPrompt:   prompt,
-		ModelID:      modelAlias,
-		AllowedTools: agentCfg.ToolsAllowed,
-		CostCapUSD:   agentCfg.Cost.PerInvocationCapUSD,
-		MCPEndpoints: resolveMCPEndpoints(agentCfg.MCPServers),
+		SessionID:     sessionID,
+		SystemPrompt:  agentCfg.SystemPrompt(d.catalogRoot),
+		UserPrompt:    prompt,
+		ModelID:       modelAlias,
+		WorkspacePath: workspaceRoot(d.catalogRoot),
+		AllowedTools:  agentCfg.ToolsAllowed,
+		CostCapUSD:    agentCfg.Cost.PerInvocationCapUSD,
+		MCPEndpoints:  resolveMCPEndpoints(agentCfg.MCPServers),
 	}
 
 	// Try ACP runtime first if agent specifies opencode.
@@ -125,6 +126,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 }
 
 func (d *Dispatcher) validateAllowedTools(agentName string, tools []string, permissions map[string]string) error {
+	if len(tools) == 0 {
+		return nil
+	}
 	if d == nil || d.broker == nil {
 		if d != nil && d.toolBrokerErr != nil {
 			return fmt.Errorf("tool broker unavailable: %w", d.toolBrokerErr)
@@ -175,4 +179,17 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func workspaceRoot(catalogRoot string) string {
+	if override := os.Getenv("AI_ORCH_WORKSPACE_ROOT"); override != "" {
+		return override
+	}
+	if catalogRoot != "" {
+		return catalogRoot
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	return "."
 }

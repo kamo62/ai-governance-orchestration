@@ -42,7 +42,7 @@ This repo is an attempt to answer those questions without rebuilding the whole d
 
 ## Current State
 
-Current version: `v0.5.2-alpha`.
+Current version: `v0.5.3-alpha`.
 
 This is an early local POC. It is not production-ready.
 
@@ -137,7 +137,7 @@ The takeaway from these references is not "adopt this whole stack". The takeaway
 
 ## Design Questions Still Open
 
-- Should the policy engine remain native long term, or should AGT become a supported adapter once the local contract is stable?
+- Should the policy engine remain native long-term, or should AGT become a supported adapter once the local contract is stable?
 - Where is the right local isolation line: simple subprocess/CLI execution, container-per-session, or both depending on workflow risk?
 - What belongs in the governance/control plane UI, and what should stay in the IDE or CLI?
 - How much context should be cached per session before the cache becomes a hidden memory product?

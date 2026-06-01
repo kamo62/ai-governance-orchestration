@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
@@ -36,7 +37,9 @@ func LoadCommandAllowlist(path string) (*CommandAllowlist, error) {
 		return nil, fmt.Errorf("read command allowlist: %w", err)
 	}
 	var list CommandAllowlist
-	if err := yaml.Unmarshal(b, &list); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(b))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&list); err != nil {
 		return nil, fmt.Errorf("parse command allowlist: %w", err)
 	}
 	return &list, nil

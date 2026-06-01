@@ -1,6 +1,7 @@
 package governance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -406,6 +407,9 @@ func (h *RegistryHandler) createUseCase(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	if stored, ok := h.store.GetUseCase(uc.ID); ok {
+		uc = stored
+	}
 	if h.metrics != nil {
 		h.metrics.RecordUseCaseRegistered()
 	}
@@ -447,6 +451,9 @@ func (h *RegistryHandler) createWorkflow(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	if stored, ok := h.store.GetWorkflow(wf.ID); ok {
+		wf = stored
+	}
 	if h.metrics != nil {
 		h.metrics.RecordWorkflowRegistered()
 	}
@@ -473,6 +480,9 @@ func (h *RegistryHandler) createManifest(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
+	if !h.requireOwnedSession(w, r, req.SessionID) {
+		return
+	}
 	m := ContextManifest{
 		ID:              req.ID,
 		SessionID:       req.SessionID,
@@ -493,6 +503,9 @@ func (h *RegistryHandler) createManifest(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	if stored, ok := h.store.GetManifest(m.ID); ok {
+		m = stored
+	}
 	if h.metrics != nil {
 		h.metrics.RecordManifestCreated()
 	}
@@ -510,6 +523,9 @@ func (h *RegistryHandler) getManifest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "manifest not found"})
 		return
 	}
+	if !h.requireOwnedSession(w, r, m.SessionID) {
+		return
+	}
 	writeJSON(w, http.StatusOK, m)
 }
 
@@ -519,9 +535,13 @@ func (h *RegistryHandler) listMaturityExports(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	filtered, ok := h.filterOwnedMaturityExports(w, r, exports)
+	if !ok {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"exports": exports,
-		"count":   len(exports),
+		"exports": filtered,
+		"count":   len(filtered),
 	})
 }
 
@@ -545,6 +565,80 @@ func (h *RegistryHandler) requireOwnedSession(w http.ResponseWriter, r *http.Req
 		return false
 	}
 	return true
+}
+
+func (h *RegistryHandler) sessionOwnedByActor(ctx context.Context, sessionID string, actor string) (bool, error) {
+	if h.service == nil || h.service.sessions == nil {
+		return false, errors.New("session store unavailable")
+	}
+	if sessionID == "" {
+		return false, nil
+	}
+	record, err := h.service.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return false, nil
+	}
+	return record.ActorSubject == actor, nil
+}
+
+func (h *RegistryHandler) filterOwnedCacheOutcomes(w http.ResponseWriter, r *http.Request, outcomes []CacheOutcome) ([]CacheOutcome, bool) {
+	if h.service == nil || h.service.sessions == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session store unavailable"})
+		return nil, false
+	}
+	actor := actorFromContext(r.Context())
+	filtered := make([]CacheOutcome, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		owned, err := h.sessionOwnedByActor(r.Context(), outcome.SessionID, actor)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+			return nil, false
+		}
+		if owned {
+			filtered = append(filtered, outcome)
+		}
+	}
+	return filtered, true
+}
+
+func (h *RegistryHandler) filterOwnedEvidence(w http.ResponseWriter, r *http.Request, evidence []EvidenceRecord) ([]EvidenceRecord, bool) {
+	if h.service == nil || h.service.sessions == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session store unavailable"})
+		return nil, false
+	}
+	actor := actorFromContext(r.Context())
+	filtered := make([]EvidenceRecord, 0, len(evidence))
+	for _, record := range evidence {
+		owned, err := h.sessionOwnedByActor(r.Context(), record.SessionID, actor)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+			return nil, false
+		}
+		if owned {
+			filtered = append(filtered, record)
+		}
+	}
+	return filtered, true
+}
+
+func (h *RegistryHandler) filterOwnedMaturityExports(w http.ResponseWriter, r *http.Request, exports []MaturityExportRecord) ([]MaturityExportRecord, bool) {
+	if h.service == nil || h.service.sessions == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session store unavailable"})
+		return nil, false
+	}
+	actor := actorFromContext(r.Context())
+	filtered := make([]MaturityExportRecord, 0, len(exports))
+	for _, record := range exports {
+		owned, err := h.sessionOwnedByActor(r.Context(), record.SessionID, actor)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+			return nil, false
+		}
+		if owned {
+			filtered = append(filtered, record)
+		}
+	}
+	return filtered, true
 }
 
 func (h *RegistryHandler) createCacheOutcome(w http.ResponseWriter, r *http.Request) {
@@ -590,9 +684,13 @@ func (h *RegistryHandler) listCacheOutcomes(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	filtered, ok := h.filterOwnedCacheOutcomes(w, r, outcomes)
+	if !ok {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"outcomes": outcomes,
-		"count":    len(outcomes),
+		"outcomes": filtered,
+		"count":    len(filtered),
 	})
 }
 
@@ -635,8 +733,12 @@ func (h *RegistryHandler) listEvidence(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	filtered, ok := h.filterOwnedEvidence(w, r, ev)
+	if !ok {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"evidence": ev,
-		"count":    len(ev),
+		"evidence": filtered,
+		"count":    len(filtered),
 	})
 }

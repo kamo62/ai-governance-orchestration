@@ -2,7 +2,7 @@
   "name": "ai-agent-bridge",
   "displayName": "AI Agent Bridge",
   "description": "Local AI agent orchestration bridge for VS Code",
-  "version": "0.2.1-alpha",
+  "version": "0.2.2-alpha",
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -46,6 +46,7 @@
         "aiAgentBridge.devToken": {
           "type": "string",
           "default": "",
+          "scope": "machine",
           "description": "Developer authentication token for the orchestrator. Falls back to AI_ORCH_DEV_TOKEN environment variable."
         },
         "aiAgentBridge.identity": {

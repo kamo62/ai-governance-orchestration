@@ -19,6 +19,7 @@ type SessionConfig struct {
 	UserPrompt    string
 	ModelID       string
 	ModelProvider string
+	WorkspacePath string
 	AllowedTools  []string
 	MCPEndpoints  map[string]string
 	Permissions   map[string]string

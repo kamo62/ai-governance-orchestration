@@ -22,14 +22,14 @@ const defaultPatchBufferTTL = 30 * time.Minute
 type PatchBuffer struct {
 	mu      sync.RWMutex
 	patches map[string]map[string]string
-	times   map[string]time.Time
+	times   map[string]map[string]time.Time
 	ttl     time.Duration
 }
 
 func NewPatchBuffer() *PatchBuffer {
 	return &PatchBuffer{
 		patches: make(map[string]map[string]string),
-		times:   make(map[string]time.Time),
+		times:   make(map[string]map[string]time.Time),
 		ttl:     defaultPatchBufferTTL,
 	}
 }
@@ -99,8 +99,11 @@ func (b *PatchBuffer) Store(ctx context.Context, sessionID string, payload strin
 	if b.patches[sessionID] == nil {
 		b.patches[sessionID] = make(map[string]string)
 	}
+	if b.times[sessionID] == nil {
+		b.times[sessionID] = make(map[string]time.Time)
+	}
 	b.patches[sessionID][envelope.PatchID] = string(full)
-	b.times[sessionID] = time.Now().UTC()
+	b.times[sessionID][envelope.PatchID] = time.Now().UTC()
 	return string(safe), nil
 }
 
@@ -130,10 +133,18 @@ func (b *PatchBuffer) evictLocked() {
 		return
 	}
 	cutoff := time.Now().UTC().Add(-b.ttl)
-	for id, t := range b.times {
-		if t.Before(cutoff) {
-			delete(b.patches, id)
-			delete(b.times, id)
+	for sessionID, patchTimes := range b.times {
+		for patchID, t := range patchTimes {
+			if t.Before(cutoff) {
+				delete(b.patches[sessionID], patchID)
+				delete(patchTimes, patchID)
+			}
+		}
+		if len(b.patches[sessionID]) == 0 {
+			delete(b.patches, sessionID)
+		}
+		if len(patchTimes) == 0 {
+			delete(b.times, sessionID)
 		}
 	}
 }

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.5.3-alpha - 2026-06-01 (Patch)
+
+Release impact: Patch because this fixes governance hardening review findings without introducing breaking API contracts.
+
+- **Fixed ACP runtime scoping**: ACP sessions now run from the configured workspace path instead of `/tmp`, pass configured MCP endpoints into `session/new`, recognise `patchId` patch envelopes, increase scanner capacity for large JSON-RPC payloads, and unblock pending requests on cancellation or stream exit.
+- **Tightened registry ownership**: context manifests now require session ownership on create/read, and cache, evidence, and maturity export list endpoints filter records to sessions owned by the authenticated actor.
+- **Hardened audit-chain behaviour**: SQLite audit appends now use an atomic compare-and-append chain head, and retention now purges only complete expired session chains so retained chains still verify.
+- **Reduced fail-open behaviour**: SQLite registry initialisation now fails startup instead of silently downgrading to in-memory storage, command allow-list YAML rejects unknown fields, and tool-less agents no longer fail when the tool broker is unavailable.
+- **Improved TTL and migration safety**: session patch tracking and the staged patch buffer now expire individual patches, and SQLite session migration tolerates the exact duplicate-column race between concurrent processes.
+- **Addressed review polish**: scoped the Bridge dev-token setting to machine storage while preferring VS Code SecretStorage, made router cache tests self-contained, fixed markdown lint/style items, and pinned research source versions.
+
 ## v0.5.2-alpha - 2026-06-01 (Patch)
 
 Release impact: Patch because this restores and clarifies README investigation context without changing runtime behaviour or public API contracts.

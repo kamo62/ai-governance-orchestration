@@ -8,7 +8,7 @@ Agents are discovered automatically from the filesystem. No database registratio
 
 ### Directory Structure
 
-```
+```text
 agents/
   core/         → System agents (e.g., router-agent)
   temp/         → Experimental agents under development

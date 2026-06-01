@@ -144,7 +144,7 @@ func TestChainAppender_IsolatesSessions(t *testing.T) {
 	}
 }
 
-func TestChainAppender_DelegatesRetentionPolicy(t *testing.T) {
+func TestChainAppender_RetentionPolicyPreservesLiveChain(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "audit.db")
 	store, err := NewSQLiteStore(dbPath)
 	if err != nil {
@@ -179,15 +179,56 @@ func TestChainAppender_DelegatesRetentionPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retention policy: %v", err)
 	}
-	if purged != 1 {
-		t.Fatalf("expected 1 purged event, got %d", purged)
+	if purged != 0 {
+		t.Fatalf("expected live chain to be retained, got %d purged", purged)
 	}
 	events, err := chain.EventsBySession(ctx, "sess_retention")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
-	if len(events) != 1 || events[0].EventID != "evt_recent" {
+	if len(events) != 2 {
 		t.Fatalf("unexpected remaining events: %#v", events)
+	}
+	if err := VerifyChain(events); err != nil {
+		t.Fatalf("retained chain should verify: %v", err)
+	}
+}
+
+func TestChainAppender_RetentionPolicyPurgesExpiredWholeChain(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "audit.db")
+	store, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("new sqlite store: %v", err)
+	}
+	defer store.Close()
+	chain := NewChainAppender(store)
+	ctx := context.Background()
+
+	for _, id := range []string{"evt_old_1", "evt_old_2"} {
+		if _, err := chain.Append(ctx, Event{
+			EventID:    id,
+			EventType:  "test.old",
+			SessionID:  "sess_expired",
+			Actor:      "local-dev",
+			RecordedAt: time.Now().UTC().Add(-48 * time.Hour),
+		}); err != nil {
+			t.Fatalf("append %s: %v", id, err)
+		}
+	}
+
+	purged, err := chain.RetentionPolicy(ctx, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("retention policy: %v", err)
+	}
+	if purged != 2 {
+		t.Fatalf("expected whole chain to be purged, got %d", purged)
+	}
+	events, err := chain.EventsBySession(ctx, "sess_expired")
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected expired chain to be empty, got %#v", events)
 	}
 }
 

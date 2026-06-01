@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -158,6 +159,11 @@ func (s *SQLiteSessionStore) ensureSessionColumn(column string, definition strin
 		return fmt.Errorf("iterate sessions schema: %w", err)
 	}
 	if _, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE sessions ADD COLUMN %s %s`, column, definition)); err != nil {
+		// Another process may win the PRAGMA table_info -> ALTER TABLE race.
+		// Treat only SQLite's duplicate-column error as success.
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return nil
+		}
 		return fmt.Errorf("add sessions column %s: %w", column, err)
 	}
 	return nil

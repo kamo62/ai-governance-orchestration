@@ -3,10 +3,9 @@ import * as http from 'http';
 import * as https from 'https';
 import * as vscode from 'vscode';
 
-const config = vscode.workspace.getConfiguration('aiAgentBridge');
-const GOVERNANCE_URL = config.get<string>('governanceUrl') || 'http://127.0.0.1:8080';
-const DEV_TOKEN = config.get<string>('devToken') || process.env.AI_ORCH_DEV_TOKEN || '';
-const IDENTITY = config.get<string>('identity') || 'developer';
+let governanceUrl = 'http://127.0.0.1:8080';
+let devToken = process.env.AI_ORCH_DEV_TOKEN || '';
+let identity = 'developer';
 
 interface AgentSession {
     session_id: string;
@@ -53,7 +52,12 @@ class PatchContentProvider implements vscode.TextDocumentContentProvider {
 
 const patchProvider = new PatchContentProvider();
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
+    const config = vscode.workspace.getConfiguration('aiAgentBridge');
+    governanceUrl = config.get<string>('governanceUrl') || governanceUrl;
+    devToken = await context.secrets.get('aiAgentBridge.devToken') || config.get<string>('devToken') || devToken;
+    identity = config.get<string>('identity') || identity;
+
     const outputChannel = vscode.window.createOutputChannel('AI Agent Bridge');
 
     context.subscriptions.push(
@@ -147,7 +151,7 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 async function createSession(prompt: string): Promise<AgentSession> {
-    const response = await fetch(`${GOVERNANCE_URL}/v1/sessions`, {
+    const response = await fetch(`${governanceUrl}/v1/sessions`, {
         method: 'POST',
         headers: authHeaders({
             'Content-Type': 'application/json'
@@ -168,7 +172,7 @@ async function createSession(prompt: string): Promise<AgentSession> {
 }
 
 async function sendMessage(sessionId: string, prompt: string): Promise<RouteResult> {
-    const response = await fetch(`${GOVERNANCE_URL}/v1/sessions/${sessionId}/messages`, {
+    const response = await fetch(`${governanceUrl}/v1/sessions/${sessionId}/messages`, {
         method: 'POST',
         headers: authHeaders({
             'Content-Type': 'application/json'
@@ -185,7 +189,7 @@ async function sendMessage(sessionId: string, prompt: string): Promise<RouteResu
 }
 
 async function confirmSession(sessionId: string, agent: string): Promise<AgentSession> {
-    const response = await fetch(`${GOVERNANCE_URL}/v1/sessions/${sessionId}/confirm`, {
+    const response = await fetch(`${governanceUrl}/v1/sessions/${sessionId}/confirm`, {
         method: 'POST',
         headers: authHeaders({
             'Content-Type': 'application/json'
@@ -203,7 +207,7 @@ async function confirmSession(sessionId: string, agent: string): Promise<AgentSe
 
 async function connectToEvents(sessionId: string, outputChannel: vscode.OutputChannel, patches: PatchEnvelope[]): Promise<void> {
     return new Promise((resolve, reject) => {
-        const url = `${GOVERNANCE_URL}/v1/sessions/${sessionId}/events`;
+        const url = `${governanceUrl}/v1/sessions/${sessionId}/events`;
         const requestGet = url.startsWith('https') ? https.get : http.get;
         let settled = false;
         const requestState: { req?: http.ClientRequest } = {};
@@ -351,7 +355,7 @@ async function fetchPatch(sessionId: string, id: string): Promise<PatchEnvelope>
     if (!id || id === 'unknown') {
         throw new Error('Patch fetch requires a patch ID.');
     }
-    const response = await fetch(`${GOVERNANCE_URL}/v1/sessions/${encodeURIComponent(sessionId)}/patches/${encodeURIComponent(id)}`, {
+    const response = await fetch(`${governanceUrl}/v1/sessions/${encodeURIComponent(sessionId)}/patches/${encodeURIComponent(id)}`, {
         method: 'GET',
         headers: authHeaders()
     });
@@ -438,7 +442,7 @@ async function submitPatchDecisions(sessionId: string, patches: PatchEnvelope[],
 }
 
 async function submitPatchDecision(sessionId: string, id: string, decision: string, reason?: string): Promise<void> {
-    const response = await fetch(`${GOVERNANCE_URL}/v1/sessions/${sessionId}/patch-decision`, {
+    const response = await fetch(`${governanceUrl}/v1/sessions/${sessionId}/patch-decision`, {
         method: 'POST',
         headers: authHeaders({
             'Content-Type': 'application/json'
@@ -457,7 +461,7 @@ async function submitPatchDecision(sessionId: string, id: string, decision: stri
 }
 
 async function lookupAudit(sessionId: string): Promise<any> {
-    const response = await fetch(`${GOVERNANCE_URL}/v1/audit/sessions/${sessionId}`, {
+    const response = await fetch(`${governanceUrl}/v1/audit/sessions/${sessionId}`, {
         method: 'GET',
         headers: authHeaders()
     });
@@ -499,13 +503,13 @@ function workspaceFileUri(root: vscode.Uri, filePath: string): vscode.Uri {
 }
 
 function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
-    const token = DEV_TOKEN.trim();
+    const token = devToken.trim();
     if (!token) {
         throw new Error('AI_ORCH_DEV_TOKEN is required for the VS Code Bridge.');
     }
     return {
         'Authorization': `Bearer ${token}`,
-        'X-AI-Orch-Local-Identity': IDENTITY,
+        'X-AI-Orch-Local-Identity': identity,
         ...extra
     };
 }
