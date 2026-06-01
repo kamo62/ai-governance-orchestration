@@ -35,12 +35,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	chainAudit := audit.NewChainAppender(auditStore)
 	sessionIntake := orchestrator.NewSessionIntake(orchestrator.SessionIntakeConfig{
-		Audit: auditStore,
+		Audit: chainAudit,
 	})
 	router := orchestrator.NewRouter(orchestrator.RouterConfig{
 		CatalogRoot: cfg.CatalogRoot,
-		Audit:       auditStore,
+		Audit:       chainAudit,
 	})
 	dispatcher := orchestrator.NewDispatcher(cfg.CatalogRoot)
 
@@ -48,7 +49,7 @@ func main() {
 	handler.Handle("/", baseHandler)
 	handler.Handle("/v1/orchestrator/sessions", httpauth.RequireBearerToken(cfg.ServiceToken, orchestrator.NewSessionIntakeHandler(sessionIntake)))
 	handler.Handle("/v1/orchestrator/route", httpauth.RequireBearerToken(cfg.ServiceToken, orchestrator.NewRouterHandler(router)))
-	handler.Handle("/v1/orchestrator/dispatch", httpauth.RequireBearerToken(cfg.ServiceToken, orchestrator.NewDispatchHandler(dispatcher, auditStore)))
+	handler.Handle("/v1/orchestrator/dispatch", httpauth.RequireBearerToken(cfg.ServiceToken, orchestrator.NewDispatchHandler(dispatcher, chainAudit)))
 
 	wrappedHandler := logRequestLatency(handler)
 	srv := &http.Server{

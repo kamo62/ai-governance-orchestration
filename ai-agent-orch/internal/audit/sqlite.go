@@ -98,6 +98,12 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.ensureAuditColumn("parent_event_id", "TEXT"); err != nil {
 		return err
 	}
+	if err := s.ensureAuditColumn("prev_event_hash", "TEXT"); err != nil {
+		return err
+	}
+	if err := s.ensureAuditColumn("event_hash", "TEXT"); err != nil {
+		return err
+	}
 	_, err = s.db.Exec(`
 		CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_events(session_id);
 		CREATE INDEX IF NOT EXISTS idx_audit_type ON audit_events(event_type);
@@ -171,17 +177,19 @@ func (s *SQLiteStore) Append(ctx context.Context, event Event) (Event, error) {
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO audit_events (
-			event_id, parent_event_id, session_id, event_type, actor, agent, classification,
-			reason, findings_json, prompt_sha256, estimated_cost_usd, cost_cap_usd,
-			raw_prompt_stored, raw_response_stored, correlation_subject, recorded_at, payload_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
+			INSERT INTO audit_events (
+				event_id, parent_event_id, session_id, event_type, actor, agent, classification,
+				reason, findings_json, prompt_sha256, estimated_cost_usd, cost_cap_usd,
+				raw_prompt_stored, raw_response_stored, correlation_subject, recorded_at,
+				prev_event_hash, event_hash, payload_json
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`,
 		event.EventID, event.ParentEventID, event.SessionID, event.EventType, event.Actor, event.Agent,
 		event.Classification, event.Reason, string(findingsJSON), event.PromptSHA256,
 		event.EstimatedCostUSD, event.CostCapUSD,
 		boolToInt(event.RawPromptStored), boolToInt(event.RawResponseStored),
-		event.CorrelationSubject, event.RecordedAt.Format(time.RFC3339Nano), string(payloadJSON),
+		event.CorrelationSubject, event.RecordedAt.Format(time.RFC3339Nano),
+		event.PrevEventHash, event.EventHash, string(payloadJSON),
 	)
 	if err != nil {
 		return Event{}, fmt.Errorf("insert audit event: %w", err)

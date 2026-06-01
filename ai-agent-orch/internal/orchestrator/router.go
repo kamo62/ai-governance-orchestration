@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"ai-agent-orch/internal/audit"
 	"ai-agent-orch/internal/catalog"
@@ -23,6 +25,14 @@ type Router struct {
 	catalogRoot string
 	audit       AuditStore
 	newID       func(prefix string) string
+	cacheMu     sync.RWMutex
+	cached      *cachedValidation
+}
+
+type cachedValidation struct {
+	report      catalog.Report
+	err         error
+	validatedAt time.Time
 }
 
 type RouteRequest struct {
@@ -68,7 +78,7 @@ func (r *Router) SelectSpecialist(prompt string) (RouteDecision, error) {
 	if prompt == "" {
 		return RouteDecision{}, errors.New("prompt is required")
 	}
-	report, err := catalog.Validate(r.catalogRoot)
+	report, err := r.cachedCatalog()
 	if err != nil {
 		return RouteDecision{}, fmt.Errorf("validate catalog: %w", err)
 	}
@@ -80,6 +90,44 @@ func (r *Router) SelectSpecialist(prompt string) (RouteDecision, error) {
 		Specialist: candidate,
 		Reason:     reason,
 	}, nil
+}
+
+// cachedCatalog returns a validated catalog report, using a time-based cache
+// to avoid re-reading the full catalog from disk on every route request.
+// If validation fails, the error is cached for a shorter window so that
+// subsequent requests fail closed quickly without hammering the filesystem.
+func (r *Router) cachedCatalog() (catalog.Report, error) {
+	r.cacheMu.RLock()
+	cached := r.cached
+	r.cacheMu.RUnlock()
+
+	const hitTTL = 30 * time.Second
+	const errTTL = 5 * time.Second
+
+	if cached != nil {
+		age := time.Since(cached.validatedAt)
+		if cached.err == nil && age < hitTTL {
+			return cached.report, nil
+		}
+		if cached.err != nil && age < errTTL {
+			return catalog.Report{}, cached.err
+		}
+	}
+
+	report, err := catalog.Validate(r.catalogRoot)
+
+	r.cacheMu.Lock()
+	r.cached = &cachedValidation{
+		report:      report,
+		err:         err,
+		validatedAt: time.Now(),
+	}
+	r.cacheMu.Unlock()
+
+	if err != nil {
+		return catalog.Report{}, err
+	}
+	return report, nil
 }
 
 func (r *Router) route(w http.ResponseWriter, req *http.Request) {

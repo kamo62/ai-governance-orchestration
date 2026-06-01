@@ -19,6 +19,24 @@ type SessionRecord struct {
 	PromptSHA256   string
 	Status         string // created, awaiting_confirmation, confirming, confirmed, running, done, failed, confirm_failed, aborted
 	CreatedAt      time.Time
+	// Phase 1F control-plane binding fields.
+	UseCaseID  string
+	WorkflowID string
+	WorkItemID string
+	RepoURL    string
+	Branch     string
+	Intent     string
+	// Phase 1F cost/value sizing.
+	StoryPoints         int
+	EstimatedDevDays    float64
+	BlendedDayRateUSD   float64
+	BaselineCostUSD     float64
+	ModelCostUSD        float64
+	ToolCostUSD         float64
+	PlatformCostUSD     float64
+	ReviewCostUSD       float64
+	VerificationCostUSD float64
+	RetryCount          int
 }
 
 // SessionStore persists and queries session records with ownership enforcement.
@@ -86,14 +104,85 @@ func (s *SQLiteSessionStore) migrate() error {
 		CREATE INDEX IF NOT EXISTS idx_sessions_actor ON sessions(actor_subject);
 		CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Phase 1F migrations: add control-plane binding and sizing columns.
+	cols := map[string]string{
+		"use_case_id":           "TEXT NOT NULL DEFAULT ''",
+		"workflow_id":           "TEXT NOT NULL DEFAULT ''",
+		"work_item_id":          "TEXT NOT NULL DEFAULT ''",
+		"repo_url":              "TEXT NOT NULL DEFAULT ''",
+		"branch":                "TEXT NOT NULL DEFAULT ''",
+		"intent":                "TEXT NOT NULL DEFAULT ''",
+		"story_points":          "INTEGER NOT NULL DEFAULT 0",
+		"estimated_dev_days":    "REAL NOT NULL DEFAULT 0",
+		"blended_day_rate_usd":  "REAL NOT NULL DEFAULT 0",
+		"baseline_cost_usd":     "REAL NOT NULL DEFAULT 0",
+		"model_cost_usd":        "REAL NOT NULL DEFAULT 0",
+		"tool_cost_usd":         "REAL NOT NULL DEFAULT 0",
+		"platform_cost_usd":     "REAL NOT NULL DEFAULT 0",
+		"review_cost_usd":       "REAL NOT NULL DEFAULT 0",
+		"verification_cost_usd": "REAL NOT NULL DEFAULT 0",
+		"retry_count":           "INTEGER NOT NULL DEFAULT 0",
+	}
+	for col, def := range cols {
+		if err := s.ensureSessionColumn(col, def); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteSessionStore) ensureSessionColumn(column string, definition string) error {
+	rows, err := s.db.Query(`PRAGMA table_info(sessions)`)
+	if err != nil {
+		return fmt.Errorf("inspect sessions schema: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return fmt.Errorf("scan sessions schema: %w", err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate sessions schema: %w", err)
+	}
+	if _, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE sessions ADD COLUMN %s %s`, column, definition)); err != nil {
+		return fmt.Errorf("add sessions column %s: %w", column, err)
+	}
+	return nil
 }
 
 func (s *SQLiteSessionStore) Create(ctx context.Context, rec SessionRecord) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (session_id, actor_subject, agent, classification, prompt_sha256, status, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, rec.SessionID, rec.ActorSubject, rec.Agent, rec.Classification, rec.PromptSHA256, rec.Status, rec.CreatedAt.Format(time.RFC3339Nano))
+		INSERT INTO sessions (
+			session_id, actor_subject, agent, classification, prompt_sha256, status, created_at,
+			use_case_id, workflow_id, work_item_id, repo_url, branch, intent,
+			story_points, estimated_dev_days, blended_day_rate_usd, baseline_cost_usd,
+			model_cost_usd, tool_cost_usd, platform_cost_usd, review_cost_usd,
+			verification_cost_usd, retry_count
+		) VALUES (?, ?, ?, ?, ?, ?, ?,
+			?, ?, ?, ?, ?, ?,
+			?, ?, ?, ?,
+			?, ?, ?, ?,
+			?, ?)
+	`,
+		rec.SessionID, rec.ActorSubject, rec.Agent, rec.Classification, rec.PromptSHA256, rec.Status, rec.CreatedAt.Format(time.RFC3339Nano),
+		rec.UseCaseID, rec.WorkflowID, rec.WorkItemID, rec.RepoURL, rec.Branch, rec.Intent,
+		rec.StoryPoints, rec.EstimatedDevDays, rec.BlendedDayRateUSD, rec.BaselineCostUSD,
+		rec.ModelCostUSD, rec.ToolCostUSD, rec.PlatformCostUSD, rec.ReviewCostUSD,
+		rec.VerificationCostUSD, rec.RetryCount,
+	)
 	if err != nil {
 		return fmt.Errorf("insert session: %w", err)
 	}
@@ -104,9 +193,22 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, sessionID string) (Session
 	var rec SessionRecord
 	var createdAtStr string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT session_id, actor_subject, agent, classification, prompt_sha256, status, created_at
-		FROM sessions WHERE session_id = ?
-	`, sessionID).Scan(&rec.SessionID, &rec.ActorSubject, &rec.Agent, &rec.Classification, &rec.PromptSHA256, &rec.Status, &createdAtStr)
+			SELECT
+				session_id, actor_subject, agent, classification, prompt_sha256, status, created_at,
+				COALESCE(use_case_id, ''), COALESCE(workflow_id, ''), COALESCE(work_item_id, ''),
+				COALESCE(repo_url, ''), COALESCE(branch, ''), COALESCE(intent, ''),
+				COALESCE(story_points, 0), COALESCE(estimated_dev_days, 0), COALESCE(blended_day_rate_usd, 0),
+				COALESCE(baseline_cost_usd, 0), COALESCE(model_cost_usd, 0), COALESCE(tool_cost_usd, 0),
+				COALESCE(platform_cost_usd, 0), COALESCE(review_cost_usd, 0),
+				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0)
+			FROM sessions WHERE session_id = ?
+	`, sessionID).Scan(
+		&rec.SessionID, &rec.ActorSubject, &rec.Agent, &rec.Classification, &rec.PromptSHA256, &rec.Status, &createdAtStr,
+		&rec.UseCaseID, &rec.WorkflowID, &rec.WorkItemID, &rec.RepoURL, &rec.Branch, &rec.Intent,
+		&rec.StoryPoints, &rec.EstimatedDevDays, &rec.BlendedDayRateUSD, &rec.BaselineCostUSD,
+		&rec.ModelCostUSD, &rec.ToolCostUSD, &rec.PlatformCostUSD, &rec.ReviewCostUSD,
+		&rec.VerificationCostUSD, &rec.RetryCount,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SessionRecord{}, fmt.Errorf("session not found")
 	}

@@ -40,6 +40,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	auditStore = audit.NewChainAppender(auditStore)
 	killSwitchStore := governance.NewMemoryKillSwitch()
 	metricsHandler := governance.NewMetricsHandler()
 	policyEngine, err := policyengine.New(cfg.PolicyEngine)
@@ -87,6 +88,7 @@ func main() {
 	eventStore := governance.NewEventStore()
 	compositionStore := composition.NewCompositionStore()
 	oauthTokenStore := oauth.NewMemoryTokenStore()
+	registryStore := governance.NewRegistryStore()
 
 	orchestratorURL := os.Getenv("AI_ORCH_ORCHESTRATOR_URL")
 	if orchestratorURL == "" {
@@ -113,6 +115,7 @@ func main() {
 	handler.Handle("/v1/admin/audit/retention", governance.NewAdminAuditHandler(auditStore, sessionService))
 	handler.Handle("/v1/compositions", governance.NewCompositionHandler(sessionService, compositionStore))
 	handler.Handle("/v1/compositions/", governance.NewCompositionHandler(sessionService, compositionStore))
+	registerRegistryHandlers(handler, governance.NewRegistryHandler(registryStore, sessionService))
 	handler.Handle("/internal/v1/model/", governance.NewModelProxyHandler(governance.ModelProxyConfig{
 		ServiceToken: cfg.ServiceToken,
 		OpenRouter: openrouter.NewClient(openrouter.Config{
@@ -143,6 +146,17 @@ func main() {
 	}
 	log.Printf("governance-shell listening on %s", cfg.Addr)
 	log.Fatal(srv.ListenAndServe())
+}
+
+func registerRegistryHandlers(mux *http.ServeMux, registryHandler http.Handler) {
+	mux.Handle("/v1/use-cases", registryHandler)
+	mux.Handle("/v1/use-cases/", registryHandler)
+	mux.Handle("/v1/workflows", registryHandler)
+	mux.Handle("/v1/context-manifests", registryHandler)
+	mux.Handle("/v1/context-manifests/", registryHandler)
+	mux.Handle("/v1/reporting/maturity-governance", registryHandler)
+	mux.Handle("/v1/cache-outcomes", registryHandler)
+	mux.Handle("/v1/evidence", registryHandler)
 }
 
 // sessionSubrouter dispatches /v1/sessions/{id}/messages, /confirm, /patch-decision, /events.

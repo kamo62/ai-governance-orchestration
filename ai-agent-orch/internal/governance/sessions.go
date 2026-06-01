@@ -60,7 +60,12 @@ type SessionConfig struct {
 	PatchBuffer       *PatchBuffer
 	Metrics           *MetricsHandler
 	NewID             func(prefix string) string
+	LocalStateTTL     time.Duration
 }
+
+// defaultLocalStateTTL is the time-to-live for abandoned in-process state
+// (prompts, patches, cancellations) before lazy eviction occurs.
+const defaultLocalStateTTL = 30 * time.Minute
 
 type SessionService struct {
 	devToken          string
@@ -79,13 +84,18 @@ type SessionService struct {
 	newID             func(prefix string) string
 	promptMu          sync.Mutex
 	prompts           map[string]string
+	promptTimes       map[string]time.Time
 	patchMu           sync.Mutex
 	patches           map[string]map[string]struct{}
+	patchTimes        map[string]time.Time
 	cancelMu          sync.Mutex
 	cancels           map[string]context.CancelFunc
+	cancelTimes       map[string]time.Time
 	// lastEventID tracks the most recent audit event ID per session for chain linking.
 	lastEventMu sync.Mutex
 	lastEventID map[string]string
+	// localStateTTL controls how long abandoned in-process state is retained.
+	localStateTTL time.Duration
 }
 
 // rememberEventID stores the latest audit event ID for a session.
@@ -119,8 +129,10 @@ func (s *SessionService) registerCancel(sessionID string, cancel context.CancelF
 	defer s.cancelMu.Unlock()
 	if s.cancels == nil {
 		s.cancels = make(map[string]context.CancelFunc)
+		s.cancelTimes = make(map[string]time.Time)
 	}
 	s.cancels[sessionID] = cancel
+	s.cancelTimes[sessionID] = time.Now().UTC()
 }
 
 func (s *SessionService) cancelExecution(sessionID string) {
@@ -129,9 +141,24 @@ func (s *SessionService) cancelExecution(sessionID string) {
 	}
 	s.cancelMu.Lock()
 	defer s.cancelMu.Unlock()
+	s.evictCancelsLocked()
 	if cancel, ok := s.cancels[sessionID]; ok {
 		cancel()
 		delete(s.cancels, sessionID)
+		delete(s.cancelTimes, sessionID)
+	}
+}
+
+func (s *SessionService) evictCancelsLocked() {
+	if s == nil || s.localStateTTL <= 0 {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-s.localStateTTL)
+	for id, t := range s.cancelTimes {
+		if t.Before(cutoff) {
+			delete(s.cancels, id)
+			delete(s.cancelTimes, id)
+		}
 	}
 }
 
@@ -147,6 +174,24 @@ type CreateSessionRequest struct {
 	Classification   string  `json:"classification"`
 	Prompt           string  `json:"prompt"`
 	EstimatedCostUSD float64 `json:"estimated_cost_usd,omitempty"`
+	// Phase 1F control-plane bindings.
+	UseCaseID  string `json:"use_case_id,omitempty"`
+	WorkflowID string `json:"workflow_id,omitempty"`
+	WorkItemID string `json:"work_item_id,omitempty"`
+	RepoURL    string `json:"repo_url,omitempty"`
+	Branch     string `json:"branch,omitempty"`
+	Intent     string `json:"intent,omitempty"`
+	// Phase 1F cost/value sizing.
+	StoryPoints         int     `json:"story_points,omitempty"`
+	EstimatedDevDays    float64 `json:"estimated_dev_days,omitempty"`
+	BlendedDayRateUSD   float64 `json:"blended_day_rate_usd,omitempty"`
+	BaselineCostUSD     float64 `json:"baseline_cost_usd,omitempty"`
+	ModelCostUSD        float64 `json:"model_cost_usd,omitempty"`
+	ToolCostUSD         float64 `json:"tool_cost_usd,omitempty"`
+	PlatformCostUSD     float64 `json:"platform_cost_usd,omitempty"`
+	ReviewCostUSD       float64 `json:"review_cost_usd,omitempty"`
+	VerificationCostUSD float64 `json:"verification_cost_usd,omitempty"`
+	RetryCount          int     `json:"retry_count,omitempty"`
 }
 
 type CreateSessionResponse struct {
@@ -173,6 +218,10 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 	if toolLoopMax <= 0 {
 		toolLoopMax = 15
 	}
+	ttl := cfg.LocalStateTTL
+	if ttl <= 0 {
+		ttl = defaultLocalStateTTL
+	}
 	return &SessionService{
 		devToken:          cfg.DevToken,
 		authorizer:        cfg.Authorizer,
@@ -189,7 +238,12 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 		metrics:           cfg.Metrics,
 		newID:             newID,
 		prompts:           make(map[string]string),
+		promptTimes:       make(map[string]time.Time),
 		patches:           make(map[string]map[string]struct{}),
+		patchTimes:        make(map[string]time.Time),
+		cancels:           make(map[string]context.CancelFunc),
+		cancelTimes:       make(map[string]time.Time),
+		localStateTTL:     ttl,
 	}
 }
 
@@ -334,13 +388,29 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 	// Persist only after the authoritative audit event is durable.
 	if s.sessions != nil {
 		if err := s.sessions.Create(r.Context(), SessionRecord{
-			SessionID:      sessionID,
-			ActorSubject:   actor,
-			Agent:          request.Agent,
-			Classification: request.Classification,
-			PromptSHA256:   hex.EncodeToString(promptHash[:]),
-			Status:         "created",
-			CreatedAt:      time.Now().UTC(),
+			SessionID:           sessionID,
+			ActorSubject:        actor,
+			Agent:               request.Agent,
+			Classification:      request.Classification,
+			PromptSHA256:        hex.EncodeToString(promptHash[:]),
+			Status:              "created",
+			CreatedAt:           time.Now().UTC(),
+			UseCaseID:           request.UseCaseID,
+			WorkflowID:          request.WorkflowID,
+			WorkItemID:          request.WorkItemID,
+			RepoURL:             request.RepoURL,
+			Branch:              request.Branch,
+			Intent:              request.Intent,
+			StoryPoints:         request.StoryPoints,
+			EstimatedDevDays:    request.EstimatedDevDays,
+			BlendedDayRateUSD:   request.BlendedDayRateUSD,
+			BaselineCostUSD:     request.BaselineCostUSD,
+			ModelCostUSD:        request.ModelCostUSD,
+			ToolCostUSD:         request.ToolCostUSD,
+			PlatformCostUSD:     request.PlatformCostUSD,
+			ReviewCostUSD:       request.ReviewCostUSD,
+			VerificationCostUSD: request.VerificationCostUSD,
+			RetryCount:          request.RetryCount,
 		}); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "session store failed"})
 			return
@@ -523,6 +593,7 @@ func (s *SessionService) rememberPrompt(sessionID string, prompt string) {
 	s.promptMu.Lock()
 	defer s.promptMu.Unlock()
 	s.prompts[sessionID] = prompt
+	s.promptTimes[sessionID] = time.Now().UTC()
 }
 
 func (s *SessionService) promptForSession(sessionID string) (string, bool) {
@@ -531,6 +602,7 @@ func (s *SessionService) promptForSession(sessionID string) (string, bool) {
 	}
 	s.promptMu.Lock()
 	defer s.promptMu.Unlock()
+	s.evictPromptsLocked()
 	prompt, ok := s.prompts[sessionID]
 	return prompt, ok
 }
@@ -542,6 +614,20 @@ func (s *SessionService) forgetPrompt(sessionID string) {
 	s.promptMu.Lock()
 	defer s.promptMu.Unlock()
 	delete(s.prompts, sessionID)
+	delete(s.promptTimes, sessionID)
+}
+
+func (s *SessionService) evictPromptsLocked() {
+	if s == nil || s.localStateTTL <= 0 {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-s.localStateTTL)
+	for id, t := range s.promptTimes {
+		if t.Before(cutoff) {
+			delete(s.prompts, id)
+			delete(s.promptTimes, id)
+		}
+	}
 }
 
 func (s *SessionService) rememberPatch(sessionID string, patchID string) {
@@ -554,6 +640,7 @@ func (s *SessionService) rememberPatch(sessionID string, patchID string) {
 		s.patches[sessionID] = make(map[string]struct{})
 	}
 	s.patches[sessionID][patchID] = struct{}{}
+	s.patchTimes[sessionID] = time.Now().UTC()
 }
 
 func (s *SessionService) patchKnown(sessionID string, patchID string) bool {
@@ -562,9 +649,23 @@ func (s *SessionService) patchKnown(sessionID string, patchID string) bool {
 	}
 	s.patchMu.Lock()
 	defer s.patchMu.Unlock()
+	s.evictPatchesLocked()
 	patches := s.patches[sessionID]
 	_, ok := patches[patchID]
 	return ok
+}
+
+func (s *SessionService) evictPatchesLocked() {
+	if s == nil || s.localStateTTL <= 0 {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-s.localStateTTL)
+	for id, t := range s.patchTimes {
+		if t.Before(cutoff) {
+			delete(s.patches, id)
+			delete(s.patchTimes, id)
+		}
+	}
 }
 
 func authorizedBearer(header string, token string) bool {

@@ -13,6 +13,7 @@ func TestDispatcherUsesModelAliasOverride(t *testing.T) {
 	runtime := &capturingRuntime{}
 	dispatcher := &Dispatcher{
 		catalogRoot: filepath.Join("..", ".."),
+		broker:      mustToolBroker(t),
 		runtimes: map[string]dispatch.Runtime{
 			"direct": runtime,
 		},

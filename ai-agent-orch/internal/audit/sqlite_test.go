@@ -117,6 +117,39 @@ func TestSQLiteStoreImportFromFileStore(t *testing.T) {
 	}
 }
 
+func TestSQLiteStorePersistsHashColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.db")
+	store, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatalf("new sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	chain := NewChainAppender(store)
+	e1, err := chain.Append(ctx, Event{EventID: "evt_hash_1", SessionID: "sess_hash", EventType: "session.created"})
+	if err != nil {
+		t.Fatalf("append first event: %v", err)
+	}
+	e2, err := chain.Append(ctx, Event{EventID: "evt_hash_2", SessionID: "sess_hash", EventType: "session.confirmed"})
+	if err != nil {
+		t.Fatalf("append second event: %v", err)
+	}
+
+	var prevHash, eventHash string
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT prev_event_hash, event_hash FROM audit_events WHERE event_id = ?
+	`, e2.EventID).Scan(&prevHash, &eventHash); err != nil {
+		t.Fatalf("query hash columns: %v", err)
+	}
+	if prevHash != e1.EventHash {
+		t.Fatalf("expected prev hash %s, got %s", e1.EventHash, prevHash)
+	}
+	if eventHash != e2.EventHash {
+		t.Fatalf("expected event hash %s, got %s", e2.EventHash, eventHash)
+	}
+}
+
 func TestSQLiteStoreEmptySession(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.db")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"ai-agent-orch/internal/catalog"
@@ -13,8 +14,10 @@ import (
 
 // Dispatcher resolves model aliases and starts runtime sessions.
 type Dispatcher struct {
-	catalogRoot string
-	runtimes    map[string]dispatch.Runtime
+	catalogRoot   string
+	runtimes      map[string]dispatch.Runtime
+	broker        *dispatch.ToolBroker
+	toolBrokerErr error
 }
 
 func NewDispatcher(catalogRoot string) *Dispatcher {
@@ -42,10 +45,18 @@ func NewDispatcher(catalogRoot string) *Dispatcher {
 		}), catalogRoot)
 	}
 
-	return &Dispatcher{
+	d := &Dispatcher{
 		catalogRoot: catalogRoot,
 		runtimes:    runtimes,
 	}
+
+	if broker, err := dispatch.NewToolBroker(filepath.Join(catalogRoot, "policies", "command-allowlists.yaml")); err == nil {
+		d.broker = broker
+	} else {
+		d.toolBrokerErr = err
+	}
+
+	return d
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName string, prompt string) (dispatch.SessionHandle, error) {
@@ -69,6 +80,15 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 	}
 	if modelAlias == "" {
 		return nil, fmt.Errorf("agent %q has no primary model", agentName)
+	}
+
+	permissions := map[string]string{
+		"network":                 agentCfg.Permissions.Network,
+		"workspace_write":         agentCfg.Permissions.WorkspaceWrite,
+		"outside_workspace_write": agentCfg.Permissions.OutsideWorkspaceWrite,
+	}
+	if err := d.validateAllowedTools(agentName, agentCfg.ToolsAllowed, permissions); err != nil {
+		return nil, err
 	}
 
 	sessionCfg := dispatch.SessionConfig{
@@ -102,6 +122,22 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 	// This allows the full chain to work in local Phase 1 without API keys.
 	echo := dispatch.NewEchoRuntime()
 	return echo.StartSession(ctx, sessionCfg)
+}
+
+func (d *Dispatcher) validateAllowedTools(agentName string, tools []string, permissions map[string]string) error {
+	if d == nil || d.broker == nil {
+		if d != nil && d.toolBrokerErr != nil {
+			return fmt.Errorf("tool broker unavailable: %w", d.toolBrokerErr)
+		}
+		return fmt.Errorf("tool broker unavailable")
+	}
+	for _, tool := range tools {
+		cmd, sub := dispatch.ParseToolCommand(tool)
+		if err := d.broker.ValidateWithPermissions(cmd, sub, agentName, permissions); err != nil {
+			return fmt.Errorf("tool broker blocked %s: %w", tool, err)
+		}
+	}
+	return nil
 }
 
 // Default MCP endpoint URLs within the Docker Compose network.
