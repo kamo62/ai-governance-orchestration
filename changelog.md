@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.1-alpha - 2026-06-01 (Patch)
+
+Release impact: Patch because this reorganises documentation without changing runtime behaviour or public API contracts.
+
+- **Refocused the root README**: moved command-heavy local-run details out of the README and made the project aim, governance boundary, current state, and documentation map clearer.
+- **Added `deployment.md`**: centralises local verification, Docker cleanup/rebuild, OpenRouter smoke tests, CLI smoke tests, VS Code Bridge setup, MCP stubs, policy toggles, and local-state notes.
+- **Removed stale local scratch notes**: deleted ignored research/review/planning drafts that duplicated or contradicted tracked documentation.
+
 ## v0.5.0-alpha - 2026-06-01 (Minor)
 
 Release impact: Minor because this adds durable SQLite registry storage, registry metrics, configurable Bridge identity settings, and safer ACP JSON-RPC handling while preserving existing API contracts.

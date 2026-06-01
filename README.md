@@ -1,314 +1,136 @@
 # AI Agent Orchestration POC
 
-This repository is my proof of concept for an agent orchestration system that I am currently investigating.
+This repository is a personal-time proof of concept for a governance platform for AI-assisted engineering work.
 
-The goal is not to rebuild every agent runtime, IDE workflow, or coding assistant stack inside this project. The goal is to test whether a lightweight system layer can give agent work better governance, routing, auditability, and policy control without forcing every team or engineer into one runtime.
+The bet is simple: teams will use different agents, IDEs, CLIs, model providers, and workflow tools. Trying to replace all of that with one new agent runtime is the wrong move. The useful layer is a small, strict control plane that can sit in front of those runtimes and make agent work governable.
 
-## Project State
+## What This Is
 
-Current as of 2026-06-01: this is a personal-time POC in active early development, with `v0.5.0-alpha` as the current version.
+This POC explores whether a lightweight Governance Shell can provide:
 
-Implemented:
+- agent and workflow registration;
+- model routing through approved aliases;
+- policy checks before execution;
+- secret scanning and classification ceilings;
+- tool and MCP boundaries;
+- staged patch review;
+- cost and value tracking;
+- audit and evidence records;
+- human gates for risky actions;
+- outputs that can feed an engineering maturity or governance reporting layer.
 
-- Phase 0 catalogue and agent-definition foundation
-- session creation, session ownership, and state guards
-- audit events, audit lookup, linked audit envelopes, policy gates, and service-token hardening
-- tamper-evident audit hash chaining for the local two-process flow
-- router selection, specialist dispatch, and SSE event streaming
-- Docker Compose local runner, catalogue validation tooling, and hot-path catalogue validation caching
-- OpenRouter model smoke tooling
-- opt-in OpenRouter-backed CLI orchestration smoke path
-- source-aware CLI runs through `ai-orch session create --workspace`
-- Governance Shell model proxy for OpenRouter calls, so the Orchestrator does not need the provider API key
-- staged patch buffering, with sanitised SSE metadata and governed patch fetch before Bridge apply/review
-- MCP proxy stub with `oauth-user` fail-closed behaviour when user OAuth is absent
-- native policy-engine boundary with AGT reserved as a future adapter
-- consecutive tool/MCP-call cap controls
-- command allow-list enforcement against agent permissions
-- Phase 1F use-case, workflow, context-manifest, cache-outcome, evidence, and maturity-governance APIs
-- SQLite-backed registry storage for use cases, workflows, context manifests, cache outcomes, evidence, and maturity exports
-- registry and maturity metrics for registered use cases, workflows, manifests, cache outcomes, evidence, and exports
-- local-state TTL documentation and eviction for prompts, patches, cancellations, and patch buffers
-- ACP JSON-RPC request/response and notification routing, with permission requests failing closed until brokered
-- experimental composition APIs and assembly-line reference scaffolding with human gates
-- authenticated audit-retention administration for SQLite audit storage
-- EchoRuntime and DirectRuntime patch envelopes for local testing
-- local CLI, configurable VS Code Bridge, and MCP stub scaffolds
-- optional SQLite audit storage and optional OIDC token-validation scaffolding
+The system has an agent plane, but the agent plane is not the product. The product idea is the governance boundary around agentic engineering work.
 
-Next:
+## Why This Exists
 
-- real OpenCode patch-producing flow
-- durable audit-chain state for restart and multi-instance use
-- dedicated registry database configuration, or Postgres, for multi-instance team use
-- manual VS Code Bridge validation
-- broader CLI coverage for admin and CI-shaped workflows
-- real user OAuth token acquisition for `oauth-user` MCPs
+AI-assisted development is moving quickly, but the runtime landscape is fragmented. Some workflows will happen inside IDE-native agents. Some will happen through CLIs. Some will be autonomous. Some teams will build their own wrappers.
 
-Not production-ready.
+That is useful, but it creates a governance problem:
 
-## What This POC Is Exploring
+- Which use case was this work tied to?
+- Which model was used?
+- Which tools and data sources were available?
+- Which permissions were active?
+- What did the agent propose?
+- Was the output tested, reviewed, approved, or rejected?
+- What did it cost compared with the human baseline?
+- Can the audit trail be trusted later?
 
-The strategic bet is that the Governance Shell should become the layer that can sit in front of different agent runtimes, not a runtime that tries to replace all of them.
+This repo is an attempt to answer those questions without rebuilding the whole developer workspace.
 
-This POC is built around a deliberately separate abstraction:
+## Current State
 
-- `agent.md` for human and model-readable agent instructions
-- `agent.config.yaml` for executable runtime, tool, model, and governance configuration
-- a model registry for provider and model indirection
-- an agent catalogue for discoverability and validation
-- a Governance Shell that sits in front of agent execution
+Current version: `v0.5.1-alpha`.
 
-That shape is intentional.
+This is an early local POC. It is not production-ready.
 
-The word "system" is deliberate here: this is still a local POC, not a broader shared product.
+What exists today:
 
-The system abstraction is more enterprise-shaped: policy, audit, model routing, catalogue validation, runtime boundaries, and future organisational controls. Some of the runtime patterns I am looking at are more engineer-workspace-shaped, which is useful, but different.
+- Go Governance Shell and Orchestrator services.
+- Agent catalogue using `agent.md` plus `agent.config.yaml`.
+- OpenRouter model proxy owned by the Governance Shell.
+- Local CLI smoke path.
+- VS Code Bridge scaffold.
+- Session creation, ownership checks, routing, confirmation, SSE events, and patch decisions.
+- Staged patch buffer so raw patch content is fetched through a governed endpoint.
+- Audit events with local tamper-evident hash chaining.
+- SQLite-backed local audit, session, and registry storage.
+- Use-case, workflow, context-manifest, cache-outcome, evidence, and maturity-export APIs.
+- MCP proxy scaffolding with `oauth-user` fail-closed behaviour.
+- Command allow-list and tool-loop cap enforcement.
+- Docker Compose local runner and OpenRouter smoke tooling.
 
-## External Governance Work I Am Watching
+Still pending:
 
-This POC is not being built in isolation. Part of the investigation is watching where the wider agent ecosystem is moving, then deciding what to borrow without letting the repo become a wrapper around someone else's stack.
+- real OpenCode patch-producing flow;
+- durable multi-instance audit-chain state;
+- dedicated team registry storage or Postgres option;
+- real user OAuth acquisition for user-scoped MCPs;
+- broader CLI coverage for admin and CI workflows;
+- manual VS Code Bridge validation;
+- a governance UI, if the POC proves the control-plane shape.
 
-The most relevant governance-shaped reference right now is [Microsoft Agent Governance Toolkit](https://github.com/microsoft/agent-governance-toolkit). Microsoft introduced it as [open-source runtime security for AI agents](https://opensource.microsoft.com/blog/2026/04/02/introducing-the-agent-governance-toolkit-open-source-runtime-security-for-ai-agents/), with policy enforcement, auditability, threat detection, key management, access control, and governance across different agent frameworks. That is close to the problem space this POC cares about.
+## What This Is Not
 
-My current read is:
+This repo is not trying to become:
 
-- AGT is worth tracking closely as a policy-engine candidate.
-- AGT should not be adopted as a hard dependency yet.
-- The local native policy engine stays the default while the POC proves its own boundary.
-- The `agt` policy-engine option is intentionally reserved as a fail-closed adapter path until there is a proper spike.
+- a Claude Code, OpenCode, Cursor, Aider, or IDE-agent replacement;
+- a new autonomous agent product;
+- a Backstage, Jira, ServiceNow, or documentation portal clone;
+- a model gateway competing with OpenRouter, LiteLLM, or provider-native gateways;
+- an enterprise identity, secrets, or device-management system;
+- a production deployment template.
 
-That distinction matters. The Governance Shell is the asset I am trying to prove here. If AGT becomes useful, it should plug into that boundary. It should not quietly replace the `agent.md` + `agent.config.yaml` catalogue, the OpenRouter model proxy, the staged patch buffer, or the audit contract.
+The platform should borrow useful runtime ideas, not absorb every runtime into itself.
 
-I am also watching GitHub's agentic workflow security architecture because it makes the same broad point in another way: agents should not carry broad secrets, and file writes should be staged, reviewed, and mediated rather than trusted by default.
+## Core Shape
 
-## What This POC Is Not
+The current abstraction is deliberately split:
 
-This is not trying to clone a Claude Code-style workspace stack.
+- `agent.md` contains human and model-readable agent instructions.
+- `agent.config.yaml` contains executable configuration, tool access, model aliases, and governance limits.
+- `models/registry.yaml` maps stable model aliases to concrete provider model IDs.
+- MCP registrations declare external context/tool surfaces.
+- The Governance Shell owns policy, audit, model proxying, patch buffering, and session authority.
+- The Orchestrator owns catalogue validation, routing, and runtime dispatch.
 
-That kind of stack is valuable because it fits directly into an engineer's local workflow: repo context, terminal tools, file edits, test loops, and tight feedback. But rebuilding that structure here would blur the purpose of this system.
+That separation is the important part. It keeps governance strict while allowing the runtime layer to stay flexible.
 
-The better approach is to borrow useful concepts, not copy the structure.
+## Strategic References
 
-For example, this POC can learn from workspace-shaped tools around:
+This POC is being built while watching adjacent governance and runtime patterns.
 
-- how agents receive repo context
-- how tools are constrained
-- how patch proposals are reviewed
-- how local developer workflows stay fast
-- how agent instructions remain understandable
+Microsoft Agent Governance Toolkit is the closest governance-shaped reference. The current position is to track it as a possible policy-engine adapter or reference, not to adopt it as a hard dependency. The native policy boundary stays first until the POC proves its own contract.
 
-But those ideas should be absorbed into the Governance Shell and catalogue model, not replace them.
+GitHub's agentic workflow security architecture is also relevant because it reinforces the same principle: agents should not carry broad secrets, and writes should be staged, reviewed, and mediated.
 
-## Not In Scope
+## Governance Outputs
 
-- Replacing Claude Code, OpenCode, Cursor, Aider, or any other IDE-native agent runtime.
-- Building an autonomous run loop like Symphony inside this repo.
-- Acting as a model gateway in place of OpenRouter, LiteLLM, or provider-native gateways.
-- Owning identity, secrets management, or enterprise token brokering at organisation scale.
-- Treating the local POC scaffolding as production-grade deployment infrastructure.
+The system should emit machine-readable facts that another maturity or reporting layer can consume. It should not become that reporting layer itself.
 
-## Runtime Patterns To Watch
+The important output classes are:
 
-The strategic question is not "which agent runtime wins?"
+- session summary;
+- policy and control outcomes;
+- cost and value sizing;
+- context provenance;
+- evidence records;
+- outcome metrics;
+- cache outcomes;
+- audit and patch-decision records.
 
-The better question is: how does governance stay useful when engineers adopt different runtime patterns?
+The IDE and CLI should send lightweight IDs and intent. The Governance Shell should resolve context, policy, provenance, evidence, and cost records behind the boundary.
 
-Right now, I am keeping an eye on three broad patterns:
+## Documentation Map
 
-1. Autonomous runtime patterns
-
-   Tools like Symphony-style autonomous execution may become attractive for longer-running, less interactive work. These need strong controls around scope, audit, approval gates, and failure boundaries.
-
-2. Workspace-shaped coding stacks
-
-   Claude Code-style workflows are close to how engineers already work. They are fast, practical, and developer-friendly, but they may not naturally provide centralised governance, catalogue visibility, or consistent audit trails.
-
-3. Segment-built variants
-
-   Teams may build their own local or domain-specific agent wrappers. This is useful, but it creates the original risk: many parallel implementations with different policies, models, prompts, logs, and review standards.
-
-## The Strategic Bet
-
-The Governance Shell is the important asset.
-
-It should become the layer that can sit in front of different agent runtimes, not a runtime that tries to replace all of them.
-
-If this works, the system can offer a common path through multiple agent execution styles:
-
-- register the agent
-- validate its config
-- route through approved models
-- enforce policy before execution
-- record audit events
-- require human gates where needed
-- keep sensitive workspace behaviour bounded
-- allow future promotion from experimental to published agents
-
-That means engineers can still use practical tools, while the system provides a consistent control surface.
-
-## Maturity Governance Outputs
-
-This POC should produce machine-readable governance outputs for a separate engineering maturity and reporting layer. It should not become that reporting layer itself.
-
-The outputs this system needs to emit are:
-
-- **Session summary**: session ID, actor, team, use case ID, workflow ID, work item reference, repository, branch, commit, classification, risk level, requested agent, selected specialist, runtime, model alias, resolved model, timestamps, and final status.
-- **Policy and control outcomes**: allow/block decisions, policy reason, classification result, secret-scan result, kill-switch status, OAuth failure, tool-loop cap result, cost-cap result, and human gate decisions.
-- **Cost and value sizing**: human baseline sizing from Jira or Azure DevOps when available, estimated dev days, blended day rate, baseline cost, model cost, tool/API cost, platform/runtime cost, human review effort, verification effort, retry count, and estimated net saving.
-- **Context provenance**: context manifest ID, source system, source object ID, source path or URL, auth scope, freshness/version, classification, cache status, included summary/chunk hashes, and whether the source influenced a model call.
-- **Evidence records**: generated or selected tests, test execution result, quality-system link, security finding, architecture review output, patch metadata, approval receipt, patch decision, and external ticket/work-item link.
-- **Outcome metrics**: success or failure, accepted/rejected/partial decision, evidence completeness, cycle-time signal, quality result, review effort, verification cost, blocked-event category, and adoption signal.
-- **Cache outcomes**: session cache hits and misses, reusable context summaries, cache eligibility decisions, cache savings estimate, cache expiry, invalidation reason, and whether cached context was allowed by classification, actor, repository, and workflow policy.
-
-These outputs should be exportable to a maturity governance system that already understands engineering health, maturity, reporting, benchmarks, and value realisation. The IDE and CLI should send lightweight IDs and intent; the Governance Shell should resolve context, policy, provenance, evidence, and cost records behind the boundary.
-
-Caching is part of the governance boundary, not a hidden memory product. The first cache should be session-scoped and policy-aware: it can reuse safe context summaries, model-call metadata, and connector read results inside one governed session, but it must record provenance, classification, actor scope, expiry, invalidation, and estimated savings. Cross-session or semantic caching should only be added later with explicit approval rules.
-
-The current hardening line is audit, context, and state integrity. This branch starts that work with local audit hash chaining, explicit local-state lifecycle documentation, command allow-list enforcement, and control-plane registry outputs. Before this POC can be treated as more than a local experiment, those local stores still need durable multi-instance backing and restart-aware chain state.
-
-## Governance Insight And Memory Direction
-
-The next investigation area is Governance Insight Projection: deterministic reporting over governed audit, session, registry, evidence, cache, and cost records. This should come before semantic memory.
-
-The current storage recommendation is conservative on purpose: keep SQLite and the existing `modernc.org/sqlite` driver for local and early team hardening, use normal SQL views and queries first, add SQLite FTS5 for approved evidence recall next, and only spike vector recall after that. If vector recall becomes justified, test `modernc.org/sqlite/vec` before adding a C extension or a separate vector service.
-
-This is not agent memory. Runtime agents should not get hidden cross-session recall. Any memory-like capability must be a rebuildable projection of governed records, scoped by classification, actor, repository, and workflow, with recommendations routed to a human gate.
-
-Detailed notes: [Governance Insight And Memory Direction](ai-agent-orch/docs/governance-insight-and-memory.md).
-
-## Current POC Direction
-
-This repo currently focuses on the system-side foundation:
-
-- agent definition standard
-- temporary agent catalogue
-- model registry
-- Governance Shell scaffold
-- Orchestrator scaffold
-- local Docker Compose workflow
-- OpenRouter-backed model and CLI orchestration smoke testing
-- Governance Shell-owned OpenRouter model proxy
-- staged patch buffer and patch fetch endpoint
-- tamper-evident audit hash chain for local Governance Shell and Orchestrator writes
-- use-case, workflow, context-manifest, cache-outcome, evidence, and maturity-governance API surfaces
-- command allow-list enforcement tied back to agent permissions
-- local CLI and VS Code Bridge scaffolds
-- MCP registration and token-guarded stub services
-- MCP proxy stub for later user-scoped tool calls
-- first dispatch and SSE event path
-- local EchoRuntime patch envelope and patch-decision audit path
-- audit and policy primitives
-
-The near-term goal is to prove a thin vertical slice rather than overbuild the full system.
-
-A useful first slice is:
-
-1. Select a temporary agent from the catalogue.
-2. Resolve its model alias through the registry.
-3. Pass through the Governance Shell.
-4. Record an audit trail.
-5. Route to the Orchestrator.
-6. Produce or simulate a patch proposal.
-7. Review the patch through an explicit decision gate.
-
-## Local Run
-
-The runnable scaffold lives under `ai-agent-orch/`.
-
-```sh
-cd ai-agent-orch
-go test ./...
-docker compose build
-docker compose --profile tools run --rm catalog-validator
-AI_ORCH_DEV_TOKEN=local-dev docker compose up governance-shell orchestrator
-```
-
-In another terminal:
-
-```sh
-curl http://127.0.0.1:8080/readyz
-curl -H "Authorization: Bearer local-dev" \
-  -H "Content-Type: application/json" \
-  -d '{"agent":"test-generation","classification":"internal","prompt":"add regression tests for this module"}' \
-  http://127.0.0.1:8080/v1/sessions
-```
-
-In Docker Compose, the Orchestrator is intentionally kept on the internal Compose network. The Governance Shell reaches it with a service-to-service token.
-
-OpenRouter credentials are intentionally attached to the Governance Shell service, not the Orchestrator. Full orchestration model calls go through the internal model proxy at `/internal/v1/model/chat`.
-
-OpenRouter smoke testing requires `OPENROUTER_API_KEY`:
-
-```sh
-OPENROUTER_API_KEY=... docker compose --profile tools run --rm openrouter-smoke
-```
-
-For local repeated testing, keep secrets in an ignored root `.env.dev` file and pass it to Compose. The file should contain `OPENROUTER_API_KEY`; do not commit it.
-
-```sh
-docker compose --env-file ../.env.dev --profile tools run --rm openrouter-smoke
-```
-
-To smoke test a specific OpenRouter model alias through the registry:
-
-```sh
-docker compose --env-file ../.env.dev --profile tools run --rm openrouter-smoke \
-  openrouter-smoke -catalog-root /app \
-  -model-alias coding-gpt55 \
-  -prompt 'Reply with exactly: gpt55-alias-ok'
-```
-
-To force a local CLI orchestration smoke through GPT-5.5 with high reasoning effort, start the Orchestrator with explicit overrides. These overrides are opt-in test settings; they are not the default runtime policy.
-
-```sh
-AI_ORCH_MODEL_ALIAS_OVERRIDE=coding-gpt55 \
-AI_ORCH_OPENROUTER_REASONING_EFFORT=high \
-AI_ORCH_OPENROUTER_REASONING_EXCLUDE=true \
-docker compose --env-file ../.env.dev up -d governance-shell orchestrator
-```
-
-Then run the CLI smoke command:
-
-```sh
-docker compose --env-file ../.env.dev --profile tools run --rm ai-orch \
-  ai-orch smoke --prompt 'Return only this JSON object and no markdown: {"protocolVersion":1,"patchId":"readme_smoke","summary":"CLI orchestration smoke patch","files":[{"path":"SMOKE_TEST.md","action":"create","content":"CLI orchestration smoke passed."}]}'
-```
-
-The `ai-orch` CLI scaffold currently covers local smoke tests, audit lookup, kill-switch checks, session commands, and agent listing:
-
-```sh
-AI_ORCH_DEV_TOKEN=local-dev docker compose --profile tools run --rm ai-orch
-```
-
-The CLI sends the prompt text through the governed workflow. Until the OpenCode or Bridge path supplies workspace context automatically, include selected source excerpts in the prompt when running source-aware CLI tests.
-
-The CLI receives sanitised patch metadata over SSE and records the patch decision by ID. The VS Code Bridge fetches full buffered patch content from `GET /v1/sessions/{session_id}/patches/{patch_id}` before rendering diffs or applying changes.
-
-Phase 2 read-only MCP stubs for issue tracker, documentation, and test-management context are available behind the `phase2` Compose profile. They are local token-guarded stubs only; user-scoped OAuth is still pending.
-
-The MCP proxy already fails closed for `oauth-user` registrations when user OAuth is absent. That contract is tested with fake token stores; real OAuth acquisition remains Phase 2 work.
-
-Cost-cap enforcement is intentionally off by default. To test the blocking path locally, start the Governance Shell with `AI_ORCH_COST_CAP_ENABLED=true` and a non-zero `AI_ORCH_SESSION_COST_CAP_USD`.
-
-Tool-loop enforcement is on by default with `AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX=15`, blocking a runtime that keeps issuing tool/MCP calls without producing output.
-
-The VS Code Bridge expects `AI_ORCH_DEV_TOKEN` in the extension host environment; it does not fall back to an implicit token.
-
-There is no standalone web UI yet. The working surfaces are the HTTP API, the `ai-orch` CLI, and the VS Code Bridge.
-
-The VS Code Bridge scaffold lives at `ai-agent-orch/agent-bridge/`, with a packaged VSIX at `ai-agent-orch/agent-bridge/ai-agent-bridge.vsix`.
-
-```sh
-cd ai-agent-orch/agent-bridge
-bun run typecheck
-bun run lint
-bun run compile
-code --install-extension ai-agent-bridge.vsix
-AI_ORCH_DEV_TOKEN=local-dev code ../..
-```
-
-If the Governance Shell is running on a non-default host port, set `aiAgentBridge.governanceUrl` in VS Code settings, for example `http://127.0.0.1:18080`.
+- [deployment.md](deployment.md): how to run, verify, smoke test, and use the local POC.
+- [Agent catalogue guide](ai-agent-orch/agents/README.md): how agents are structured and validated.
+- [Model registry guide](ai-agent-orch/models/README.md): model alias rules and provider strategy.
+- [MCP registration guide](ai-agent-orch/mcp/README.md): MCP auth modes, stubs, and fail-closed rules.
+- [Policy guide](ai-agent-orch/policies/README.md): command allow-lists, classification, secrets, and cost controls.
+- [Local state lifecycle](ai-agent-orch/docs/local-state-lifecycle.md): what is durable, what is process-local, and what must be promoted later.
+- [Governance insight and memory direction](ai-agent-orch/docs/governance-insight-and-memory.md): SQLite-first reporting, FTS5 before vectors, and memory as a governed projection.
+- [changelog.md](changelog.md): versioned change history.
 
 ## Guiding Principle
 
