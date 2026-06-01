@@ -210,11 +210,19 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 	}
 	engine := cfg.PolicyEngine
 	if engine == nil {
-		engine, _ = policyengine.New("native")
+		engine, _ = policyengine.NewNativeEngine(policyengine.NativeConfig{
+			ClassificationMax: cfg.ClassificationMax,
+			CostCapEnabled:    cfg.CostCapEnabled,
+			SessionCostCapUSD: cfg.SessionCostCapUSD,
+		})
 	}
 	patchBuffer := cfg.PatchBuffer
 	if patchBuffer == nil {
-		patchBuffer = NewPatchBuffer()
+		if scanner, ok := engine.(interface{ SecretFindings(string) []string }); ok {
+			patchBuffer = NewPatchBufferWithSecretScanner(scanner.SecretFindings)
+		} else {
+			patchBuffer = NewPatchBuffer()
+		}
 	}
 	toolLoopMax := cfg.ToolLoopMax
 	if toolLoopMax <= 0 {
@@ -295,32 +303,25 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusLocked, map[string]any{"error": reason})
 		return
 	}
-	exceeds, err := classificationExceedsMax(request.Classification, s.classificationMax)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	if exceeds {
-		reason := fmt.Sprintf("classification %s exceeds max %s", request.Classification, s.classificationMax)
-		if err := s.appendDenied(r.Context(), reason, nil, request.Classification); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
-			return
-		}
-		s.recordClassificationBlocked()
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": reason})
-		return
-	}
-	findings := detectSecrets(request.Prompt)
 	decision, err := s.evaluatePolicy(r.Context(), policyengine.Request{
-		AgentName:      request.Agent,
-		ActionType:     "session.create",
-		Classification: request.Classification,
-		Findings:       findings,
+		AgentName:        request.Agent,
+		ActionType:       "session.create",
+		Classification:   request.Classification,
+		Prompt:           request.Prompt,
+		EstimatedCostUSD: request.EstimatedCostUSD,
+		UseCaseID:        request.UseCaseID,
+		WorkflowID:       request.WorkflowID,
+		WorkItemID:       request.WorkItemID,
 		Metadata: map[string]any{
-			"prompt_length": len(request.Prompt),
+			"prompt_length":      len(request.Prompt),
+			"classification_max": s.classificationMax,
 		},
 	})
 	if err != nil {
+		if isPolicyInputError(err) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
 		if auditErr := s.appendDenied(r.Context(), "policy engine unavailable", nil, request.Classification); auditErr != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
@@ -333,28 +334,40 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		if reason == "" {
 			reason = "policy denied"
 		}
-		if len(findings) > 0 {
+		if decision.Category == "secret" {
 			reason = "secret detected"
 		}
-		if err := s.appendDenied(r.Context(), reason, findings, request.Classification); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
-			return
-		}
-		if len(findings) > 0 {
+		switch decision.Category {
+		case "secret":
+			if err := s.appendDenied(r.Context(), reason, decision.Findings, request.Classification); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+				return
+			}
 			s.recordSecretBlocked()
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": "secret detected"})
 			return
+		case "classification":
+			if err := s.appendDenied(r.Context(), reason, decision.Findings, request.Classification); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+				return
+			}
+			s.recordClassificationBlocked()
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": reason})
+			return
+		case "cost":
+			if err := s.appendDeniedWithCost(r.Context(), "cost cap exceeded", request.Classification, request.EstimatedCostUSD, decision.CostCapUSD); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+				return
+			}
+			s.recordCostCapped()
+			writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": "cost cap exceeded"})
+			return
 		}
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": reason})
-		return
-	}
-	if s.costCapEnabled && s.sessionCostCapUSD > 0 && request.EstimatedCostUSD > s.sessionCostCapUSD {
-		if err := s.appendDeniedWithCost(r.Context(), "cost cap exceeded", request.Classification, request.EstimatedCostUSD, s.sessionCostCapUSD); err != nil {
+		if err := s.appendDenied(r.Context(), reason, decision.Findings, request.Classification); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
-		s.recordCostCapped()
-		writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": "cost cap exceeded"})
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": reason})
 		return
 	}
 
@@ -373,7 +386,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		Classification:     request.Classification,
 		PromptSHA256:       hex.EncodeToString(promptHash[:]),
 		EstimatedCostUSD:   request.EstimatedCostUSD,
-		CostCapUSD:         activeCostCap(s.costCapEnabled, s.sessionCostCapUSD),
+		CostCapUSD:         s.activeCostCapUSD(),
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
@@ -765,9 +778,23 @@ func defaultFloat(value float64, fallback float64) float64 {
 	return value
 }
 
-func activeCostCap(enabled bool, value float64) float64 {
-	if !enabled {
+func (s *SessionService) activeCostCapUSD() float64 {
+	if s == nil || !s.costCapEnabled {
 		return 0
 	}
-	return value
+	if s.sessionCostCapUSD > 0 {
+		return s.sessionCostCapUSD
+	}
+	if capProvider, ok := s.policyEngine.(interface{ ActiveSessionCostCap() float64 }); ok {
+		return capProvider.ActiveSessionCostCap()
+	}
+	return 0
+}
+
+func isPolicyInputError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "unknown classification") || strings.Contains(msg, "unknown max classification")
 }

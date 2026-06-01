@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.6.0-alpha - 2026-06-01 (Minor)
+
+Release impact: Minor because this moves classification, secret, cost-cap and SDLC workflow checks into a loadable native policy engine while preserving existing API contracts.
+
+- **Wired policy YAML into the native policy engine**: `classification-routing.yaml`, `secrets-patterns.yaml`, `cost-caps.yaml` and `sdlc-governance.yaml` are now loaded as policy-as-code inputs for session pre-flight decisions.
+- **Moved session creation decisions through the policy boundary**: classification ceilings, prompt secret scanning and pre-flight cost caps now flow through `policyengine.Engine` instead of hardcoded Governance Shell helpers.
+- **Added SDLC governance policy loading**: workflow rules can declare required evidence, required work-item metadata and approval expectations without stuffing those governance facts into model context.
+- **Reused the loaded secret policy for follow-up prompts and patch buffering**: follow-up messages and staged patch content now use the same policy-backed scanner path.
+- **Mounted policies into local Compose services**: local Docker Compose runs now mount `./policies` into `/app/policies` alongside agents and models.
+- **Hardened internal bearer comparison**: `httpauth.AuthorizedBearer` now uses constant-time comparison like the session and OIDC paths.
+- **Stabilised SQLite audit chain ordering**: per-session audit reads now order by `recorded_at` and `rowid` so identical timestamps keep deterministic append order.
+- **Added a minimal GitHub Actions CI lane**: pull requests now run gofmt, `go test ./...`, `go vet ./...`, catalogue validation, and `govulncheck`.
+- **Removed stale hardcoded governance policy helpers**: deleted the duplicate code-side classification and secret policy source from the Governance Shell package.
+
 ## v0.5.2-alpha - 2026-06-01 (Patch)
 
 Release impact: Patch because this restores and clarifies README investigation context without changing runtime behaviour or public API contracts.

@@ -42,7 +42,7 @@ This repo is an attempt to answer those questions without rebuilding the whole d
 
 ## Current State
 
-Current version: `v0.5.2-alpha`.
+Current version: `v0.6.0-alpha`.
 
 This is an early local POC. It is not production-ready.
 
@@ -60,7 +60,9 @@ What exists today:
 - Use-case, workflow, context-manifest, cache-outcome, evidence, and maturity-export APIs.
 - MCP proxy scaffolding with `oauth-user` fail-closed behaviour.
 - Command allow-list and tool-loop cap enforcement.
+- YAML-driven native policy engine for classification, secrets, cost caps, and SDLC workflow evidence expectations.
 - Docker Compose local runner and OpenRouter smoke tooling.
+- GitHub Actions CI lane for Go checks, catalogue validation, and vulnerability scanning.
 
 Still pending:
 
@@ -109,6 +111,7 @@ The practical shape I want to prove is:
 - keep provider, MCP, and OAuth secrets out of the runtime;
 - stage writes and patch content before they reach the IDE;
 - make every meaningful policy decision auditable;
+- keep security, cost, and SDLC workflow policies in loadable policy files;
 - attach evidence, cost, and value signals to sessions;
 - emit clean records that a separate engineering governance or maturity system can consume.
 

@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"ai-agent-orch/internal/audit"
+	"ai-agent-orch/internal/policyengine"
 )
 
 func TestCreateSessionAcceptsDevTokenAndWritesAuditWithoutRawPrompt(t *testing.T) {
@@ -198,6 +199,32 @@ func TestCreateSessionRejectsClassificationAboveConfiguredMaximum(t *testing.T) 
 	}
 }
 
+func TestCreateSessionRejectsUnknownClassificationAsBadRequest(t *testing.T) {
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(auditPath),
+	})
+	handler := NewSessionHandler(service)
+
+	req := authorizedSessionRequest(`{"agent":"test-generation","classification":"mystery","prompt":"ordinary prompt"}`)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unknown classification") {
+		t.Fatalf("expected unknown classification error, got %s", rec.Body.String())
+	}
+	if _, err := os.Stat(auditPath); err == nil {
+		t.Fatal("unknown classification should fail before writing audit")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat audit file: %v", err)
+	}
+}
+
 func TestCreateSessionRejectsPromptWithSecretBeforeDispatch(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	service := NewSessionService(SessionConfig{
@@ -224,6 +251,48 @@ func TestCreateSessionRejectsPromptWithSecretBeforeDispatch(t *testing.T) {
 	}
 	if !strings.Contains(auditText, `"reason":"secret detected"`) || !strings.Contains(auditText, `"findings":["openrouter_api_key"]`) {
 		t.Fatalf("expected secret finding in audit event: %s", auditText)
+	}
+}
+
+func TestCreateSessionUsesPolicyEngineSecretPatterns(t *testing.T) {
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	policyDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(policyDir, "secrets-patterns.yaml"), []byte(`
+patterns:
+  - name: custom_yaml_secret
+    regex: 'CUSTOM-[0-9]{4}'
+    severity: critical
+`), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	engine, err := policyengine.NewNativeEngine(policyengine.NativeConfig{PolicyDir: policyDir})
+	if err != nil {
+		t.Fatalf("policy engine: %v", err)
+	}
+	service := NewSessionService(SessionConfig{
+		DevToken:     "local-test-token",
+		Audit:        audit.NewFileStore(auditPath),
+		PolicyEngine: engine,
+		NewID: fixedIDs(
+			"evt_custom_secret_denied_1",
+		),
+	})
+	handler := NewSessionHandler(service)
+
+	req := authorizedSessionRequest(`{"agent":"test-generation","classification":"internal","prompt":"please use CUSTOM-1234 for this run"}`)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	auditText := readAuditText(t, auditPath)
+	if strings.Contains(auditText, "CUSTOM-1234") {
+		t.Fatalf("secret-denied audit event must not include raw secret: %s", auditText)
+	}
+	if !strings.Contains(auditText, `"reason":"secret detected"`) || !strings.Contains(auditText, `"findings":["custom_yaml_secret"]`) {
+		t.Fatalf("expected YAML secret finding in audit event: %s", auditText)
 	}
 }
 

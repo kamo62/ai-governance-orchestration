@@ -1,0 +1,53 @@
+# SDLC governance policies describe workflow/evidence expectations for governed
+# engineering work. They do not replace Jira, Azure DevOps, test management or
+# release tooling; they declare the evidence shape the Governance Shell should
+# ask for and report against.
+
+workflows:
+  - id: test-generation
+    description: Test creation or improvement work.
+    requires_approval: false
+    required_evidence:
+      - test_result
+      - patch_decision
+
+  - id: code-review
+    description: Code review and quality feedback work.
+    requires_approval: false
+    required_evidence:
+      - review_output
+      - patch_decision
+
+  - id: change-release
+    description: Change or release work that may affect delivery controls.
+    requires_approval: true
+    requires_work_item: true
+    required_evidence:
+      - linked_work_item
+      - test_result
+      - approval_receipt
+      - patch_decision
+
+  - id: security-review
+    description: Security or DevSecOps review work.
+    requires_approval: true
+    required_evidence:
+      - security_finding
+      - review_output
+      - approval_receipt
+
+  - id: architecture-review
+    description: Architecture governance and design review work.
+    requires_approval: true
+    required_evidence:
+      - review_output
+      - decision_record
+      - approval_receipt
+
+  - id: modernisation-assessment
+    description: Modernisation, refactor or platform-improvement assessment work.
+    requires_approval: false
+    required_evidence:
+      - assessment_output
+      - value_sizing
+      - patch_decision

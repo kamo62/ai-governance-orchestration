@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -43,7 +44,7 @@ func main() {
 	auditStore = audit.NewChainAppender(auditStore)
 	killSwitchStore := governance.NewMemoryKillSwitch()
 	metricsHandler := governance.NewMetricsHandler()
-	policyEngine, err := policyengine.New(cfg.PolicyEngine)
+	policyEngine, err := newPolicyEngine(cfg)
 	if err != nil {
 		log.Fatalf("policy engine init failed: %v", err)
 	}
@@ -225,6 +226,18 @@ func envOrDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func newPolicyEngine(cfg appconfig.Config) (policyengine.Engine, error) {
+	if strings.EqualFold(strings.TrimSpace(cfg.PolicyEngine), "native") || strings.TrimSpace(cfg.PolicyEngine) == "" {
+		return policyengine.NewNativeEngine(policyengine.NativeConfig{
+			PolicyDir:         filepath.Join(cfg.CatalogRoot, "policies"),
+			ClassificationMax: cfg.ClassificationMax,
+			CostCapEnabled:    cfg.CostCapEnabled,
+			SessionCostCapUSD: cfg.SessionCostCapUSD,
+		})
+	}
+	return policyengine.New(cfg.PolicyEngine)
 }
 
 func defaultMCPRegistrations() map[string]governance.MCPProxyRegistration {

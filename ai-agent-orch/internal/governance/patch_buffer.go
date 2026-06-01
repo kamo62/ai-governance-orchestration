@@ -14,23 +14,33 @@ import (
 	"time"
 
 	patchproto "ai-agent-orch/internal/patch"
+	"ai-agent-orch/internal/policyengine"
 )
 
 // defaultPatchBufferTTL is the TTL for buffered patch entries.
 const defaultPatchBufferTTL = 30 * time.Minute
 
 type PatchBuffer struct {
-	mu      sync.RWMutex
-	patches map[string]map[string]string
-	times   map[string]time.Time
-	ttl     time.Duration
+	mu             sync.RWMutex
+	patches        map[string]map[string]string
+	times          map[string]time.Time
+	ttl            time.Duration
+	secretFindings func(string) []string
 }
 
 func NewPatchBuffer() *PatchBuffer {
+	return NewPatchBufferWithSecretScanner(policyengine.DefaultSecretFindings)
+}
+
+func NewPatchBufferWithSecretScanner(secretFindings func(string) []string) *PatchBuffer {
+	if secretFindings == nil {
+		secretFindings = policyengine.DefaultSecretFindings
+	}
 	return &PatchBuffer{
-		patches: make(map[string]map[string]string),
-		times:   make(map[string]time.Time),
-		ttl:     defaultPatchBufferTTL,
+		patches:        make(map[string]map[string]string),
+		times:          make(map[string]time.Time),
+		ttl:            defaultPatchBufferTTL,
+		secretFindings: secretFindings,
 	}
 }
 
@@ -69,10 +79,10 @@ func (b *PatchBuffer) Store(ctx context.Context, sessionID string, payload strin
 		if err := validatePatchPath(file.Path); err != nil {
 			return "", err
 		}
-		if findings := detectSecrets(file.NewContent); len(findings) > 0 {
+		if findings := b.secretFindings(file.NewContent); len(findings) > 0 {
 			return "", fmt.Errorf("secret detected in patch content: %s", strings.Join(findings, ","))
 		}
-		if findings := detectSecrets(file.OriginalContent); len(findings) > 0 {
+		if findings := b.secretFindings(file.OriginalContent); len(findings) > 0 {
 			return "", fmt.Errorf("secret detected in original patch content: %s", strings.Join(findings, ","))
 		}
 		if file.NewContent != "" {

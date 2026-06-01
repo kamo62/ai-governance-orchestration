@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"ai-agent-orch/internal/audit"
+	"ai-agent-orch/internal/policyengine"
 )
 
 // OrchestratorClient is the interface used by the Governance Shell to call the Orchestrator.
@@ -110,9 +111,37 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Re-check secrets on the new prompt.
-	if findings := detectSecrets(req.Prompt); len(findings) > 0 {
-		if err := h.service.appendDenied(r.Context(), "secret detected in follow-up message", findings, ""); err != nil {
+	classification := ""
+	if h.service.sessions != nil {
+		record, err := h.service.sessions.Get(r.Context(), sessionID)
+		if err == nil {
+			classification = record.Classification
+		}
+	}
+	decision, err := h.service.evaluatePolicy(r.Context(), policyengine.Request{
+		SessionID:      sessionID,
+		ActionType:     "session.message",
+		Classification: classification,
+		Prompt:         req.Prompt,
+	})
+	if err != nil {
+		if isPolicyInputError(err) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		if auditErr := h.service.appendDenied(r.Context(), "policy engine unavailable", nil, classification); auditErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			return
+		}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "policy engine unavailable"})
+		return
+	}
+	if !decision.Allowed {
+		reason := decision.Reason
+		if decision.Category == "secret" {
+			reason = "secret detected in follow-up message"
+		}
+		if err := h.service.appendDenied(r.Context(), reason, decision.Findings, classification); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
@@ -121,7 +150,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Call Orchestrator for routing.
-	decision, err := h.orch.Route(r.Context(), sessionID, req.Prompt)
+	routeDecision, err := h.orch.Route(r.Context(), sessionID, req.Prompt)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
 		return
@@ -143,8 +172,8 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		SessionID:          sessionID,
 		EventType:          "router.specialist.selected",
 		Actor:              actor,
-		Agent:              decision.Specialist,
-		Reason:             decision.Reason,
+		Agent:              routeDecision.Specialist,
+		Reason:             routeDecision.Reason,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
@@ -159,8 +188,8 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"session_id":     sessionID,
 		"status":         "awaiting_confirmation",
-		"specialist":     decision.Specialist,
-		"reason":         decision.Reason,
+		"specialist":     routeDecision.Specialist,
+		"reason":         routeDecision.Reason,
 		"audit_event_id": eventID,
 	})
 }

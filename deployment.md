@@ -17,6 +17,8 @@ The local Compose stack runs:
 
 The Orchestrator is intentionally internal to Docker Compose. OpenRouter credentials belong to the Governance Shell, and runtime model calls go through the internal model proxy.
 
+Local Compose mounts `agents/`, `models/`, and `policies/` into `/app` so agent definitions, model aliases, and policy YAML can be edited locally and picked up on service restart.
+
 ## Prerequisites
 
 - Go 1.26 or the repo's Docker build.

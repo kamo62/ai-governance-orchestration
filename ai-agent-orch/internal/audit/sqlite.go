@@ -212,7 +212,7 @@ func (s *SQLiteStore) EventsBySession(ctx context.Context, sessionID string) ([]
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT payload_json FROM audit_events
 		WHERE session_id = ?
-		ORDER BY recorded_at ASC
+		ORDER BY recorded_at ASC, rowid ASC
 	`, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("query audit events: %w", err)
