@@ -216,6 +216,13 @@ func (h *acpHandle) readLoop(stdout, stderr io.ReadCloser) {
 		// Response to our initialize or tool call.
 		if msg.Result != nil {
 			resultJSON, _ := json.Marshal(msg.Result)
+			// Check if the result contains a patch envelope.
+			if patchPayload := extractPatchFromResult(msg.Result); patchPayload != "" {
+				h.events <- RuntimeEvent{
+					Type:    "patch",
+					Payload: patchPayload,
+				}
+			}
 			h.events <- RuntimeEvent{
 				Type:    "stream",
 				Payload: string(resultJSON),
@@ -259,6 +266,24 @@ func (h *acpHandle) Stop() error {
 		return h.cmd.Wait()
 	}
 	return nil
+}
+
+// extractPatchFromResult attempts to extract a patch envelope JSON string from an ACP result.
+func extractPatchFromResult(result map[string]any) string {
+	if result == nil {
+		return ""
+	}
+	// Common ACP result shapes that may carry patches.
+	if content, ok := result["content"].(string); ok && content != "" {
+		return content
+	}
+	if payload, ok := result["patch"].(string); ok && payload != "" {
+		return payload
+	}
+	if payload, ok := result["output"].(string); ok && payload != "" {
+		return payload
+	}
+	return ""
 }
 
 type jsonRPCMessage struct {

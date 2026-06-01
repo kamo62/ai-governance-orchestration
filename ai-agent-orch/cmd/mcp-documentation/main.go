@@ -25,10 +25,10 @@ func main() {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"title":   req.Title,
-			"content": "This is a mock documentation page for " + req.Title + ".",
+			"title":        req.Title,
+			"content":      "This is a mock documentation page for " + req.Title + ".",
 			"last_updated": "2026-05-24T00:00:00Z",
-			"author":  "local-dev",
+			"author":       "local-dev",
 		})
 	})))
 	mux.Handle("/searchPages", httpauth.RequireBearerToken(mcpToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

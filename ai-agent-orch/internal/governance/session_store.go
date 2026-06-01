@@ -47,10 +47,13 @@ func NewSQLiteSessionStore(dbPath string) (*SQLiteSessionStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite session db: %w", err)
 	}
-	db.SetMaxOpenConns(1)
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxLifetime(30 * time.Minute)
 	if _, err := db.Exec(`
 		PRAGMA journal_mode = WAL;
-		PRAGMA busy_timeout = 5000;
+		PRAGMA busy_timeout = 10000;
+		PRAGMA synchronous = NORMAL;
 	`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("configure sqlite session db: %w", err)

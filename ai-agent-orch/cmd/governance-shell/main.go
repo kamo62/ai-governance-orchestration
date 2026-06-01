@@ -10,8 +10,10 @@ import (
 	"ai-agent-orch/internal/appconfig"
 	"ai-agent-orch/internal/audit"
 	"ai-agent-orch/internal/catalog"
+	"ai-agent-orch/internal/composition"
 	"ai-agent-orch/internal/governance"
 	"ai-agent-orch/internal/httpauth"
+	"ai-agent-orch/internal/oauth"
 	"ai-agent-orch/internal/openrouter"
 	"ai-agent-orch/internal/policyengine"
 	"ai-agent-orch/internal/server"
@@ -83,6 +85,8 @@ func main() {
 		Metrics:           metricsHandler,
 	})
 	eventStore := governance.NewEventStore()
+	compositionStore := composition.NewCompositionStore()
+	oauthTokenStore := oauth.NewMemoryTokenStore()
 
 	orchestratorURL := os.Getenv("AI_ORCH_ORCHESTRATOR_URL")
 	if orchestratorURL == "" {
@@ -106,6 +110,9 @@ func main() {
 	}))
 	handler.Handle("/v1/admin/killswitch", governance.NewAdminHandler(killSwitchStore, sessionService))
 	handler.Handle("/v1/admin/killswitch/", governance.NewAdminHandler(killSwitchStore, sessionService))
+	handler.Handle("/v1/admin/audit/retention", governance.NewAdminAuditHandler(auditStore, sessionService))
+	handler.Handle("/v1/compositions", governance.NewCompositionHandler(sessionService, compositionStore))
+	handler.Handle("/v1/compositions/", governance.NewCompositionHandler(sessionService, compositionStore))
 	handler.Handle("/internal/v1/model/", governance.NewModelProxyHandler(governance.ModelProxyConfig{
 		ServiceToken: cfg.ServiceToken,
 		OpenRouter: openrouter.NewClient(openrouter.Config{
@@ -120,16 +127,19 @@ func main() {
 		ServiceToken:  cfg.ServiceToken,
 		Audit:         auditStore,
 		Registrations: defaultMCPRegistrations(),
-		UserTokens:    governance.StaticUserTokenStore{},
+		UserTokens:    governance.NewOAuthTokenStoreAdapter(oauthTokenStore),
 	}))
 	handler.Handle("/metrics", metricsHandler)
 
+	wrappedHandler := logRequestLatency(handler)
 	srv := &http.Server{
-		Addr:         cfg.Addr,
-		Handler:      handler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Addr:              cfg.Addr,
+		Handler:           wrappedHandler,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Minute,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MiB
 	}
 	log.Printf("governance-shell listening on %s", cfg.Addr)
 	log.Fatal(srv.ListenAndServe())
@@ -166,6 +176,18 @@ func (sr *sessionSubrouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// logRequestLatency wraps an http.Handler and logs requests that exceed a threshold.
+func logRequestLatency(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		next.ServeHTTP(w, r)
+		dur := time.Since(start)
+		if dur > 500*time.Millisecond {
+			log.Printf("slow request: %s %s %s", r.Method, r.URL.Path, dur)
+		}
+	})
 }
 
 func containsSuffix(path, suffix string) bool {

@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -149,6 +150,55 @@ func TestSQLiteStoreUsesPrivateDatabasePermissions(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("expected sqlite db permissions 0600, got %o", got)
+	}
+}
+
+func TestSQLiteStoreMigratesParentEventIDBeforeIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE audit_events (
+			event_id TEXT PRIMARY KEY,
+			session_id TEXT,
+			event_type TEXT NOT NULL,
+			actor TEXT,
+			agent TEXT,
+			classification TEXT,
+			reason TEXT,
+			findings_json TEXT,
+			prompt_sha256 TEXT,
+			estimated_cost_usd REAL,
+			cost_cap_usd REAL,
+			raw_prompt_stored INTEGER NOT NULL DEFAULT 0,
+			raw_response_stored INTEGER NOT NULL DEFAULT 0,
+			correlation_subject TEXT,
+			recorded_at TEXT NOT NULL,
+			payload_json TEXT
+		);
+	`); err != nil {
+		_ = db.Close()
+		t.Fatalf("create legacy audit schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatalf("migrate legacy sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	if _, err := store.Append(context.Background(), Event{
+		EventID:       "evt_child",
+		ParentEventID: "evt_parent",
+		SessionID:     "sess_legacy",
+		EventType:     "session.confirmed",
+	}); err != nil {
+		t.Fatalf("append linked event after migration: %v", err)
 	}
 }
 

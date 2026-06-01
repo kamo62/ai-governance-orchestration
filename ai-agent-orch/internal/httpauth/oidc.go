@@ -3,8 +3,11 @@ package httpauth
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -29,8 +32,20 @@ type OIDCTokenValidator struct {
 	cfg      OIDCConfig
 	devToken string
 
-	mu   sync.RWMutex
-	jwks map[string]any // kid -> JWK
+	mu      sync.RWMutex
+	jwks    map[string]any // kid -> JWK
+	jwksExp time.Time      // TTL cache expiry
+
+	refreshMu sync.Mutex
+	refreshCh chan struct{} // singleflight channel
+}
+
+// Default JWKS cache TTL.
+const jwksTTL = 15 * time.Minute
+
+// HTTP client with timeout for OIDC discovery/JWKS requests.
+var oidcHTTPClient = &http.Client{
+	Timeout: 10 * time.Second,
 }
 
 func NewOIDCTokenValidator(cfg OIDCConfig, devToken string) *OIDCTokenValidator {
@@ -73,12 +88,12 @@ func (v *OIDCTokenValidator) validateJWT(ctx context.Context, token string) (str
 		return "", err
 	}
 
-	// Lazy refresh if we have no keys yet.
+	// Lazy refresh if we have no keys or cache expired.
 	v.mu.RLock()
-	hasKeys := len(v.jwks) > 0
+	hasKeys := len(v.jwks) > 0 && time.Now().UTC().Before(v.jwksExp)
 	v.mu.RUnlock()
 	if !hasKeys {
-		if err := v.refreshKeys(ctx); err != nil {
+		if err := v.refreshKeysSingleflight(ctx); err != nil {
 			return "", fmt.Errorf("jwks refresh: %w", err)
 		}
 	}
@@ -94,8 +109,8 @@ func (v *OIDCTokenValidator) validateJWT(ctx context.Context, token string) (str
 	jwk, ok := v.jwks[kid]
 	v.mu.RUnlock()
 	if !ok {
-		// Key rotation may have happened; retry once.
-		if err := v.refreshKeys(ctx); err != nil {
+		// Key rotation may have happened; retry once with fresh fetch.
+		if err := v.refreshKeysSingleflight(ctx); err != nil {
 			return "", fmt.Errorf("jwks refresh after key miss: %w", err)
 		}
 		v.mu.RLock()
@@ -123,6 +138,15 @@ func (v *OIDCTokenValidator) validateJWT(ctx context.Context, token string) (str
 		return "", err
 	}
 	if err := checkExp(claims); err != nil {
+		return "", err
+	}
+	if err := checkNBF(claims); err != nil {
+		return "", err
+	}
+	if err := checkIAT(claims); err != nil {
+		return "", err
+	}
+	if err := checkAZP(claims, v.cfg.ClientID); err != nil {
 		return "", err
 	}
 
@@ -162,9 +186,56 @@ func verifySignature(alg string, signingInput string, sig []byte, jwk any) error
 		}
 		hash := sha256.Sum256([]byte(signingInput))
 		return rsa.VerifyPKCS1v15(key, crypto.SHA256, hash[:], sig)
+	case "RS384":
+		key, ok := jwk.(*rsa.PublicKey)
+		if !ok {
+			return errors.New("jwk is not an rsa public key")
+		}
+		hash := sha512.Sum384([]byte(signingInput))
+		return rsa.VerifyPKCS1v15(key, crypto.SHA384, hash[:], sig)
+	case "RS512":
+		key, ok := jwk.(*rsa.PublicKey)
+		if !ok {
+			return errors.New("jwk is not an rsa public key")
+		}
+		hash := sha512.Sum512([]byte(signingInput))
+		return rsa.VerifyPKCS1v15(key, crypto.SHA512, hash[:], sig)
+	case "ES256":
+		key, ok := jwk.(*ecdsa.PublicKey)
+		if !ok {
+			return errors.New("jwk is not an ec public key")
+		}
+		hash := sha256.Sum256([]byte(signingInput))
+		return verifyECDSA(key, hash[:], sig, 32)
+	case "ES384":
+		key, ok := jwk.(*ecdsa.PublicKey)
+		if !ok {
+			return errors.New("jwk is not an ec public key")
+		}
+		hash := sha512.Sum384([]byte(signingInput))
+		return verifyECDSA(key, hash[:], sig, 48)
+	case "ES512":
+		key, ok := jwk.(*ecdsa.PublicKey)
+		if !ok {
+			return errors.New("jwk is not an ec public key")
+		}
+		hash := sha512.Sum512([]byte(signingInput))
+		return verifyECDSA(key, hash[:], sig, 66)
 	default:
 		return fmt.Errorf("unsupported jwt alg: %s", alg)
 	}
+}
+
+func verifyECDSA(key *ecdsa.PublicKey, hash, sig []byte, coordLen int) error {
+	if len(sig) != 2*coordLen {
+		return errors.New("ecdsa signature length mismatch")
+	}
+	r := new(big.Int).SetBytes(sig[:coordLen])
+	s := new(big.Int).SetBytes(sig[coordLen:])
+	if !ecdsa.Verify(key, hash, r, s) {
+		return errors.New("ecdsa verification failed")
+	}
+	return nil
 }
 
 func checkClaim(claims map[string]any, key, expected string) error {
@@ -207,19 +278,94 @@ func checkExp(claims map[string]any) error {
 	if !ok {
 		return errors.New("exp claim missing")
 	}
-	var exp int64
-	switch v := expRaw.(type) {
-	case float64:
-		exp = int64(v)
-	case int64:
-		exp = v
-	default:
-		return errors.New("exp claim invalid type")
+	exp, err := parseNumericDate(expRaw)
+	if err != nil {
+		return err
 	}
 	if time.Now().UTC().After(time.Unix(exp, 0).UTC()) {
 		return errors.New("token expired")
 	}
 	return nil
+}
+
+func checkNBF(claims map[string]any) error {
+	nbfRaw, ok := claims["nbf"]
+	if !ok {
+		return nil // nbf is optional
+	}
+	nbf, err := parseNumericDate(nbfRaw)
+	if err != nil {
+		return err
+	}
+	if time.Now().UTC().Before(time.Unix(nbf, 0).UTC()) {
+		return errors.New("token not yet valid (nbf)")
+	}
+	return nil
+}
+
+func checkIAT(claims map[string]any) error {
+	iatRaw, ok := claims["iat"]
+	if !ok {
+		return nil // iat is optional
+	}
+	iat, err := parseNumericDate(iatRaw)
+	if err != nil {
+		return err
+	}
+	// Reject tokens issued more than 1 hour in the future (clock skew tolerance).
+	if time.Now().UTC().Add(1 * time.Hour).Before(time.Unix(iat, 0).UTC()) {
+		return errors.New("token issued in the future (iat)")
+	}
+	return nil
+}
+
+func checkAZP(claims map[string]any, clientID string) error {
+	azpRaw, ok := claims["azp"]
+	if !ok {
+		return nil // azp is optional
+	}
+	azp, ok := azpRaw.(string)
+	if !ok {
+		return errors.New("azp claim invalid type")
+	}
+	if azp != clientID {
+		return errors.New("authorized party mismatch")
+	}
+	return nil
+}
+
+func parseNumericDate(v any) (int64, error) {
+	switch val := v.(type) {
+	case float64:
+		return int64(val), nil
+	case int64:
+		return val, nil
+	case int:
+		return int64(val), nil
+	default:
+		return 0, errors.New("numeric date claim invalid type")
+	}
+}
+
+// refreshKeysSingleflight ensures only one concurrent JWKS refresh runs.
+func (v *OIDCTokenValidator) refreshKeysSingleflight(ctx context.Context) error {
+	v.refreshMu.Lock()
+	if v.refreshCh != nil {
+		ch := v.refreshCh
+		v.refreshMu.Unlock()
+		<-ch
+		return nil
+	}
+	v.refreshCh = make(chan struct{})
+	v.refreshMu.Unlock()
+
+	err := v.refreshKeys(ctx)
+
+	v.refreshMu.Lock()
+	close(v.refreshCh)
+	v.refreshCh = nil
+	v.refreshMu.Unlock()
+	return err
 }
 
 // refreshKeys fetches the OIDC discovery document and JWKS.
@@ -229,7 +375,7 @@ func (v *OIDCTokenValidator) refreshKeys(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oidcHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("fetch openid configuration: %w", err)
 	}
@@ -252,7 +398,7 @@ func (v *OIDCTokenValidator) refreshKeys(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = oidcHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("fetch jwks: %w", err)
 	}
@@ -283,6 +429,7 @@ func (v *OIDCTokenValidator) refreshKeys(ctx context.Context) error {
 
 	v.mu.Lock()
 	v.jwks = parsed
+	v.jwksExp = time.Now().UTC().Add(jwksTTL)
 	v.mu.Unlock()
 	return nil
 }
@@ -309,8 +456,42 @@ func parseJWK(key map[string]any) (any, error) {
 		e := int(new(big.Int).SetBytes(eBytes).Int64())
 		return &rsa.PublicKey{N: n, E: e}, nil
 	case "EC":
-		_ = alg
-		return nil, errors.New("ec jwk parsing not implemented in skeleton")
+		crv, _ := key["crv"].(string)
+		xB64, _ := key["x"].(string)
+		yB64, _ := key["y"].(string)
+		if xB64 == "" || yB64 == "" {
+			return nil, errors.New("missing ec key parameters")
+		}
+		xBytes, err := base64.RawURLEncoding.DecodeString(xB64)
+		if err != nil {
+			return nil, err
+		}
+		yBytes, err := base64.RawURLEncoding.DecodeString(yB64)
+		if err != nil {
+			return nil, err
+		}
+		var curve elliptic.Curve
+		switch crv {
+		case "P-256":
+			curve = elliptic.P256()
+		case "P-384":
+			curve = elliptic.P384()
+		case "P-521":
+			curve = elliptic.P521()
+		default:
+			return nil, fmt.Errorf("unsupported ec curve: %s", crv)
+		}
+		x := new(big.Int).SetBytes(xBytes)
+		y := new(big.Int).SetBytes(yBytes)
+		if !curve.IsOnCurve(x, y) {
+			return nil, errors.New("ec point is not on curve")
+		}
+		// Verify alg matches curve.
+		expectedAlg := map[string]string{"P-256": "ES256", "P-384": "ES384", "P-521": "ES512"}
+		if alg != "" && alg != expectedAlg[crv] {
+			return nil, fmt.Errorf("alg %s does not match curve %s", alg, crv)
+		}
+		return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
 	default:
 		return nil, fmt.Errorf("unsupported key type: %s", kty)
 	}

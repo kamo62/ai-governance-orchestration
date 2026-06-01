@@ -6,23 +6,25 @@ The goal is not to rebuild every agent runtime, IDE workflow, or coding assistan
 
 ## Project State
 
-Current as of 2026-05-25: this is a personal-time POC in active early development, with `v0.2.0-alpha` as the current version.
+Current as of 2026-06-01: this is a personal-time POC in active early development, with `v0.3.2-alpha` as the current version.
 
 Implemented:
 
 - Phase 0 catalogue and agent-definition foundation
 - session creation, session ownership, and state guards
-- audit events, audit lookup, policy gates, and service-token hardening
+- audit events, audit lookup, linked audit envelopes, policy gates, and service-token hardening
 - router selection, specialist dispatch, and SSE event streaming
 - Docker Compose local runner and catalogue validation tooling
 - OpenRouter model smoke tooling
 - opt-in OpenRouter-backed CLI orchestration smoke path
-- source-aware CLI smoke testing when selected code excerpts are included in the prompt
+- source-aware CLI runs through `ai-orch session create --workspace`
 - Governance Shell model proxy for OpenRouter calls, so the Orchestrator does not need the provider API key
 - staged patch buffering, with sanitised SSE metadata and governed patch fetch before Bridge apply/review
 - MCP proxy stub with `oauth-user` fail-closed behaviour when user OAuth is absent
 - native policy-engine boundary with AGT reserved as a future adapter
 - consecutive tool/MCP-call cap controls
+- experimental composition APIs and assembly-line reference scaffolding with human gates
+- authenticated audit-retention administration for SQLite audit storage
 - EchoRuntime and DirectRuntime patch envelopes for local testing
 - local CLI, VS Code Bridge, and MCP stub scaffolds
 - optional SQLite audit storage and optional OIDC token-validation scaffolding
@@ -30,8 +32,8 @@ Implemented:
 Next:
 
 - real OpenCode patch-producing flow
-- linked router, specialist, and patch-decision audit envelopes
-- automatic workspace/source-context packaging for CLI runs
+- tamper-evident audit hash chaining
+- hot-path catalogue validation caching with explicit invalidation
 - manual VS Code Bridge validation
 - broader CLI coverage for admin and CI-shaped workflows
 - real user OAuth token acquisition for `oauth-user` MCPs
@@ -137,6 +139,26 @@ If this works, the system can offer a common path through multiple agent executi
 - allow future promotion from experimental to published agents
 
 That means engineers can still use practical tools, while the system provides a consistent control surface.
+
+## Maturity Governance Outputs
+
+This POC should produce machine-readable governance outputs for a separate engineering maturity and reporting layer. It should not become that reporting layer itself.
+
+The outputs this system needs to emit are:
+
+- **Session summary**: session ID, actor, team, use case ID, workflow ID, work item reference, repository, branch, commit, classification, risk level, requested agent, selected specialist, runtime, model alias, resolved model, timestamps, and final status.
+- **Policy and control outcomes**: allow/block decisions, policy reason, classification result, secret-scan result, kill-switch status, OAuth failure, tool-loop cap result, cost-cap result, and human gate decisions.
+- **Cost and value sizing**: human baseline sizing from Jira or Azure DevOps when available, estimated dev days, blended day rate, baseline cost, model cost, tool/API cost, platform/runtime cost, human review effort, verification effort, retry count, and estimated net saving.
+- **Context provenance**: context manifest ID, source system, source object ID, source path or URL, auth scope, freshness/version, classification, cache status, included summary/chunk hashes, and whether the source influenced a model call.
+- **Evidence records**: generated or selected tests, test execution result, quality-system link, security finding, architecture review output, patch metadata, approval receipt, patch decision, and external ticket/work-item link.
+- **Outcome metrics**: success or failure, accepted/rejected/partial decision, evidence completeness, cycle-time signal, quality result, review effort, verification cost, blocked-event category, and adoption signal.
+- **Cache outcomes**: session cache hits and misses, reusable context summaries, cache eligibility decisions, cache savings estimate, cache expiry, invalidation reason, and whether cached context was allowed by classification, actor, repository, and workflow policy.
+
+These outputs should be exportable to a maturity governance system that already understands engineering health, maturity, reporting, benchmarks, and value realisation. The IDE and CLI should send lightweight IDs and intent; the Governance Shell should resolve context, policy, provenance, evidence, and cost records behind the boundary.
+
+Caching is part of the governance boundary, not a hidden memory product. The first cache should be session-scoped and policy-aware: it can reuse safe context summaries, model-call metadata, and connector read results inside one governed session, but it must record provenance, classification, actor scope, expiry, invalidation, and estimated savings. Cross-session or semantic caching should only be added later with explicit approval rules.
+
+The next hardening line is audit and state integrity. Before this POC can be treated as more than a local experiment, the audit trail needs tamper-evident hash chaining, runtime state needs explicit lifecycle and durability decisions, and hot-path catalogue validation needs caching with clear invalidation. Those are governance prerequisites, not runtime features.
 
 ## Current POC Direction
 

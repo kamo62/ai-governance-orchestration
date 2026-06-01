@@ -35,12 +35,18 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite audit db: %w", err)
 	}
-	db.SetMaxOpenConns(1)
+	// WAL mode supports multiple readers and one writer concurrently.
+	// MaxOpenConns > 1 allows concurrent reads. Cap at 8 to avoid
+	// excessive connection churn while still permitting parallelism.
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxLifetime(30 * time.Minute)
 
 	// WAL mode for better concurrent read/write performance.
 	if _, err := db.Exec(`
 		PRAGMA journal_mode = WAL;
-		PRAGMA busy_timeout = 5000;
+		PRAGMA busy_timeout = 10000;
+		PRAGMA synchronous = NORMAL;
 	`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("configure sqlite audit db: %w", err)
@@ -68,6 +74,7 @@ func (s *SQLiteStore) migrate() error {
 	_, err := s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS audit_events (
 			event_id TEXT PRIMARY KEY,
+			parent_event_id TEXT,
 			session_id TEXT,
 			event_type TEXT NOT NULL,
 			actor TEXT,
@@ -84,11 +91,51 @@ func (s *SQLiteStore) migrate() error {
 			recorded_at TEXT NOT NULL,
 			payload_json TEXT
 		);
+	`)
+	if err != nil {
+		return err
+	}
+	if err := s.ensureAuditColumn("parent_event_id", "TEXT"); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
 		CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_events(session_id);
 		CREATE INDEX IF NOT EXISTS idx_audit_type ON audit_events(event_type);
 		CREATE INDEX IF NOT EXISTS idx_audit_recorded ON audit_events(recorded_at);
+		CREATE INDEX IF NOT EXISTS idx_audit_parent ON audit_events(parent_event_id);
 	`)
 	return err
+}
+
+func (s *SQLiteStore) ensureAuditColumn(column string, definition string) error {
+	rows, err := s.db.Query(`PRAGMA table_info(audit_events)`)
+	if err != nil {
+		return fmt.Errorf("inspect audit schema: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return fmt.Errorf("scan audit schema: %w", err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate audit schema: %w", err)
+	}
+
+	if _, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE audit_events ADD COLUMN %s %s`, column, definition)); err != nil {
+		return fmt.Errorf("add audit column %s: %w", column, err)
+	}
+	return nil
 }
 
 func (s *SQLiteStore) Append(ctx context.Context, event Event) (Event, error) {
@@ -125,12 +172,12 @@ func (s *SQLiteStore) Append(ctx context.Context, event Event) (Event, error) {
 
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO audit_events (
-			event_id, session_id, event_type, actor, agent, classification,
+			event_id, parent_event_id, session_id, event_type, actor, agent, classification,
 			reason, findings_json, prompt_sha256, estimated_cost_usd, cost_cap_usd,
 			raw_prompt_stored, raw_response_stored, correlation_subject, recorded_at, payload_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
-		event.EventID, event.SessionID, event.EventType, event.Actor, event.Agent,
+		event.EventID, event.ParentEventID, event.SessionID, event.EventType, event.Actor, event.Agent,
 		event.Classification, event.Reason, string(findingsJSON), event.PromptSHA256,
 		event.EstimatedCostUSD, event.CostCapUSD,
 		boolToInt(event.RawPromptStored), boolToInt(event.RawResponseStored),
@@ -200,6 +247,31 @@ func (s *SQLiteStore) ImportFromFileStore(ctx context.Context, fs *FileStore) er
 		}
 	}
 	return nil
+}
+
+// PurgeBefore removes audit events recorded before the given cutoff time.
+func (s *SQLiteStore) PurgeBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("sqlite audit store is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM audit_events WHERE recorded_at < ?`, cutoff.Format(time.RFC3339Nano))
+	if err != nil {
+		return 0, fmt.Errorf("purge audit events: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("rows affected: %w", err)
+	}
+	return n, nil
+}
+
+// RetentionPolicy applies a retention window by purging events older than the given duration.
+func (s *SQLiteStore) RetentionPolicy(ctx context.Context, maxAge time.Duration) (int64, error) {
+	cutoff := time.Now().UTC().Add(-maxAge)
+	return s.PurgeBefore(ctx, cutoff)
 }
 
 // Close closes the underlying database connection.

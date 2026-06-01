@@ -184,6 +184,9 @@ func (s *SSEWriter) WriteEvent(event SessionEvent) error {
 	if err != nil {
 		return err
 	}
+	// Set a per-write deadline to prevent slow clients from blocking indefinitely.
+	rc := http.NewResponseController(s.w)
+	_ = rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_, err = fmt.Fprintf(s.w, "data: %s\n\n", string(data))
 	if err != nil {
 		return err
@@ -193,6 +196,8 @@ func (s *SSEWriter) WriteEvent(event SessionEvent) error {
 }
 
 func (s *SSEWriter) WriteComment(comment string) error {
+	rc := http.NewResponseController(s.w)
+	_ = rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_, err := fmt.Fprintf(s.w, ": %s\n", strings.ReplaceAll(comment, "\n", " "))
 	if err != nil {
 		return err

@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.3.2-alpha - 2026-06-01 (Patch)
+
+Release impact: Patch because this tightens governance authorization, ownership checks, concurrency safety, and performance without changing API contracts.
+
+- **Required auth for audit-retention administration**: `POST /v1/admin/audit/retention` now uses the same authorised request path as the rest of the Governance Shell admin surface.
+- **Enforced composition ownership across the lifecycle**: `GET`, `complete`, `approve`, and `advance` composition calls now require an owned durable session, not only an authenticated token.
+- **Hardened composition state access**: The in-memory composition store now returns cloned snapshots and applies mutations under lock to avoid leaking mutable state across concurrent requests.
+- **Added locking to the local OAuth token store** so future user-token reads and writes do not race under concurrent MCP proxy calls.
+- **Removed SQLite single-connection bottleneck**: Changed `db.SetMaxOpenConns(1)` to `8` on both audit and session SQLite stores, with `MaxIdleConns(4)` and `ConnMaxLifetime(30m)`. WAL mode now actually supports concurrent reads instead of serialising everything through one connection.
+- **Added SQLite `PRAGMA synchronous = NORMAL`** on both stores for better write throughput without sacrificing WAL durability.
+- **Increased SQLite busy timeout** from 5s to 10s to reduce contention retries under load.
+- **Switched FileStore to `sync.RWMutex`**: `EventsBySession` and `AllEvents` now use `RLock()` so concurrent audit reads don't block each other. `Append` still uses `Lock()` for writes.
+- **Added HTTP server hardening without breaking long dispatches**: `ReadHeaderTimeout: 5s`, `MaxHeaderBytes: 1MiB`, and a 10-minute write timeout on both governance-shell and orchestrator. This keeps slowloris protection while allowing governed model calls and SSE dispatches to exceed short request/response timings.
+- **Added request latency logging**: Middleware logs any request exceeding 500ms with method, path, and duration to help identify slow endpoints in production.
+- **Added SSE per-write deadlines**: `http.NewResponseController` sets a 5-second write deadline on every SSE event and keepalive comment to prevent slow subscribers from blocking the server indefinitely.
+
+## v0.3.1-alpha - 2026-05-25 (Patch)
+
+Release impact: Patch because this wires previously scaffolded packages into the running system without breaking existing API contracts.
+
+- **Wired composition into Governance Shell**: Added HTTP endpoints `POST /v1/compositions`, `GET /v1/compositions/{id}`, `POST /v1/compositions/{id}/approve`, `POST /v1/compositions/{id}/advance`, `POST /v1/compositions/{id}/complete`. Session ownership enforced on composition creation. Integration tests prove full create → complete → approve → advance → max-depth flow.
+- **Wired workspace packager into CLI**: `ai-orch session create --workspace` packages the current directory and appends file contents to the prompt before sending to the Governance Shell.
+- **Kept assembly-line execution as Phase 3 reference material**: the YAML parser remains available under `internal/assemblyline`, but no CLI run loop is exposed yet because sequential runtime composition still needs a proper session-state design.
+- **Wired audit retention into admin API**: Added `POST /v1/admin/audit/retention` with `max_age_hours` body. Returns 501 for non-SQLite backends. Integration test verifies old events are purged while recent events survive.
+- **Wired OAuth token store into MCP proxy**: Replaced `StaticUserTokenStore{}` with `OAuthTokenStoreAdapter` wrapping `internal/oauth.MemoryTokenStore`. `oauth-user` MCP registrations now look up real tokens and check expiration before forwarding.
+- **Added integration tests**: `TestCompositionHandler_CreateAndFlow`, `TestCompositionHandler_RejectUnapprovedAdvance`, `TestAdminAuditHandler_RetentionNotSupportedForFileStore`, `TestAdminAuditHandler_RetentionPurgesOldEvents`.
+
+## v0.3.0-alpha - 2026-05-25 (Minor)
+
+Release impact: Minor because this adds linked audit envelopes, OIDC hardening, workspace context packaging, sequential composition, assembly-line YAML, OAuth scaffolding, and architecture-review promotion without breaking existing API contracts.
+
+- Added linked audit envelope correlation via `ParentEventID` across session creation, routing, confirmation, abort, and patch-decision events.
+- Added `rememberEventID` / `parentEventID` helpers to `SessionService` for audit event chaining.
+- Added session state machine transitions: `created` → `awaiting_confirmation` (messages) → `confirmed` (confirm) with `CompareAndSwapStatus` guards.
+- Added automatic workspace/source-context packaging via `internal/workspace.Packager` with configurable include/exclude globs, file count caps, and size limits.
+- Added ACP runtime patch extraction from JSON-RPC results to emit `patch` events.
+- Hardened OIDC validator with `nbf` (not before), `iat` (issued at), and `azp` (authorized party) claim checks.
+- Added JWKS TTL cache (15-minute expiry) and singleflight refresh to prevent concurrent discovery storms.
+- Added EC JWK parsing support for `ES256`, `ES384`, and `ES512` algorithms with curve validation.
+- Added HTTP client timeouts (10s) for OIDC discovery and JWKS requests.
+- Added `internal/oauth` token store scaffolding with `MemoryTokenStore`, `Token.IsExpired()`, and `TokenSource` interface for future user-scoped OAuth flows.
+- Added SQLite audit retention controls: `PurgeBefore` and `RetentionPolicy` for time-based event pruning.
+- Promoted `architecture-review` from `agents/temp/` to `agents/published/` with version 1.0.0 and `required_for_phase0: true`.
+- Added sequential composition package (`internal/composition`) with human gates, max depth enforcement (default 2), and governed context handoff between stages.
+- Added assembly-line YAML parser (`internal/assemblyline`) for ordered multi-stage agent pipelines with validation and JSON export.
+- Added regression coverage for audit linking, OIDC nbf/iat/azp/EC-JWK, workspace packaging, composition flow, assembly-line validation, and OAuth token store.
+
 ## v0.2.0-alpha - 2026-05-24 (Minor)
 
 Release impact: Minor because this adds new governed runtime boundaries for model proxying, MCP proxying, staged patch retrieval, and tool-loop control without breaking the existing local CLI flow.

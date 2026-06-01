@@ -111,10 +111,11 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Record confirmation audit event.
+	// Record confirmation audit event, linked to the router event.
 	eventID := h.newID("evt")
 	_, err := h.service.audit.Append(r.Context(), audit.Event{
 		EventID:            eventID,
+		ParentEventID:      h.service.parentEventID(sessionID),
 		SessionID:          sessionID,
 		EventType:          "session.confirmed",
 		Actor:              actor,
@@ -124,10 +125,11 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		CorrelationSubject: "governance-shell",
 	})
 	if err != nil {
-		h.service.setSessionStatus(r.Context(), sessionID, "confirm_failed")
+		h.service.setSessionStatus(r.Context(), sessionID, "awaiting_confirmation")
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
 	}
+	h.service.rememberEventID(sessionID, eventID)
 	if h.service.sessions != nil {
 		if err := h.service.sessions.CompareAndSwapStatus(r.Context(), sessionID, "confirming", "confirmed"); err != nil {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "session state transition failed"})

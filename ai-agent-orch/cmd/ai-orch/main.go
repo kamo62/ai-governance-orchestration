@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"ai-agent-orch/internal/workspace"
 )
 
 const (
@@ -83,7 +85,7 @@ func printUsage() {
 	fmt.Println(`ai-orch CLI — local AI agent orchestration client
 
 Usage:
-  ai-orch session create --agent <name> --classification <level> --prompt <text>
+  ai-orch session create --agent <name> --classification <level> --prompt <text> [--workspace]
   ai-orch session message --session-id <id> --prompt <text>
   ai-orch session confirm --session-id <id> --agent <name>
   ai-orch session events --session-id <id>
@@ -124,9 +126,29 @@ func createSession(ctx context.Context, cfg Config, args []string) {
 	agent := flagValue(args, "--agent")
 	classification := flagValue(args, "--classification")
 	prompt := flagValue(args, "--prompt")
+	withWorkspace := hasFlag(args, "--workspace")
 	if agent == "" || classification == "" || prompt == "" {
-		fmt.Fprintln(os.Stderr, "usage: ai-orch session create --agent <name> --classification <level> --prompt <text>")
+		fmt.Fprintln(os.Stderr, "usage: ai-orch session create --agent <name> --classification <level> --prompt <text> [--workspace]")
 		os.Exit(1)
+	}
+
+	// Append workspace context if requested.
+	if withWorkspace {
+		wd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "get working directory: %v\n", err)
+			os.Exit(1)
+		}
+		packager := workspace.DefaultPackager(wd)
+		ctxStr, err := packager.PackageAsContext()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "package workspace: %v\n", err)
+			os.Exit(1)
+		}
+		if ctxStr != "" {
+			prompt = prompt + ctxStr
+			fmt.Fprintf(os.Stderr, "[workspace] packaged %s\n", wd)
+		}
 	}
 
 	body, _ := json.Marshal(map[string]any{

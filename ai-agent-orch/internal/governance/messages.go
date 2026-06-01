@@ -127,10 +127,19 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Record router-selection audit event.
+	// Transition session to awaiting_confirmation after successful routing.
+	if h.service.sessions != nil {
+		if err := h.service.sessions.UpdateStatus(r.Context(), sessionID, "awaiting_confirmation"); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "session status update failed"})
+			return
+		}
+	}
+
+	// Record router-selection audit event, linked to session creation.
 	eventID := h.newID("evt")
 	_, err = h.service.audit.Append(r.Context(), audit.Event{
 		EventID:            eventID,
+		ParentEventID:      h.service.parentEventID(sessionID),
 		SessionID:          sessionID,
 		EventType:          "router.specialist.selected",
 		Actor:              actor,
@@ -144,12 +153,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
 	}
-	if h.service.sessions != nil {
-		if err := h.service.sessions.CompareAndSwapStatus(r.Context(), sessionID, "created", "awaiting_confirmation"); err != nil {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "session state transition failed"})
-			return
-		}
-	}
+	h.service.rememberEventID(sessionID, eventID)
 	h.service.rememberPrompt(sessionID, req.Prompt)
 
 	writeJSON(w, http.StatusOK, map[string]any{

@@ -83,6 +83,32 @@ type SessionService struct {
 	patches           map[string]map[string]struct{}
 	cancelMu          sync.Mutex
 	cancels           map[string]context.CancelFunc
+	// lastEventID tracks the most recent audit event ID per session for chain linking.
+	lastEventMu sync.Mutex
+	lastEventID map[string]string
+}
+
+// rememberEventID stores the latest audit event ID for a session.
+func (s *SessionService) rememberEventID(sessionID, eventID string) {
+	if s == nil || sessionID == "" || eventID == "" {
+		return
+	}
+	s.lastEventMu.Lock()
+	defer s.lastEventMu.Unlock()
+	if s.lastEventID == nil {
+		s.lastEventID = make(map[string]string)
+	}
+	s.lastEventID[sessionID] = eventID
+}
+
+// parentEventID returns the last known audit event ID for a session.
+func (s *SessionService) parentEventID(sessionID string) string {
+	if s == nil {
+		return ""
+	}
+	s.lastEventMu.Lock()
+	defer s.lastEventMu.Unlock()
+	return s.lastEventID[sessionID]
 }
 
 func (s *SessionService) registerCancel(sessionID string, cancel context.CancelFunc) {
@@ -322,6 +348,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordSessionCreated()
 	s.rememberPrompt(sessionID, request.Prompt)
+	s.rememberEventID(sessionID, event.EventID)
 
 	writeJSON(w, http.StatusCreated, CreateSessionResponse{
 		SessionID:    sessionID,

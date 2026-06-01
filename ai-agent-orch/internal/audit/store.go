@@ -21,6 +21,7 @@ type Store interface {
 
 type Event struct {
 	EventID            string         `json:"event_id"`
+	ParentEventID      string         `json:"parent_event_id,omitempty"`
 	SessionID          string         `json:"session_id,omitempty"`
 	EventType          string         `json:"event_type"`
 	Actor              string         `json:"actor,omitempty"`
@@ -61,8 +62,8 @@ func (s *FileStore) EventsBySession(ctx context.Context, sessionID string) ([]Ev
 		return nil, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	f, err := os.Open(s.Path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -104,8 +105,8 @@ func (s *FileStore) AllEvents(ctx context.Context) ([]Event, error) {
 		return nil, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	f, err := os.Open(s.Path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -138,7 +139,7 @@ type FileStore struct {
 	Path string
 	Now  func() time.Time
 
-	mu sync.Mutex
+	mu sync.RWMutex
 }
 
 func NewFileStore(path string) *FileStore {

@@ -50,13 +50,28 @@ func main() {
 	handler.Handle("/v1/orchestrator/route", httpauth.RequireBearerToken(cfg.ServiceToken, orchestrator.NewRouterHandler(router)))
 	handler.Handle("/v1/orchestrator/dispatch", httpauth.RequireBearerToken(cfg.ServiceToken, orchestrator.NewDispatchHandler(dispatcher, auditStore)))
 
+	wrappedHandler := logRequestLatency(handler)
 	srv := &http.Server{
-		Addr:         cfg.Addr,
-		Handler:      handler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Addr:              cfg.Addr,
+		Handler:           wrappedHandler,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Minute,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MiB
 	}
 	log.Printf("orchestrator listening on %s", cfg.Addr)
 	log.Fatal(srv.ListenAndServe())
+}
+
+// logRequestLatency wraps an http.Handler and logs requests that exceed a threshold.
+func logRequestLatency(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		next.ServeHTTP(w, r)
+		dur := time.Since(start)
+		if dur > 500*time.Millisecond {
+			log.Printf("slow request: %s %s %s", r.Method, r.URL.Path, dur)
+		}
+	})
 }

@@ -84,18 +84,14 @@ func (h *PatchDecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	reason := req.Decision
-	if req.Reason != "" {
-		reason = fmt.Sprintf("%s: %s", req.Decision, req.Reason)
-	}
-
 	eventID := h.newID("evt")
 	_, err := h.service.audit.Append(r.Context(), audit.Event{
 		EventID:            eventID,
+		ParentEventID:      h.service.parentEventID(sessionID),
 		SessionID:          sessionID,
 		EventType:          "patch.decision",
 		Actor:              actor,
-		Reason:             reason,
+		Reason:             fmt.Sprintf("%s: %s", req.Decision, req.Reason),
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
@@ -104,6 +100,7 @@ func (h *PatchDecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
 	}
+	h.service.rememberEventID(sessionID, eventID)
 	if h.service.metrics != nil {
 		switch req.Decision {
 		case "applied", "partially_applied":

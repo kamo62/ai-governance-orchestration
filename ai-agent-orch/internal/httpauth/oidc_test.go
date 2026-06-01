@@ -3,6 +3,8 @@ package httpauth
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -169,6 +171,226 @@ func signedTestIDToken(t *testing.T, key *rsa.PrivateKey, claims map[string]any)
 	if err != nil {
 		t.Fatalf("sign token: %v", err)
 	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+func TestOIDCTokenValidator_RejectExpiredToken(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			writeTestJSON(t, w, map[string]string{"jwks_uri": server.URL + "/jwks"})
+		case "/jwks":
+			writeTestJSON(t, w, map[string]any{
+				"keys": []map[string]string{
+					{
+						"kty": "RSA",
+						"kid": "test-key",
+						"alg": "RS256",
+						"use": "sig",
+						"n":   base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
+						"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.PublicKey.E)).Bytes()),
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	token := signedTestIDToken(t, key, map[string]any{
+		"iss": server.URL,
+		"aud": "client",
+		"sub": "subject-123",
+		"exp": time.Now().Add(-time.Hour).Unix(),
+	})
+	v := NewOIDCTokenValidator(OIDCConfig{
+		IssuerURL: server.URL,
+		ClientID:  "client",
+	}, "")
+
+	if _, ok := v.Validate(context.Background(), "Bearer "+token); ok {
+		t.Fatal("expected expired token to be invalid")
+	}
+}
+
+func TestOIDCTokenValidator_RejectFutureIAT(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			writeTestJSON(t, w, map[string]string{"jwks_uri": server.URL + "/jwks"})
+		case "/jwks":
+			writeTestJSON(t, w, map[string]any{
+				"keys": []map[string]string{
+					{
+						"kty": "RSA",
+						"kid": "test-key",
+						"alg": "RS256",
+						"use": "sig",
+						"n":   base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
+						"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.PublicKey.E)).Bytes()),
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	token := signedTestIDToken(t, key, map[string]any{
+		"iss": server.URL,
+		"aud": "client",
+		"sub": "subject-123",
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"iat": time.Now().Add(2 * time.Hour).Unix(),
+	})
+	v := NewOIDCTokenValidator(OIDCConfig{
+		IssuerURL: server.URL,
+		ClientID:  "client",
+	}, "")
+
+	if _, ok := v.Validate(context.Background(), "Bearer "+token); ok {
+		t.Fatal("expected future iat token to be invalid")
+	}
+}
+
+func TestOIDCTokenValidator_RejectWrongAZP(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			writeTestJSON(t, w, map[string]string{"jwks_uri": server.URL + "/jwks"})
+		case "/jwks":
+			writeTestJSON(t, w, map[string]any{
+				"keys": []map[string]string{
+					{
+						"kty": "RSA",
+						"kid": "test-key",
+						"alg": "RS256",
+						"use": "sig",
+						"n":   base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
+						"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.PublicKey.E)).Bytes()),
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	token := signedTestIDToken(t, key, map[string]any{
+		"iss": server.URL,
+		"aud": "client",
+		"sub": "subject-123",
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"azp": "wrong-client",
+	})
+	v := NewOIDCTokenValidator(OIDCConfig{
+		IssuerURL: server.URL,
+		ClientID:  "client",
+	}, "")
+
+	if _, ok := v.Validate(context.Background(), "Bearer "+token); ok {
+		t.Fatal("expected wrong azp token to be invalid")
+	}
+}
+
+func TestOIDCTokenValidator_ValidatesES256IDToken(t *testing.T) {
+	// Generate an ECDSA P-256 key.
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ec key: %v", err)
+	}
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			writeTestJSON(t, w, map[string]string{"jwks_uri": server.URL + "/jwks"})
+		case "/jwks":
+			writeTestJSON(t, w, map[string]any{
+				"keys": []map[string]any{
+					{
+						"kty": "EC",
+						"kid": "ec-test-key",
+						"alg": "ES256",
+						"crv": "P-256",
+						"x":   base64.RawURLEncoding.EncodeToString(key.PublicKey.X.Bytes()),
+						"y":   base64.RawURLEncoding.EncodeToString(key.PublicKey.Y.Bytes()),
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	token := signedTestES256IDToken(t, key, map[string]any{
+		"iss": server.URL,
+		"aud": "client",
+		"sub": "subject-ec",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	v := NewOIDCTokenValidator(OIDCConfig{
+		IssuerURL: server.URL,
+		ClientID:  "client",
+	}, "")
+
+	subject, ok := v.Validate(context.Background(), "Bearer "+token)
+	if !ok {
+		t.Fatal("expected signed ES256 id token to be valid")
+	}
+	if subject != "subject-ec" {
+		t.Fatalf("expected subject-ec, got %q", subject)
+	}
+}
+
+func signedTestES256IDToken(t *testing.T, key *ecdsa.PrivateKey, claims map[string]any) string {
+	t.Helper()
+	headerJSON, err := json.Marshal(map[string]string{
+		"alg": "ES256",
+		"kid": "ec-test-key",
+		"typ": "JWT",
+	})
+	if err != nil {
+		t.Fatalf("marshal header: %v", err)
+	}
+	claimsJSON, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal claims: %v", err)
+	}
+	header := base64.RawURLEncoding.EncodeToString(headerJSON)
+	payload := base64.RawURLEncoding.EncodeToString(claimsJSON)
+	signingInput := header + "." + payload
+	hash := sha256.Sum256([]byte(signingInput))
+	r, s, err := ecdsa.Sign(rand.Reader, key, hash[:])
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	coordLen := 32
+	sig := make([]byte, 2*coordLen)
+	r.FillBytes(sig[:coordLen])
+	s.FillBytes(sig[coordLen:])
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 

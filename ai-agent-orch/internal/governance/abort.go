@@ -51,9 +51,11 @@ func (h *AbortHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		currentStatus = record.Status
 	}
 
-	// Record audit event (fail-closed).
+	// Record audit event (fail-closed), linked to the prior event chain.
+	eventID := h.service.newID("evt")
 	_, err := h.service.audit.Append(r.Context(), audit.Event{
-		EventID:            h.service.newID("evt"),
+		EventID:            eventID,
+		ParentEventID:      h.service.parentEventID(sessionID),
 		SessionID:          sessionID,
 		EventType:          "session.aborted",
 		Actor:              actor,
@@ -66,6 +68,7 @@ func (h *AbortHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
 	}
+	h.service.rememberEventID(sessionID, eventID)
 	if h.service.sessions != nil {
 		if err := h.service.sessions.CompareAndSwapStatus(r.Context(), sessionID, currentStatus, "aborted"); err != nil {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "session state transition failed"})
