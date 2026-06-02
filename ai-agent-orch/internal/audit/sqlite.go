@@ -98,11 +98,21 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.ensureAuditColumn("parent_event_id", "TEXT"); err != nil {
 		return err
 	}
+	if err := s.ensureAuditColumn("prev_event_hash", "TEXT"); err != nil {
+		return err
+	}
+	if err := s.ensureAuditColumn("event_hash", "TEXT"); err != nil {
+		return err
+	}
 	_, err = s.db.Exec(`
 		CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_events(session_id);
 		CREATE INDEX IF NOT EXISTS idx_audit_type ON audit_events(event_type);
 		CREATE INDEX IF NOT EXISTS idx_audit_recorded ON audit_events(recorded_at);
 		CREATE INDEX IF NOT EXISTS idx_audit_parent ON audit_events(parent_event_id);
+		CREATE TABLE IF NOT EXISTS audit_chain_heads (
+			session_id TEXT PRIMARY KEY,
+			head_hash TEXT NOT NULL
+		);
 	`)
 	return err
 }
@@ -138,7 +148,15 @@ func (s *SQLiteStore) ensureAuditColumn(column string, definition string) error 
 	return nil
 }
 
+type sqlExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 func (s *SQLiteStore) Append(ctx context.Context, event Event) (Event, error) {
+	return s.insertEvent(ctx, s.db, event)
+}
+
+func (s *SQLiteStore) insertEvent(ctx context.Context, execer sqlExecutor, event Event) (Event, error) {
 	if s == nil || s.db == nil {
 		return Event{}, errors.New("sqlite audit store is required")
 	}
@@ -170,24 +188,102 @@ func (s *SQLiteStore) Append(ctx context.Context, event Event) (Event, error) {
 		return Event{}, fmt.Errorf("encode payload: %w", err)
 	}
 
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO audit_events (
-			event_id, parent_event_id, session_id, event_type, actor, agent, classification,
-			reason, findings_json, prompt_sha256, estimated_cost_usd, cost_cap_usd,
-			raw_prompt_stored, raw_response_stored, correlation_subject, recorded_at, payload_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
+	_, err = execer.ExecContext(ctx, `
+			INSERT INTO audit_events (
+				event_id, parent_event_id, session_id, event_type, actor, agent, classification,
+				reason, findings_json, prompt_sha256, estimated_cost_usd, cost_cap_usd,
+				raw_prompt_stored, raw_response_stored, correlation_subject, recorded_at,
+				prev_event_hash, event_hash, payload_json
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`,
 		event.EventID, event.ParentEventID, event.SessionID, event.EventType, event.Actor, event.Agent,
 		event.Classification, event.Reason, string(findingsJSON), event.PromptSHA256,
 		event.EstimatedCostUSD, event.CostCapUSD,
 		boolToInt(event.RawPromptStored), boolToInt(event.RawResponseStored),
-		event.CorrelationSubject, event.RecordedAt.Format(time.RFC3339Nano), string(payloadJSON),
+		event.CorrelationSubject, event.RecordedAt.Format(time.RFC3339Nano),
+		event.PrevEventHash, event.EventHash, string(payloadJSON),
 	)
 	if err != nil {
 		return Event{}, fmt.Errorf("insert audit event: %w", err)
 	}
 
 	return event, nil
+}
+
+// AppendIfPrev appends event only when the session chain head still matches
+// expectedPrevHash. It gives ChainAppender an atomic compare-and-append
+// primitive for SQLite-backed audit chains.
+func (s *SQLiteStore) AppendIfPrev(ctx context.Context, event Event, expectedPrevHash string) (Event, bool, error) {
+	if s == nil || s.db == nil {
+		return Event{}, false, errors.New("sqlite audit store is required")
+	}
+	if event.SessionID == "" {
+		persisted, err := s.Append(ctx, event)
+		return persisted, err == nil, err
+	}
+	if event.PrevEventHash != expectedPrevHash {
+		return Event{}, false, errors.New("event prev hash does not match expected previous hash")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Event{}, false, fmt.Errorf("begin audit chain append: %w", err)
+	}
+	rollback := true
+	defer func() {
+		if rollback {
+			_ = tx.Rollback()
+		}
+	}()
+
+	currentHead, err := latestSessionHashTx(ctx, tx, event.SessionID)
+	if err != nil {
+		return Event{}, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO audit_chain_heads (session_id, head_hash) VALUES (?, ?)
+	`, event.SessionID, currentHead); err != nil {
+		return Event{}, false, fmt.Errorf("seed audit chain head: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE audit_chain_heads SET head_hash = ? WHERE session_id = ? AND head_hash = ?
+	`, event.EventHash, event.SessionID, expectedPrevHash)
+	if err != nil {
+		return Event{}, false, fmt.Errorf("update audit chain head: %w", err)
+	}
+	updated, err := res.RowsAffected()
+	if err != nil {
+		return Event{}, false, fmt.Errorf("audit chain head rows affected: %w", err)
+	}
+	if updated != 1 {
+		return Event{}, false, nil
+	}
+	persisted, err := s.insertEvent(ctx, tx, event)
+	if err != nil {
+		return Event{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Event{}, false, fmt.Errorf("commit audit chain append: %w", err)
+	}
+	rollback = false
+	return persisted, true, nil
+}
+
+func latestSessionHashTx(ctx context.Context, tx *sql.Tx, sessionID string) (string, error) {
+	var latest string
+	err := tx.QueryRowContext(ctx, `
+		SELECT event_hash FROM audit_events
+		WHERE session_id = ?
+		ORDER BY recorded_at DESC, rowid DESC
+		LIMIT 1
+	`, sessionID).Scan(&latest)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load audit chain head: %w", err)
+	}
+	return latest, nil
 }
 
 func (s *SQLiteStore) EventsBySession(ctx context.Context, sessionID string) ([]Event, error) {
@@ -204,7 +300,7 @@ func (s *SQLiteStore) EventsBySession(ctx context.Context, sessionID string) ([]
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT payload_json FROM audit_events
 		WHERE session_id = ?
-		ORDER BY recorded_at ASC
+		ORDER BY recorded_at ASC, rowid ASC
 	`, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("query audit events: %w", err)
@@ -270,8 +366,88 @@ func (s *SQLiteStore) PurgeBefore(ctx context.Context, cutoff time.Time) (int64,
 
 // RetentionPolicy applies a retention window by purging events older than the given duration.
 func (s *SQLiteStore) RetentionPolicy(ctx context.Context, maxAge time.Duration) (int64, error) {
-	cutoff := time.Now().UTC().Add(-maxAge)
-	return s.PurgeBefore(ctx, cutoff)
+	return s.ChainRetentionPolicy(ctx, maxAge)
+}
+
+// ChainRetentionPolicy removes only complete session chains whose newest event
+// is outside the retention window. This preserves verification for any retained
+// session history.
+func (s *SQLiteStore) ChainRetentionPolicy(ctx context.Context, maxAge time.Duration) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("sqlite audit store is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	cutoff := time.Now().UTC().Add(-maxAge).Format(time.RFC3339Nano)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin chain retention: %w", err)
+	}
+	rollback := true
+	defer func() {
+		if rollback {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var purged int64
+	res, err := tx.ExecContext(ctx, `
+		DELETE FROM audit_events
+		WHERE (session_id IS NULL OR session_id = '') AND recorded_at < ?
+	`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("purge unchained audit events: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("unchained rows affected: %w", err)
+	}
+	purged += n
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT session_id FROM audit_events
+		WHERE session_id IS NOT NULL AND session_id <> ''
+		GROUP BY session_id
+		HAVING MAX(recorded_at) < ?
+	`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("query expired audit chains: %w", err)
+	}
+	var expired []string
+	for rows.Next() {
+		var sessionID string
+		if err := rows.Scan(&sessionID); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan expired audit chain: %w", err)
+		}
+		expired = append(expired, sessionID)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close expired audit chain rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate expired audit chains: %w", err)
+	}
+	for _, sessionID := range expired {
+		res, err := tx.ExecContext(ctx, `DELETE FROM audit_events WHERE session_id = ?`, sessionID)
+		if err != nil {
+			return 0, fmt.Errorf("purge audit chain %s: %w", sessionID, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("chain rows affected: %w", err)
+		}
+		purged += n
+		if _, err := tx.ExecContext(ctx, `DELETE FROM audit_chain_heads WHERE session_id = ?`, sessionID); err != nil {
+			return 0, fmt.Errorf("purge audit chain head %s: %w", sessionID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit chain retention: %w", err)
+	}
+	rollback = false
+	return purged, nil
 }
 
 // Close closes the underlying database connection.

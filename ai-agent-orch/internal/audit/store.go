@@ -22,6 +22,8 @@ type Store interface {
 type Event struct {
 	EventID            string         `json:"event_id"`
 	ParentEventID      string         `json:"parent_event_id,omitempty"`
+	PrevEventHash      string         `json:"prev_event_hash,omitempty"`
+	EventHash          string         `json:"event_hash,omitempty"`
 	SessionID          string         `json:"session_id,omitempty"`
 	EventType          string         `json:"event_type"`
 	Actor              string         `json:"actor,omitempty"`

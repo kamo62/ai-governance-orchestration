@@ -1,0 +1,391 @@
+package dispatch
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
+
+func TestACPHandle_sendRequest_ResponseRouting(t *testing.T) {
+	h := &acpHandle{
+		events: make(chan RuntimeEvent, 64),
+		done:   make(chan struct{}),
+		stdin:  &fakeWriteCloser{},
+	}
+
+	respCh := make(chan *jsonRPCMessage, 1)
+	h.pending = map[int]chan *jsonRPCMessage{1: respCh}
+
+	// Simulate readLoop receiving a response.
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		h.pendingMu.Lock()
+		if ch, ok := h.pending[1]; ok {
+			ch <- &jsonRPCMessage{
+				JSONRPC: "2.0",
+				ID:      intPtr(1),
+				Result:  map[string]any{"sessionId": "sess_123"},
+			}
+			delete(h.pending, 1)
+		}
+		h.pendingMu.Unlock()
+	}()
+
+	req := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": map[string]any{}}
+	resp, err := h.sendRequest(req)
+	if err != nil {
+		t.Fatalf("sendRequest unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected response, got nil")
+	}
+	if sid, ok := resp.Result["sessionId"].(string); !ok || sid != "sess_123" {
+		t.Fatalf("expected sessionId sess_123, got %v", resp.Result["sessionId"])
+	}
+}
+
+func TestACPHandle_sendRequest_Timeout(t *testing.T) {
+	h := &acpHandle{
+		events:         make(chan RuntimeEvent, 64),
+		done:           make(chan struct{}),
+		stdin:          &fakeWriteCloser{},
+		requestTimeout: 50 * time.Millisecond,
+	}
+	// Don't register any pending channel so it times out.
+	req := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": map[string]any{}}
+	_, err := h.sendRequest(req)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if err.Error() != "request 1 timed out" {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestACPHandle_sendRequest_ContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	h := &acpHandle{
+		ctx:            ctx,
+		events:         make(chan RuntimeEvent, 64),
+		done:           make(chan struct{}),
+		stdin:          &fakeWriteCloser{},
+		requestTimeout: time.Minute,
+	}
+	cancel()
+
+	req := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": map[string]any{}}
+	_, err := h.sendRequest(req)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if _, ok := h.pending[1]; ok {
+		t.Fatal("pending request should be removed after cancellation")
+	}
+}
+
+func TestACPHandle_failPendingUnblocksRequests(t *testing.T) {
+	h := &acpHandle{
+		events: make(chan RuntimeEvent, 64),
+		done:   make(chan struct{}),
+		stdin:  &fakeWriteCloser{},
+	}
+	respCh := make(chan *jsonRPCMessage, 1)
+	h.pending = map[int]chan *jsonRPCMessage{1: respCh}
+	h.failPending(errors.New("stream closed"))
+
+	resp := <-respCh
+	if resp.Error == nil || resp.Error.Message != "stream closed" {
+		t.Fatalf("expected synthetic stream-closed error, got %#v", resp)
+	}
+	if len(h.pending) != 0 {
+		t.Fatal("pending map should be empty")
+	}
+}
+
+func TestACPHandle_WorkspaceAndMCPParams(t *testing.T) {
+	h := &acpHandle{
+		config: SessionConfig{
+			WorkspacePath: "/workspace/project",
+			SessionID:     "sess_acp",
+			MCPEndpoints: map[string]string{
+				"zeta":  "http://zeta",
+				"alpha": "http://alpha",
+			},
+		},
+	}
+	if got := h.workspacePath(); got != "/workspace/project" {
+		t.Fatalf("unexpected workspace path: %s", got)
+	}
+	servers := acpMCPServers(h.config.MCPEndpoints, "service-token", h.config.SessionID)
+	if len(servers) != 2 {
+		t.Fatalf("expected 2 MCP servers, got %d", len(servers))
+	}
+	if servers[0]["name"] != "alpha" || servers[0]["url"] != "http://alpha" {
+		t.Fatalf("expected deterministic alpha server first, got %#v", servers[0])
+	}
+	headers, ok := servers[0]["headers"].(map[string]string)
+	if !ok {
+		t.Fatalf("expected governed MCP headers, got %#v", servers[0])
+	}
+	if headers["Authorization"] != "Bearer service-token" {
+		t.Fatalf("expected service bearer header, got %#v", headers)
+	}
+	if headers["X-AI-Orch-Session-ID"] != "sess_acp" {
+		t.Fatalf("expected session header, got %#v", headers)
+	}
+}
+
+func TestACPHandle_handleSessionUpdate_agentMessageChunk(t *testing.T) {
+	h := &acpHandle{
+		events: make(chan RuntimeEvent, 64),
+		done:   make(chan struct{}),
+	}
+
+	msg := &jsonRPCMessage{
+		JSONRPC: "2.0",
+		Method:  "session/update",
+		Params: map[string]any{
+			"sessionId": "sess_123",
+			"update": map[string]any{
+				"sessionUpdate": "agent_message_chunk",
+				"content": map[string]any{
+					"type": "text",
+					"text": "Hello world",
+				},
+			},
+		},
+	}
+	h.handleSessionUpdate(msg)
+
+	select {
+	case evt := <-h.events:
+		if evt.Type != "stream" || evt.Payload != "Hello world" {
+			t.Fatalf("unexpected event: %+v", evt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected stream event")
+	}
+
+	if h.accumulatedText.String() != "Hello world" {
+		t.Fatalf("expected accumulated text 'Hello world', got %q", h.accumulatedText.String())
+	}
+}
+
+func TestACPHandle_handleSessionUpdate_toolCall(t *testing.T) {
+	h := &acpHandle{
+		events: make(chan RuntimeEvent, 64),
+		done:   make(chan struct{}),
+	}
+
+	msg := &jsonRPCMessage{
+		JSONRPC: "2.0",
+		Method:  "session/update",
+		Params: map[string]any{
+			"sessionId": "sess_123",
+			"update": map[string]any{
+				"sessionUpdate": "tool_call",
+				"toolCall": map[string]any{
+					"name": "bash",
+				},
+			},
+		},
+	}
+	h.handleSessionUpdate(msg)
+
+	select {
+	case evt := <-h.events:
+		if evt.Type != "tool_call" || evt.Payload != "[tool] bash" {
+			t.Fatalf("unexpected event: %+v", evt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected stream event")
+	}
+}
+
+func TestACPHandle_handleAgentRequest_permission(t *testing.T) {
+	h := &acpHandle{
+		events:    make(chan RuntimeEvent, 64),
+		done:      make(chan struct{}),
+		stdin:     &fakeWriteCloser{},
+		sessionID: "sess_123",
+	}
+
+	msg := &jsonRPCMessage{
+		JSONRPC: "2.0",
+		ID:      intPtr(42),
+		Method:  "session/request_permission",
+		Params: map[string]any{
+			"requestId": "req_1",
+			"toolCall": map[string]any{
+				"name": "bash",
+			},
+		},
+	}
+	h.handleAgentRequest(msg)
+
+	// Verify that a response was written to stdin.
+	fwc := h.stdin.(*fakeWriteCloser)
+	if len(fwc.written) == 0 {
+		t.Fatal("expected permission response to be written")
+	}
+	last := fwc.written[len(fwc.written)-1]
+	if !strContains(last, `"id":42`) || !strContains(last, `"outcome":"denied"`) {
+		t.Fatalf("unexpected permission response: %s", last)
+	}
+	select {
+	case evt := <-h.events:
+		if evt.Type != "tool_call" || !strContains(evt.Payload, "bash") {
+			t.Fatalf("unexpected permission event: %+v", evt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected tool_call event")
+	}
+}
+
+func TestACPHandle_handleNotification_routesToSessionUpdate(t *testing.T) {
+	h := &acpHandle{
+		events: make(chan RuntimeEvent, 64),
+		done:   make(chan struct{}),
+	}
+
+	msg := &jsonRPCMessage{
+		JSONRPC: "2.0",
+		Method:  "session/update",
+		Params: map[string]any{
+			"sessionId": "sess_123",
+			"update": map[string]any{
+				"sessionUpdate": "agent_message_chunk",
+				"content": map[string]any{
+					"type": "text",
+					"text": "chunk",
+				},
+			},
+		},
+	}
+	h.handleNotification(msg)
+
+	select {
+	case evt := <-h.events:
+		if evt.Type != "stream" || evt.Payload != "chunk" {
+			t.Fatalf("unexpected event: %+v", evt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected stream event")
+	}
+}
+
+func TestACPHandle_emitError_nonBlocking(t *testing.T) {
+	h := &acpHandle{
+		events: make(chan RuntimeEvent, 0), // unbuffered
+		done:   make(chan struct{}),
+	}
+	// Should not block even when channel is full.
+	h.emitError("test error")
+}
+
+func TestExtractPatchFromText(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "simple patch envelope",
+			text: `Some text {"patch":"abc123","files":[{"file_path":"foo.go","diff":"+bar"}]} more text`,
+			want: `{"patch":"abc123","files":[{"file_path":"foo.go","diff":"+bar"}]}`,
+		},
+		{
+			name: "patchId envelope",
+			text: `{"patchId":"abc123","files":[{"path":"foo.go","action":"modify","newContent":"bar"}]}`,
+			want: `{"patchId":"abc123","files":[{"path":"foo.go","action":"modify","newContent":"bar"}]}`,
+		},
+		{
+			name: "no patch",
+			text: `{"foo":"bar"}`,
+			want: "",
+		},
+		{
+			name: "nested braces",
+			text: `{"outer":{"patch":"id","files":[]}}`,
+			want: `{"outer":{"patch":"id","files":[]}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractPatchFromText(tt.text)
+			if got != tt.want {
+				t.Fatalf("extractPatchFromText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractPatchFromResult(t *testing.T) {
+	tests := []struct {
+		name   string
+		result map[string]any
+		want   string
+	}{
+		{
+			name:   "content field",
+			result: map[string]any{"content": "patch payload"},
+			want:   "patch payload",
+		},
+		{
+			name:   "patch field",
+			result: map[string]any{"patch": "patch payload"},
+			want:   "patch payload",
+		},
+		{
+			name:   "output field",
+			result: map[string]any{"output": "patch payload"},
+			want:   "patch payload",
+		},
+		{
+			name:   "nil result",
+			result: nil,
+			want:   "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractPatchFromResult(tt.result)
+			if got != tt.want {
+				t.Fatalf("extractPatchFromResult() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+type fakeWriteCloser struct {
+	written []string
+	closed  bool
+}
+
+func (f *fakeWriteCloser) Write(p []byte) (int, error) {
+	f.written = append(f.written, string(p))
+	return len(p), nil
+}
+
+func (f *fakeWriteCloser) Close() error {
+	f.closed = true
+	return nil
+}
+
+func intPtr(i int) *int {
+	return &i
+}
+
+func strContains(s, substr string) bool {
+	return len(s) >= len(substr) && strIndexOf(s, substr) >= 0
+}
+
+func strIndexOf(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
+}

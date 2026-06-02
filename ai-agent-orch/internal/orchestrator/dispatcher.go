@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"ai-agent-orch/internal/catalog"
@@ -13,8 +14,10 @@ import (
 
 // Dispatcher resolves model aliases and starts runtime sessions.
 type Dispatcher struct {
-	catalogRoot string
-	runtimes    map[string]dispatch.Runtime
+	catalogRoot   string
+	runtimes      map[string]dispatch.Runtime
+	broker        *dispatch.ToolBroker
+	toolBrokerErr error
 }
 
 func NewDispatcher(catalogRoot string) *Dispatcher {
@@ -42,10 +45,18 @@ func NewDispatcher(catalogRoot string) *Dispatcher {
 		}), catalogRoot)
 	}
 
-	return &Dispatcher{
+	d := &Dispatcher{
 		catalogRoot: catalogRoot,
 		runtimes:    runtimes,
 	}
+
+	if broker, err := dispatch.NewToolBroker(filepath.Join(catalogRoot, "policies", "command-allowlists.yaml")); err == nil {
+		d.broker = broker
+	} else {
+		d.toolBrokerErr = err
+	}
+
+	return d
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName string, prompt string) (dispatch.SessionHandle, error) {
@@ -71,14 +82,24 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 		return nil, fmt.Errorf("agent %q has no primary model", agentName)
 	}
 
+	permissions := map[string]string{
+		"network":                 agentCfg.Permissions.Network,
+		"workspace_write":         agentCfg.Permissions.WorkspaceWrite,
+		"outside_workspace_write": agentCfg.Permissions.OutsideWorkspaceWrite,
+	}
+	if err := d.validateAllowedTools(agentName, agentCfg.ToolsAllowed, permissions); err != nil {
+		return nil, err
+	}
+
 	sessionCfg := dispatch.SessionConfig{
-		SessionID:    sessionID,
-		SystemPrompt: agentCfg.SystemPrompt(d.catalogRoot),
-		UserPrompt:   prompt,
-		ModelID:      modelAlias,
-		AllowedTools: agentCfg.ToolsAllowed,
-		CostCapUSD:   agentCfg.Cost.PerInvocationCapUSD,
-		MCPEndpoints: resolveMCPEndpoints(agentCfg.MCPServers),
+		SessionID:     sessionID,
+		SystemPrompt:  agentCfg.SystemPrompt(d.catalogRoot),
+		UserPrompt:    prompt,
+		ModelID:       modelAlias,
+		WorkspacePath: workspaceRoot(d.catalogRoot),
+		AllowedTools:  agentCfg.ToolsAllowed,
+		CostCapUSD:    agentCfg.Cost.PerInvocationCapUSD,
+		MCPEndpoints:  resolveMCPEndpoints(agentCfg.MCPServers),
 	}
 
 	// Try ACP runtime first if agent specifies opencode.
@@ -104,6 +125,25 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 	return echo.StartSession(ctx, sessionCfg)
 }
 
+func (d *Dispatcher) validateAllowedTools(agentName string, tools []string, permissions map[string]string) error {
+	if len(tools) == 0 {
+		return nil
+	}
+	if d == nil || d.broker == nil {
+		if d != nil && d.toolBrokerErr != nil {
+			return fmt.Errorf("tool broker unavailable: %w", d.toolBrokerErr)
+		}
+		return fmt.Errorf("tool broker unavailable")
+	}
+	for _, tool := range tools {
+		cmd, sub := dispatch.ParseToolCommand(tool)
+		if err := d.broker.ValidateWithPermissions(cmd, sub, agentName, permissions); err != nil {
+			return fmt.Errorf("tool broker blocked %s: %w", tool, err)
+		}
+	}
+	return nil
+}
+
 // Default MCP endpoint URLs within the Docker Compose network.
 var defaultMCPEndpoints = map[string]string{
 	"repo-classification":      "http://mcp-repo-classification:8091",
@@ -117,9 +157,14 @@ var defaultMCPEndpoints = map[string]string{
 
 func resolveMCPEndpoints(servers []string) map[string]string {
 	endpoints := make(map[string]string, len(servers))
+	proxyBase := strings.TrimRight(os.Getenv("AI_ORCH_MCP_PROXY_URL"), "/")
 	for _, name := range servers {
 		if envURL := os.Getenv(mcpEndpointEnvKey(name)); envURL != "" {
 			endpoints[name] = envURL
+			continue
+		}
+		if proxyBase != "" {
+			endpoints[name] = proxyBase + "/" + name
 			continue
 		}
 		if url, ok := defaultMCPEndpoints[name]; ok {
@@ -139,4 +184,17 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func workspaceRoot(catalogRoot string) string {
+	if override := os.Getenv("AI_ORCH_WORKSPACE_ROOT"); override != "" {
+		return override
+	}
+	if catalogRoot != "" {
+		return catalogRoot
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	return "."
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"ai-agent-orch/internal/catalog"
@@ -144,28 +145,42 @@ func directStreamPayload(content string, patch string) string {
 }
 
 func (h *directHandle) tryExtractPatch(content string) string {
-	raw := extractJSONObject(content)
-	if raw == "" {
-		return ""
+	for _, raw := range extractJSONObjects(content) {
+		patch, ok := normalizePatchEnvelope(raw)
+		if ok {
+			return patch
+		}
 	}
-	patch, ok := normalizePatchEnvelope(raw)
-	if !ok {
-		return ""
-	}
-	return patch
+	return ""
 }
 
 func extractJSONObject(content string) string {
-	start := strings.Index(content, "{")
-	end := strings.LastIndex(content, "}")
-	if start < 0 || end <= start {
+	objects := extractJSONObjects(content)
+	if len(objects) == 0 {
 		return ""
 	}
-	return content[start : end+1]
+	return objects[0]
+}
+
+func extractJSONObjects(content string) []string {
+	var objects []string
+	for start := strings.Index(content, "{"); start >= 0; {
+		var raw json.RawMessage
+		decoder := json.NewDecoder(strings.NewReader(content[start:]))
+		if err := decoder.Decode(&raw); err == nil && len(raw) > 0 && raw[0] == '{' {
+			objects = append(objects, string(raw))
+		}
+		next := strings.Index(content[start+1:], "{")
+		if next < 0 {
+			break
+		}
+		start += next + 1
+	}
+	return objects
 }
 
 type modelPatchEnvelope struct {
-	ProtocolVersion int              `json:"protocolVersion"`
+	ProtocolVersion json.RawMessage  `json:"protocolVersion"`
 	PatchID         string           `json:"patchId"`
 	PatchIDSnake    string           `json:"patch_id"`
 	SessionID       string           `json:"sessionId"`
@@ -209,7 +224,7 @@ func normalizePatchEnvelope(raw string) (string, bool) {
 		return "", false
 	}
 
-	version := in.ProtocolVersion
+	version := protocolVersion(in.ProtocolVersion)
 	if version == 0 {
 		version = 1
 	}
@@ -255,6 +270,31 @@ func normalizePatchEnvelope(raw string) (string, bool) {
 		return "", false
 	}
 	return string(normalized), true
+}
+
+func protocolVersion(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var asInt int
+	if err := json.Unmarshal(raw, &asInt); err == nil {
+		return asInt
+	}
+	var asFloat float64
+	if err := json.Unmarshal(raw, &asFloat); err == nil {
+		return int(asFloat)
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		trimmed := strings.TrimSpace(strings.TrimPrefix(asString, "v"))
+		if n, err := strconv.Atoi(trimmed); err == nil {
+			return n
+		}
+		if f, err := strconv.ParseFloat(trimmed, 64); err == nil {
+			return int(f)
+		}
+	}
+	return 0
 }
 
 func openRouterReasoningConfig() *openrouter.ReasoningConfig {

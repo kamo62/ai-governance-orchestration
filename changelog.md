@@ -1,5 +1,84 @@
 # Changelog
 
+## v0.5.4-alpha - 2026-06-02 (Patch)
+
+Release impact: Patch because this fixes follow-up governance review findings and smoke-test stability without changing public API contracts.
+
+- **Hardened Bridge configuration scope**: Governance URL, dev token, and local identity settings are now machine-scoped so workspace settings cannot redirect authenticated Bridge traffic.
+- **Routed ACP MCP metadata through governance**: Dispatcher MCP endpoint resolution now prefers `AI_ORCH_MCP_PROXY_URL`, ACP server metadata includes service/session headers, and Docker Compose mounts `policies/` with the catalog/runtime volumes.
+- **Preserved audit retention semantics**: Chain-wrapped file audit stores still report retention as unsupported, SQLite admin-retention tests now mirror production chain-wrapper wiring, and compare-and-append audit writes use the cached chain head before reloading session history.
+- **Stabilised CLI smoke orchestration**: The default smoke prompt now uses safe synthetic content, direct-runtime prompts state the patch-envelope and no-secrets contract, and patch extraction tolerates prose before JSON plus string protocol versions.
+
+## v0.5.3-alpha - 2026-06-01 (Patch)
+
+Release impact: Patch because this fixes governance hardening review findings without introducing breaking API contracts.
+
+- **Fixed ACP runtime scoping**: ACP sessions now run from the configured workspace path instead of `/tmp`, pass configured MCP endpoints into `session/new`, recognise `patchId` patch envelopes, increase scanner capacity for large JSON-RPC payloads, and unblock pending requests on cancellation or stream exit.
+- **Tightened registry ownership**: context manifests now require session ownership on create/read, and cache, evidence, and maturity export list endpoints filter records to sessions owned by the authenticated actor.
+- **Hardened audit-chain behaviour**: SQLite audit appends now use an atomic compare-and-append chain head, and retention now purges only complete expired session chains so retained chains still verify.
+- **Reduced fail-open behaviour**: SQLite registry initialisation now fails startup instead of silently downgrading to in-memory storage, command allow-list YAML rejects unknown fields, and tool-less agents no longer fail when the tool broker is unavailable.
+- **Improved TTL and migration safety**: session patch tracking and the staged patch buffer now expire individual patches, and SQLite session migration tolerates the exact duplicate-column race between concurrent processes.
+- **Addressed review polish**: scoped the Bridge dev-token setting to machine storage while preferring VS Code SecretStorage, made router cache tests self-contained, fixed markdown lint/style items, and pinned research source versions.
+
+## v0.5.2-alpha - 2026-06-01 (Patch)
+
+Release impact: Patch because this restores and clarifies README investigation context without changing runtime behaviour or public API contracts.
+
+- **Restored external governance references in the README**: added direct references to Microsoft Agent Governance Toolkit, GitHub's agentic workflow security architecture, and MCP control-plane thinking.
+- **Clarified the current design thesis**: documented why the repo is building a governance/control plane first and keeping the agent plane deliberately thin.
+- **Added open design questions**: captured current thinking around AGT adoption, runtime isolation, governance UI boundaries, session caching, maturity outputs, and cost/value modelling.
+
+## v0.5.1-alpha - 2026-06-01 (Patch)
+
+Release impact: Patch because this reorganises documentation without changing runtime behaviour or public API contracts.
+
+- **Refocused the root README**: moved command-heavy local-run details out of the README and made the project aim, governance boundary, current state, and documentation map clearer.
+- **Added `deployment.md`**: centralises local verification, Docker cleanup/rebuild, OpenRouter smoke tests, CLI smoke tests, VS Code Bridge setup, MCP stubs, policy toggles, and local-state notes.
+- **Removed stale local scratch notes**: deleted ignored research/review/planning drafts that duplicated or contradicted tracked documentation.
+
+## v0.5.0-alpha - 2026-06-01 (Minor)
+
+Release impact: Minor because this adds durable SQLite registry storage, registry metrics, configurable Bridge identity settings, and safer ACP JSON-RPC handling while preserving existing API contracts.
+
+- **Added durable registry storage**: SQLite-backed storage now persists use cases, workflows, context manifests, cache outcomes, evidence records, and maturity export records when the Governance Shell runs with a SQLite audit database.
+- **Added registry metrics**: `/metrics` now includes registered use cases, workflows, manifests, cache hits/misses, evidence records, and maturity exports.
+- **Hardened registry ownership and IDs**: cache outcomes and evidence records fail closed when session ownership cannot be verified, and generated record IDs are restored before persistence.
+- **Hardened local identity mapping**: `X-AI-Orch-Local-Identity` can label local dev-token sessions for audit attribution, but it cannot override OIDC subjects and is restricted to a safe actor-label character set.
+- **Improved ACP runtime handling**: ACP responses are routed by request ID, session updates are streamed, tool-call events are surfaced for loop-cap enforcement, and permission requests fail closed until they can pass through the governed tool broker.
+- **Added Bridge configuration**: VS Code settings can now configure the Governance Shell URL, local dev token, and local identity label.
+- **Added Governance Insight and Memory research doc**: documents the SQLite-first recommendation, FTS5-before-vector build order, vector-store options, and human-gated self-improvement boundary.
+- **Updated README project direction**: summarises Governance Insight Projection as the next investigation area and links to the detailed doc.
+- **Clarified memory boundary**: memory is a rebuildable governance projection, not agent cross-session memory or an autonomous self-modification loop.
+
+## v0.4.0-alpha - 2026-06-01 (Minor)
+
+Release impact: Minor because this adds tamper-evident audit hash chains, catalog validation caching, local-state TTL/eviction, command-allowlist enforcement, and full Phase 1F control-plane context foundation (use-case/workflow/context-manifest/cost-value/maturity-export/cache-outcome/evidence APIs).
+
+- **Added tamper-evident audit hash chain**: `audit.ChainAppender` wraps any `audit.Store` and auto-computes `PrevEventHash` and `EventHash` per session. Added `audit.VerifyChain` and `audit.VerifyChainForSession` helpers that detect edited, deleted, reordered, and inserted events.
+- **Added catalog validation cache to Orchestrator Router**: `cachedCatalog` uses a 30-second TTL for hits and 5-second TTL for errors, avoiding full disk re-validation on every route request. Cache invalidation is time-based; manual backdating triggers re-validation.
+- **Added local-state TTL/eviction**: `SessionService` prompts, patches, and cancellations now have lazy eviction after `LocalStateTTL` (default 30 min). `PatchBuffer` has TTL eviction (default 30 min). `EventStore` already had bounded per-session history (128 events) and closed-session eviction (256 sessions).
+- **Added `docs/local-state-lifecycle.md`**: Documents every in-process store, its owner, TTL/eviction policy, and durable-state promotion criteria.
+- **Added `scripts/check-gofmt.sh`**: Local CI script that fails if any Go file needs `gofmt`.
+- **Added command-allowlist enforcement**: `dispatch.ToolBroker` loads `policies/command-allowlists.yaml` and validates runtime tool calls. `orchestrator.Dispatcher` validates `AllowedTools` from the agent config against the broker before dispatching. Fail-closed when no policy is loaded.
+- **Added Phase 1F control-plane registry APIs**:
+  - `POST /v1/use-cases` and `GET /v1/use-cases/{id}` with owner, domain, expected benefit, linked work item, classification, and risk level.
+  - `POST /v1/workflows` for governed workflow templates with stages.
+  - `POST /v1/context-manifests` and `GET /v1/context-manifests/{id}` for bounded context briefs with full provenance metadata.
+  - `GET /v1/reporting/maturity-governance` for bounded maturity export records without raw prompt/response/source/patch content.
+  - `POST /v1/cache-outcomes` and `GET /v1/cache-outcomes` for session-scoped cache hit/miss records with provenance, eligibility, TTL, invalidation, and estimated savings.
+  - `POST /v1/evidence` and `GET /v1/evidence` for test results, review outputs, approvals, patch decisions, and external quality-system links.
+- **Extended session binding and cost/value sizing**: `CreateSessionRequest` and `SessionRecord` now carry `use_case_id`, `workflow_id`, `work_item_id`, `repo_url`, `branch`, `intent`, and cost/value fields (`story_points`, `estimated_dev_days`, `blended_day_rate_usd`, `baseline_cost_usd`, `model_cost_usd`, `tool_cost_usd`, `platform_cost_usd`, `review_cost_usd`, `verification_cost_usd`, `retry_count`). SQLite session schema migrated with `ensureSessionColumn`.
+- **Added VS Code Bridge typecheck and lint verification**: `bun run typecheck` and `bun run lint` pass cleanly.
+- **Added coverage hardening for dispatch and openrouter**: New tests for EchoRuntime event flow, `extractJSONObject`, `normalizePatchEnvelope` edge cases, `ProxyClient` validation, and `FirstContent` empty-choices handling.
+- **Fixed wrapped SQLite audit retention**: `audit.ChainAppender` now delegates retention to SQLite so the admin retention endpoint continues to work after hash-chain wrapping.
+- **Fixed local two-process audit chaining**: hash chaining refreshes the latest persisted session hash before appending so Governance Shell and Orchestrator do not create independent chains during sequential local flows.
+- **Fixed SQLite session migration compatibility**: existing session rows with newly added nullable Phase 1F fields now read back as zero values instead of failing during ownership checks.
+- **Fixed command allow-list enforcement**: dispatch now fails closed when the broker is unavailable and allows `write_file` only when the agent config grants `workspace_write: allow`.
+- **Fixed registry route and ownership gaps**: cache-outcome and evidence endpoints are wired into the running mux and require the referenced session to belong to the authenticated requester.
+- **Fixed cancellation TTL eviction**: expired process-local cancel functions are evicted before cancellation lookup.
+- **Documented current user surfaces**: README now states that there is no standalone web UI yet and gives the local VS Code Bridge VSIX test path.
+- **Fixed gofmt cleanliness**: All Go files now pass `gofmt -l`.
+
 ## v0.3.2-alpha - 2026-06-01 (Patch)
 
 Release impact: Patch because this tightens governance authorization, ownership checks, concurrency safety, and performance without changing API contracts.

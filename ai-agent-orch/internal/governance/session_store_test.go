@@ -2,10 +2,13 @@ package governance
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestSQLiteSessionStoreLifecycle(t *testing.T) {
@@ -74,6 +77,54 @@ func TestSQLiteSessionStoreNotFound(t *testing.T) {
 	_, err = store.Get(context.Background(), "nonexistent")
 	if err == nil {
 		t.Fatal("expected not found")
+	}
+}
+
+func TestSQLiteSessionStoreReadsLegacyRowsAfterMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE sessions (
+			session_id TEXT PRIMARY KEY,
+			actor_subject TEXT NOT NULL,
+			agent TEXT NOT NULL,
+			classification TEXT NOT NULL,
+			prompt_sha256 TEXT NOT NULL,
+			status TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);
+		INSERT INTO sessions (
+			session_id, actor_subject, agent, classification, prompt_sha256, status, created_at
+		) VALUES (
+			'sess_legacy', 'local-dev', 'test-generation', 'internal', 'abc123', 'created', ?
+		);
+	`, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := NewSQLiteSessionStore(path)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	got, err := store.Get(context.Background(), "sess_legacy")
+	if err != nil {
+		t.Fatalf("get legacy session: %v", err)
+	}
+	if got.SessionID != "sess_legacy" {
+		t.Fatalf("unexpected session id: %s", got.SessionID)
+	}
+	if got.UseCaseID != "" || got.StoryPoints != 0 || got.BaselineCostUSD != 0 {
+		t.Fatalf("expected zero-value migrated fields, got %#v", got)
 	}
 }
 

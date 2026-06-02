@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,7 @@ type SessionConfig struct {
 	UserPrompt    string
 	ModelID       string
 	ModelProvider string
+	WorkspacePath string
 	AllowedTools  []string
 	MCPEndpoints  map[string]string
 	Permissions   map[string]string
@@ -103,8 +105,16 @@ func (h *stubHandle) Stop() error {
 }
 
 func defaultUserPrompt(prompt string) string {
-	if prompt != "" {
-		return prompt
+	base := strings.TrimSpace(prompt)
+	if base == "" {
+		base = "Please help with the requested task."
 	}
-	return "Please help with the requested task. Return any code changes in a structured format."
+	return base + `
+
+Runtime patch protocol:
+- When the task creates, modifies, or deletes files, return only one JSON object.
+- The JSON object must include protocolVersion, patchId, summary, and files.
+- Each file entry must include path, action, and newContent for create or modify actions.
+- Do not include passwords, tokens, API keys, credentials, private URLs, or other secrets.
+- Do not wrap the JSON object in Markdown fences.`
 }

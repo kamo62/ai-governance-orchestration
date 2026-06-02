@@ -2,7 +2,7 @@ server_id: issue-tracker
 category: external-read-only-stub
 transport: http
 endpoint: http://localhost:8095
-auth_mode: local-dev-token
+auth_mode: oauth-user
 credential_scope: user-scoped-read-only-stub
 allowed_agents:
   - code-review

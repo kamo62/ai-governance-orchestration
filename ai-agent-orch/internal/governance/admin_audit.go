@@ -57,16 +57,23 @@ func (h *AdminAuditHandler) applyRetention(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Only SQLiteStore supports retention; FileStore is append-only.
+	type retentionCapability interface {
+		SupportsRetentionPolicy() bool
+	}
+	if capable, ok := h.audit.(retentionCapability); ok && !capable.SupportsRetentionPolicy() {
+		writeJSON(w, http.StatusNotImplemented, map[string]any{"error": "retention not supported by current audit backend"})
+		return
+	}
 	type retentionPurger interface {
 		RetentionPolicy(context.Context, time.Duration) (int64, error)
 	}
-	sqliteStore, ok := h.audit.(retentionPurger)
+	purger, ok := h.audit.(retentionPurger)
 	if !ok {
 		writeJSON(w, http.StatusNotImplemented, map[string]any{"error": "retention not supported by current audit backend"})
 		return
 	}
 
-	n, err := sqliteStore.RetentionPolicy(r.Context(), time.Duration(req.MaxAgeHours)*time.Hour)
+	n, err := purger.RetentionPolicy(r.Context(), time.Duration(req.MaxAgeHours)*time.Hour)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "retention failed: " + err.Error()})
 		return

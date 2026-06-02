@@ -452,7 +452,9 @@ func testNegativeCost(ctx context.Context, cfg Config) {
 func handleSmoke(ctx context.Context, cfg Config, args []string) {
 	prompt := flagValue(args, "--prompt")
 	if prompt == "" {
-		prompt = "write a smoke test for the login endpoint"
+		prompt = `Create a smoke test patch envelope for the orchestration path.
+Return only one JSON object that creates SMOKE_SOURCE_CONTEXT.md with safe, non-sensitive placeholder content.
+Do not include passwords, tokens, API keys, credentials, private URLs, or external service calls.`
 	}
 
 	fmt.Println("=== ai-orch smoke test ===")

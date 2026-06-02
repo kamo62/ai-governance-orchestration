@@ -14,6 +14,13 @@ type MetricsHandler struct {
 	secretsBlocked        atomic.Uint64
 	classificationBlocked atomic.Uint64
 	costCapped            atomic.Uint64
+	useCasesRegistered    atomic.Uint64
+	workflowsRegistered   atomic.Uint64
+	manifestsCreated      atomic.Uint64
+	cacheHits             atomic.Uint64
+	cacheMisses           atomic.Uint64
+	evidenceRecorded      atomic.Uint64
+	exportsGenerated      atomic.Uint64
 }
 
 func NewMetricsHandler() *MetricsHandler {
@@ -34,6 +41,13 @@ func (h *MetricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"secrets_blocked":        h.secretsBlocked.Load(),
 		"classification_blocked": h.classificationBlocked.Load(),
 		"cost_capped":            h.costCapped.Load(),
+		"use_cases_registered":   h.useCasesRegistered.Load(),
+		"workflows_registered":   h.workflowsRegistered.Load(),
+		"manifests_created":      h.manifestsCreated.Load(),
+		"cache_hits":             h.cacheHits.Load(),
+		"cache_misses":           h.cacheMisses.Load(),
+		"evidence_recorded":      h.evidenceRecorded.Load(),
+		"exports_generated":      h.exportsGenerated.Load(),
 	})
 }
 
@@ -63,4 +77,32 @@ func (h *MetricsHandler) RecordPatchApplied() {
 
 func (h *MetricsHandler) RecordPatchRejected() {
 	h.patchesRejected.Add(1)
+}
+
+func (h *MetricsHandler) RecordUseCaseRegistered() {
+	h.useCasesRegistered.Add(1)
+}
+
+func (h *MetricsHandler) RecordWorkflowRegistered() {
+	h.workflowsRegistered.Add(1)
+}
+
+func (h *MetricsHandler) RecordManifestCreated() {
+	h.manifestsCreated.Add(1)
+}
+
+func (h *MetricsHandler) RecordCacheHit() {
+	h.cacheHits.Add(1)
+}
+
+func (h *MetricsHandler) RecordCacheMiss() {
+	h.cacheMisses.Add(1)
+}
+
+func (h *MetricsHandler) RecordEvidenceRecorded() {
+	h.evidenceRecorded.Add(1)
+}
+
+func (h *MetricsHandler) RecordExportGenerated() {
+	h.exportsGenerated.Add(1)
 }

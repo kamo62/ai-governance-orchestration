@@ -17,6 +17,7 @@ import (
 func TestDispatchHandlerFailsClosedWhenAuditWriteFails(t *testing.T) {
 	dispatcher := &Dispatcher{
 		catalogRoot: filepath.Join("..", ".."),
+		broker:      mustToolBroker(t),
 		runtimes: map[string]dispatch.Runtime{
 			"opencode": fakeRuntime{handle: &fakeHandle{events: []dispatch.RuntimeEvent{{Type: "done", Payload: "ok"}}}},
 		},
@@ -40,6 +41,7 @@ func TestDispatchHandlerFailsClosedWhenAuditWriteFails(t *testing.T) {
 func TestDispatchHandlerFailsWhenRuntimeWaitFails(t *testing.T) {
 	dispatcher := &Dispatcher{
 		catalogRoot: filepath.Join("..", ".."),
+		broker:      mustToolBroker(t),
 		runtimes: map[string]dispatch.Runtime{
 			"opencode": fakeRuntime{handle: &fakeHandle{
 				events: []dispatch.RuntimeEvent{{Type: "stream", Payload: "started"}},
@@ -66,6 +68,7 @@ func TestDispatchHandlerFailsWhenRuntimeWaitFails(t *testing.T) {
 func TestDispatchHandlerFailsWhenRuntimeEmitsError(t *testing.T) {
 	dispatcher := &Dispatcher{
 		catalogRoot: filepath.Join("..", ".."),
+		broker:      mustToolBroker(t),
 		runtimes: map[string]dispatch.Runtime{
 			"opencode": fakeRuntime{handle: &fakeHandle{
 				events: []dispatch.RuntimeEvent{{Type: "error", Payload: "tool denied"}},

@@ -12,10 +12,12 @@ x-mcp-environment: &mcp-environment
 x-catalog-volumes: &catalog-volumes
   - ./agents:/app/agents:ro
   - ./models:/app/models:ro
+  - ./policies:/app/policies:ro
 
 x-runtime-volumes: &runtime-volumes
   - ./agents:/app/agents:ro
   - ./models:/app/models:ro
+  - ./policies:/app/policies:ro
   - audit-data:/app/var/audit
 
 services:

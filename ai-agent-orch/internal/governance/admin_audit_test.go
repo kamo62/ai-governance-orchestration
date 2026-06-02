@@ -17,7 +17,8 @@ import (
 func TestAdminAuditHandler_RetentionNotSupportedForFileStore(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	store := audit.NewFileStore(auditPath)
-	handler := NewAdminAuditHandler(store, adminAuditService(store))
+	chain := audit.NewChainAppender(store)
+	handler := NewAdminAuditHandler(chain, adminAuditService(chain))
 
 	body, _ := json.Marshal(map[string]any{"max_age_hours": 24})
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/audit/retention", bytes.NewReader(body))
@@ -33,7 +34,8 @@ func TestAdminAuditHandler_RetentionNotSupportedForFileStore(t *testing.T) {
 func TestAdminAuditHandler_RequiresAuthorization(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	store := audit.NewFileStore(auditPath)
-	handler := NewAdminAuditHandler(store, adminAuditService(store))
+	chain := audit.NewChainAppender(store)
+	handler := NewAdminAuditHandler(chain, adminAuditService(chain))
 
 	body, _ := json.Marshal(map[string]any{"max_age_hours": 24})
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/audit/retention", bytes.NewReader(body))
@@ -45,13 +47,14 @@ func TestAdminAuditHandler_RequiresAuthorization(t *testing.T) {
 	}
 }
 
-func TestAdminAuditHandler_RetentionPurgesOldEvents(t *testing.T) {
+func TestAdminAuditHandler_RetentionPreservesLiveSessionChains(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "audit.db")
 	store, err := audit.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("create sqlite store: %v", err)
 	}
 	defer store.Close()
+	chain := audit.NewChainAppender(store)
 
 	// Insert an old event and a recent event.
 	oldEvent := audit.Event{
@@ -60,7 +63,7 @@ func TestAdminAuditHandler_RetentionPurgesOldEvents(t *testing.T) {
 		EventType:  "test.old",
 		RecordedAt: time.Now().UTC().Add(-48 * time.Hour),
 	}
-	_, err = store.Append(context.Background(), oldEvent)
+	_, err = chain.Append(context.Background(), oldEvent)
 	if err != nil {
 		t.Fatalf("append old event: %v", err)
 	}
@@ -71,12 +74,12 @@ func TestAdminAuditHandler_RetentionPurgesOldEvents(t *testing.T) {
 		EventType:  "test.recent",
 		RecordedAt: time.Now().UTC(),
 	}
-	_, err = store.Append(context.Background(), recentEvent)
+	_, err = chain.Append(context.Background(), recentEvent)
 	if err != nil {
 		t.Fatalf("append recent event: %v", err)
 	}
 
-	handler := NewAdminAuditHandler(store, adminAuditService(store))
+	handler := NewAdminAuditHandler(chain, adminAuditService(chain))
 	body, _ := json.Marshal(map[string]any{"max_age_hours": 24})
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/audit/retention", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-token")
@@ -86,20 +89,17 @@ func TestAdminAuditHandler_RetentionPurgesOldEvents(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"purged":1`) {
-		t.Fatalf("expected 1 purged event: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"purged":0`) {
+		t.Fatalf("expected live chain to be retained: %s", rec.Body.String())
 	}
 
-	// Verify only recent event remains.
+	// Verify the full live session chain remains.
 	events, err := store.EventsBySession(context.Background(), "sess_retention")
 	if err != nil {
 		t.Fatalf("query events: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 remaining event, got %d", len(events))
-	}
-	if events[0].EventID != "evt_recent" {
-		t.Fatalf("expected evt_recent, got %s", events[0].EventID)
+	if len(events) != 2 {
+		t.Fatalf("expected 2 remaining events, got %d", len(events))
 	}
 }
 

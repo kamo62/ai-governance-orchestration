@@ -11,17 +11,27 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	patchproto "ai-agent-orch/internal/patch"
 )
 
+// defaultPatchBufferTTL is the TTL for buffered patch entries.
+const defaultPatchBufferTTL = 30 * time.Minute
+
 type PatchBuffer struct {
 	mu      sync.RWMutex
 	patches map[string]map[string]string
+	times   map[string]map[string]time.Time
+	ttl     time.Duration
 }
 
 func NewPatchBuffer() *PatchBuffer {
-	return &PatchBuffer{patches: make(map[string]map[string]string)}
+	return &PatchBuffer{
+		patches: make(map[string]map[string]string),
+		times:   make(map[string]map[string]time.Time),
+		ttl:     defaultPatchBufferTTL,
+	}
 }
 
 func (b *PatchBuffer) Store(ctx context.Context, sessionID string, payload string) (string, error) {
@@ -89,7 +99,11 @@ func (b *PatchBuffer) Store(ctx context.Context, sessionID string, payload strin
 	if b.patches[sessionID] == nil {
 		b.patches[sessionID] = make(map[string]string)
 	}
+	if b.times[sessionID] == nil {
+		b.times[sessionID] = make(map[string]time.Time)
+	}
 	b.patches[sessionID][envelope.PatchID] = string(full)
+	b.times[sessionID][envelope.PatchID] = time.Now().UTC()
 	return string(safe), nil
 }
 
@@ -100,8 +114,9 @@ func (b *PatchBuffer) Get(ctx context.Context, sessionID string, patchID string)
 	if sessionID == "" || patchID == "" {
 		return "", errors.New("session_id and patch_id are required")
 	}
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.evictLocked()
 	patches := b.patches[sessionID]
 	if patches == nil {
 		return "", errors.New("patch not found")
@@ -111,6 +126,27 @@ func (b *PatchBuffer) Get(ctx context.Context, sessionID string, patchID string)
 		return "", errors.New("patch not found")
 	}
 	return payload, nil
+}
+
+func (b *PatchBuffer) evictLocked() {
+	if b == nil || b.ttl <= 0 {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-b.ttl)
+	for sessionID, patchTimes := range b.times {
+		for patchID, t := range patchTimes {
+			if t.Before(cutoff) {
+				delete(b.patches[sessionID], patchID)
+				delete(patchTimes, patchID)
+			}
+		}
+		if len(b.patches[sessionID]) == 0 {
+			delete(b.patches, sessionID)
+		}
+		if len(patchTimes) == 0 {
+			delete(b.times, sessionID)
+		}
+	}
 }
 
 func validatePatchPath(path string) error {
