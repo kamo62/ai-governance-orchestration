@@ -2,7 +2,7 @@
   "name": "ai-agent-bridge",
   "displayName": "AI Agent Bridge",
   "description": "Local AI agent orchestration bridge for VS Code",
-  "version": "0.2.2-alpha",
+  "version": "0.2.3-alpha",
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -41,6 +41,7 @@
         "aiAgentBridge.governanceUrl": {
           "type": "string",
           "default": "http://127.0.0.1:8080",
+          "scope": "machine",
           "description": "URL of the AI Agent Orchestrator governance server."
         },
         "aiAgentBridge.devToken": {
@@ -52,6 +53,7 @@
         "aiAgentBridge.identity": {
           "type": "string",
           "default": "developer",
+          "scope": "machine",
           "description": "Identity label for audit and session attribution (e.g., developer, ci-bot, review-assistant)."
         }
       }

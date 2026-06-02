@@ -42,7 +42,7 @@ This repo is an attempt to answer those questions without rebuilding the whole d
 
 ## Current State
 
-Current version: `v0.5.3-alpha`.
+Current version: `v0.5.4-alpha`.
 
 This is an early local POC. It is not production-ready.
 

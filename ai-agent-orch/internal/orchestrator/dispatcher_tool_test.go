@@ -73,3 +73,27 @@ func TestDispatcher_ToolBrokerLoadedFromPolicies(t *testing.T) {
 		t.Fatal("tool broker should load from the real policy file")
 	}
 }
+
+func TestResolveMCPEndpointsUsesGovernanceProxy(t *testing.T) {
+	t.Setenv("AI_ORCH_MCP_PROXY_URL", "http://governance-shell:8080/internal/v1/mcp/")
+
+	endpoints := resolveMCPEndpoints([]string{"repo-classification", "documentation"})
+
+	if endpoints["repo-classification"] != "http://governance-shell:8080/internal/v1/mcp/repo-classification" {
+		t.Fatalf("unexpected repo-classification endpoint: %q", endpoints["repo-classification"])
+	}
+	if endpoints["documentation"] != "http://governance-shell:8080/internal/v1/mcp/documentation" {
+		t.Fatalf("unexpected documentation endpoint: %q", endpoints["documentation"])
+	}
+}
+
+func TestResolveMCPEndpointsAllowsPerServerOverride(t *testing.T) {
+	t.Setenv("AI_ORCH_MCP_PROXY_URL", "http://governance-shell:8080/internal/v1/mcp")
+	t.Setenv("MCP_REPO_CLASSIFICATION_URL", "http://custom-repo-classification:9000")
+
+	endpoints := resolveMCPEndpoints([]string{"repo-classification"})
+
+	if endpoints["repo-classification"] != "http://custom-repo-classification:9000" {
+		t.Fatalf("expected per-server override, got %q", endpoints["repo-classification"])
+	}
+}

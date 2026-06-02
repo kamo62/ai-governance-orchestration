@@ -157,9 +157,14 @@ var defaultMCPEndpoints = map[string]string{
 
 func resolveMCPEndpoints(servers []string) map[string]string {
 	endpoints := make(map[string]string, len(servers))
+	proxyBase := strings.TrimRight(os.Getenv("AI_ORCH_MCP_PROXY_URL"), "/")
 	for _, name := range servers {
 		if envURL := os.Getenv(mcpEndpointEnvKey(name)); envURL != "" {
 			endpoints[name] = envURL
+			continue
+		}
+		if proxyBase != "" {
+			endpoints[name] = proxyBase + "/" + name
 			continue
 		}
 		if url, ok := defaultMCPEndpoints[name]; ok {

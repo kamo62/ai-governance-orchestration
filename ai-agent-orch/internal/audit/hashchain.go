@@ -67,11 +67,15 @@ func (c *ChainAppender) Append(ctx context.Context, event Event) (Event, error) 
 		AppendIfPrev(context.Context, Event, string) (Event, bool, error)
 	}
 	if store, ok := c.store.(compareAppender); ok && event.SessionID != "" {
-		for attempt := 0; attempt < 3; attempt++ {
-			latest, err := c.latestHash(ctx, event.SessionID)
+		latest, ok := c.lastHash[event.SessionID]
+		if !ok {
+			var err error
+			latest, err = c.latestHash(ctx, event.SessionID)
 			if err != nil {
 				return Event{}, err
 			}
+		}
+		for attempt := 0; attempt < 3; attempt++ {
 			candidate := event
 			candidate.PrevEventHash = latest
 			candidate.EventHash = canonicalHash(candidate)
@@ -82,6 +86,10 @@ func (c *ChainAppender) Append(ctx context.Context, event Event) (Event, error) 
 			if appended {
 				c.lastHash[persisted.SessionID] = persisted.EventHash
 				return persisted, nil
+			}
+			latest, err = c.latestHash(ctx, event.SessionID)
+			if err != nil {
+				return Event{}, err
 			}
 		}
 		return Event{}, errors.New("chain append: concurrent append conflict")
@@ -162,6 +170,20 @@ func (c *ChainAppender) RetentionPolicy(ctx context.Context, maxAge time.Duratio
 		return 0, errors.New("chain appender: underlying store does not support chain-aware retention")
 	}
 	return store.ChainRetentionPolicy(ctx, maxAge)
+}
+
+// SupportsRetentionPolicy reports whether the wrapped backend can apply
+// chain-aware retention. Admin handlers use this to preserve the 501 response
+// for append-only backends such as FileStore even after chain wrapping.
+func (c *ChainAppender) SupportsRetentionPolicy() bool {
+	if c == nil || c.store == nil {
+		return false
+	}
+	type chainRetentionPurger interface {
+		ChainRetentionPolicy(context.Context, time.Duration) (int64, error)
+	}
+	_, ok := c.store.(chainRetentionPurger)
+	return ok
 }
 
 // canonicalHash returns a SHA-256 hex hash of the event's canonical JSON

@@ -107,6 +107,7 @@ func TestACPHandle_WorkspaceAndMCPParams(t *testing.T) {
 	h := &acpHandle{
 		config: SessionConfig{
 			WorkspacePath: "/workspace/project",
+			SessionID:     "sess_acp",
 			MCPEndpoints: map[string]string{
 				"zeta":  "http://zeta",
 				"alpha": "http://alpha",
@@ -116,12 +117,22 @@ func TestACPHandle_WorkspaceAndMCPParams(t *testing.T) {
 	if got := h.workspacePath(); got != "/workspace/project" {
 		t.Fatalf("unexpected workspace path: %s", got)
 	}
-	servers := acpMCPServers(h.config.MCPEndpoints)
+	servers := acpMCPServers(h.config.MCPEndpoints, "service-token", h.config.SessionID)
 	if len(servers) != 2 {
 		t.Fatalf("expected 2 MCP servers, got %d", len(servers))
 	}
 	if servers[0]["name"] != "alpha" || servers[0]["url"] != "http://alpha" {
 		t.Fatalf("expected deterministic alpha server first, got %#v", servers[0])
+	}
+	headers, ok := servers[0]["headers"].(map[string]string)
+	if !ok {
+		t.Fatalf("expected governed MCP headers, got %#v", servers[0])
+	}
+	if headers["Authorization"] != "Bearer service-token" {
+		t.Fatalf("expected service bearer header, got %#v", headers)
+	}
+	if headers["X-AI-Orch-Session-ID"] != "sess_acp" {
+		t.Fatalf("expected session header, got %#v", headers)
 	}
 }
 

@@ -155,7 +155,7 @@ func (h *acpHandle) runSession() {
 		"method":  "session/new",
 		"params": map[string]any{
 			"cwd":        h.workspacePath(),
-			"mcpServers": acpMCPServers(h.config.MCPEndpoints),
+			"mcpServers": acpMCPServers(h.config.MCPEndpoints, os.Getenv("AI_ORCH_SERVICE_TOKEN"), h.config.SessionID),
 		},
 	}
 	newSessionResp, err := h.sendRequest(newSessionReq)
@@ -548,24 +548,35 @@ func (h *acpHandle) workspacePath() string {
 	return "."
 }
 
-func acpMCPServers(endpoints map[string]string) []map[string]string {
+func acpMCPServers(endpoints map[string]string, serviceToken string, sessionID string) []map[string]any {
 	if len(endpoints) == 0 {
-		return []map[string]string{}
+		return []map[string]any{}
 	}
 	names := make([]string, 0, len(endpoints))
 	for name := range endpoints {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	servers := make([]map[string]string, 0, len(names))
+	servers := make([]map[string]any, 0, len(names))
 	for _, name := range names {
 		if endpoints[name] == "" {
 			continue
 		}
-		servers = append(servers, map[string]string{
+		server := map[string]any{
 			"name": name,
 			"url":  endpoints[name],
-		})
+		}
+		headers := map[string]string{}
+		if serviceToken != "" {
+			headers["Authorization"] = "Bearer " + serviceToken
+		}
+		if sessionID != "" {
+			headers["X-AI-Orch-Session-ID"] = sessionID
+		}
+		if len(headers) > 0 {
+			server["headers"] = headers
+		}
+		servers = append(servers, server)
 	}
 	return servers
 }

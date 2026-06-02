@@ -232,6 +232,36 @@ func TestChainAppender_RetentionPolicyPurgesExpiredWholeChain(t *testing.T) {
 	}
 }
 
+func TestChainAppender_CompareAppendUsesCachedHead(t *testing.T) {
+	store := &countingCompareStore{}
+	chain := NewChainAppender(store)
+	ctx := context.Background()
+
+	if _, err := chain.Append(ctx, Event{EventID: "evt_1", EventType: "test.first", SessionID: "sess_cached"}); err != nil {
+		t.Fatalf("append first event: %v", err)
+	}
+	if store.eventsBySessionCalls != 1 {
+		t.Fatalf("first append should load persisted head once, got %d", store.eventsBySessionCalls)
+	}
+	if _, err := chain.Append(ctx, Event{EventID: "evt_2", EventType: "test.second", SessionID: "sess_cached"}); err != nil {
+		t.Fatalf("append second event: %v", err)
+	}
+	if store.eventsBySessionCalls != 1 {
+		t.Fatalf("second append should use cached head, got %d persisted loads", store.eventsBySessionCalls)
+	}
+}
+
+func TestChainAppender_FileStoreDoesNotSupportRetentionPolicy(t *testing.T) {
+	chain := NewChainAppender(NewFileStore(t.TempDir() + "/audit.jsonl"))
+
+	if chain.SupportsRetentionPolicy() {
+		t.Fatal("file store should not support chain-aware retention")
+	}
+	if _, err := chain.RetentionPolicy(context.Background(), time.Hour); err == nil {
+		t.Fatal("expected retention policy to fail for file store")
+	}
+}
+
 func TestChainAppender_NoSessionNoChain(t *testing.T) {
 	fs := NewFileStore(t.TempDir() + "/audit.jsonl")
 	ca := NewChainAppender(fs)
@@ -361,4 +391,40 @@ func TestVerifyChain_EmptyOK(t *testing.T) {
 	if err := VerifyChain(nil); err != nil {
 		t.Fatalf("empty chain should verify: %v", err)
 	}
+}
+
+type countingCompareStore struct {
+	events               []Event
+	eventsBySessionCalls int
+}
+
+func (s *countingCompareStore) Append(_ context.Context, event Event) (Event, error) {
+	s.events = append(s.events, event)
+	return event, nil
+}
+
+func (s *countingCompareStore) AppendIfPrev(_ context.Context, event Event, expectedPrev string) (Event, bool, error) {
+	var current string
+	for i := len(s.events) - 1; i >= 0; i-- {
+		if s.events[i].SessionID == event.SessionID {
+			current = s.events[i].EventHash
+			break
+		}
+	}
+	if current != expectedPrev {
+		return Event{}, false, nil
+	}
+	s.events = append(s.events, event)
+	return event, true, nil
+}
+
+func (s *countingCompareStore) EventsBySession(_ context.Context, sessionID string) ([]Event, error) {
+	s.eventsBySessionCalls++
+	var events []Event
+	for _, event := range s.events {
+		if event.SessionID == sessionID {
+			events = append(events, event)
+		}
+	}
+	return events, nil
 }

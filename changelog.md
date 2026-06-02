@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.5.4-alpha - 2026-06-02 (Patch)
+
+Release impact: Patch because this fixes follow-up governance review findings and smoke-test stability without changing public API contracts.
+
+- **Hardened Bridge configuration scope**: Governance URL, dev token, and local identity settings are now machine-scoped so workspace settings cannot redirect authenticated Bridge traffic.
+- **Routed ACP MCP metadata through governance**: Dispatcher MCP endpoint resolution now prefers `AI_ORCH_MCP_PROXY_URL`, ACP server metadata includes service/session headers, and Docker Compose mounts `policies/` with the catalog/runtime volumes.
+- **Preserved audit retention semantics**: Chain-wrapped file audit stores still report retention as unsupported, SQLite admin-retention tests now mirror production chain-wrapper wiring, and compare-and-append audit writes use the cached chain head before reloading session history.
+- **Stabilised CLI smoke orchestration**: The default smoke prompt now uses safe synthetic content, direct-runtime prompts state the patch-envelope and no-secrets contract, and patch extraction tolerates prose before JSON plus string protocol versions.
+
 ## v0.5.3-alpha - 2026-06-01 (Patch)
 
 Release impact: Patch because this fixes governance hardening review findings without introducing breaking API contracts.

@@ -41,6 +41,19 @@ func TestOpenRouterReasoningConfigDefaultsToExcludedReasoning(t *testing.T) {
 	}
 }
 
+func TestDefaultUserPromptIncludesPatchProtocol(t *testing.T) {
+	got := defaultUserPrompt("write a smoke test")
+
+	if !strings.Contains(got, "write a smoke test") {
+		t.Fatalf("expected user prompt to be preserved, got %q", got)
+	}
+	for _, required := range []string{"protocolVersion", "patchId", "files", "newContent"} {
+		if !strings.Contains(got, required) {
+			t.Fatalf("expected prompt to include %q, got %q", required, got)
+		}
+	}
+}
+
 func TestTryExtractPatchNormalizesChangesEnvelope(t *testing.T) {
 	handle := &directHandle{}
 
@@ -103,6 +116,32 @@ func TestTryExtractPatchAcceptsOperationField(t *testing.T) {
 	}
 	if len(patch.Files) != 1 || patch.Files[0].Action != "create" {
 		t.Fatalf("expected create action, got %#v", patch.Files)
+	}
+}
+
+func TestTryExtractPatchFindsPatchAfterProseObject(t *testing.T) {
+	handle := &directHandle{}
+
+	got := handle.tryExtractPatch(`First, here is a non-patch object: {"note":"not the patch"}.
+
+{"protocolVersion":1,"patchId":"patch_after_prose","summary":"ok","files":[{"path":"SMOKE_SOURCE_CONTEXT.md","action":"create","content":"source-aware"}]}`)
+	if got == "" {
+		t.Fatal("expected patch envelope after prose")
+	}
+	if !strings.Contains(got, `"patchId":"patch_after_prose"`) {
+		t.Fatalf("expected extracted patch, got %s", got)
+	}
+}
+
+func TestTryExtractPatchAcceptsStringProtocolVersion(t *testing.T) {
+	handle := &directHandle{}
+
+	got := handle.tryExtractPatch("```json\n" + `{"protocolVersion":"1.0","patchId":"string_version_patch","summary":"ok","files":[{"path":"SMOKE_SOURCE_CONTEXT.md","action":"create","content":"source-aware"}]}` + "\n```")
+	if got == "" {
+		t.Fatal("expected patch envelope with string protocol version")
+	}
+	if !strings.Contains(got, `"protocolVersion":1`) {
+		t.Fatalf("expected normalized numeric protocol version, got %s", got)
 	}
 }
 

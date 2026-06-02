@@ -17,7 +17,8 @@ import (
 func TestAdminAuditHandler_RetentionNotSupportedForFileStore(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	store := audit.NewFileStore(auditPath)
-	handler := NewAdminAuditHandler(store, adminAuditService(store))
+	chain := audit.NewChainAppender(store)
+	handler := NewAdminAuditHandler(chain, adminAuditService(chain))
 
 	body, _ := json.Marshal(map[string]any{"max_age_hours": 24})
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/audit/retention", bytes.NewReader(body))
@@ -33,7 +34,8 @@ func TestAdminAuditHandler_RetentionNotSupportedForFileStore(t *testing.T) {
 func TestAdminAuditHandler_RequiresAuthorization(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	store := audit.NewFileStore(auditPath)
-	handler := NewAdminAuditHandler(store, adminAuditService(store))
+	chain := audit.NewChainAppender(store)
+	handler := NewAdminAuditHandler(chain, adminAuditService(chain))
 
 	body, _ := json.Marshal(map[string]any{"max_age_hours": 24})
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/audit/retention", bytes.NewReader(body))
@@ -52,6 +54,7 @@ func TestAdminAuditHandler_RetentionPreservesLiveSessionChains(t *testing.T) {
 		t.Fatalf("create sqlite store: %v", err)
 	}
 	defer store.Close()
+	chain := audit.NewChainAppender(store)
 
 	// Insert an old event and a recent event.
 	oldEvent := audit.Event{
@@ -60,7 +63,7 @@ func TestAdminAuditHandler_RetentionPreservesLiveSessionChains(t *testing.T) {
 		EventType:  "test.old",
 		RecordedAt: time.Now().UTC().Add(-48 * time.Hour),
 	}
-	_, err = store.Append(context.Background(), oldEvent)
+	_, err = chain.Append(context.Background(), oldEvent)
 	if err != nil {
 		t.Fatalf("append old event: %v", err)
 	}
@@ -71,12 +74,12 @@ func TestAdminAuditHandler_RetentionPreservesLiveSessionChains(t *testing.T) {
 		EventType:  "test.recent",
 		RecordedAt: time.Now().UTC(),
 	}
-	_, err = store.Append(context.Background(), recentEvent)
+	_, err = chain.Append(context.Background(), recentEvent)
 	if err != nil {
 		t.Fatalf("append recent event: %v", err)
 	}
 
-	handler := NewAdminAuditHandler(store, adminAuditService(store))
+	handler := NewAdminAuditHandler(chain, adminAuditService(chain))
 	body, _ := json.Marshal(map[string]any{"max_age_hours": 24})
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/audit/retention", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-token")
