@@ -3,9 +3,36 @@ import * as http from 'http';
 import * as https from 'https';
 import * as vscode from 'vscode';
 
-let governanceUrl = 'http://127.0.0.1:8080';
+import {
+    DEFAULT_GOVERNANCE_URL,
+    DEFAULT_IDENTITY,
+    DEV_TOKEN_SECRET_KEY,
+    BridgeSettings,
+    bridgeConnectionStatus,
+    hasUsableDevToken,
+    normalizeGovernanceUrl,
+    resolveBridgeSettings,
+    validateGovernanceReadyResponse,
+} from './bridgeConfig';
+import {
+    PatchEnvelope,
+    authHeadersForBridge,
+    parsePatchPayload,
+    parseSessionEventLine,
+    patchID,
+    workspacePathParts,
+} from './bridgeWorkflow';
+import {
+    WorkspacePromptContext,
+    buildContextualPrompt,
+    contextSummary,
+    parseGitBranch,
+    parseGitRemote,
+} from './bridgeWorkspace';
+
+let governanceUrl = DEFAULT_GOVERNANCE_URL;
 let devToken = process.env.AI_ORCH_DEV_TOKEN || '';
-let identity = 'developer';
+let identity = DEFAULT_IDENTITY;
 
 interface AgentSession {
     session_id: string;
@@ -15,24 +42,6 @@ interface AgentSession {
 interface RouteResult {
     specialist: string;
     reason: string;
-}
-
-interface PatchFile {
-    path?: string;
-    filename?: string;
-    action?: string;
-    originalContentHash?: string;
-    proposedContentHash?: string;
-    newContent?: string;
-    new_content?: string;
-}
-
-interface PatchEnvelope {
-    patchId?: string;
-    patch_id?: string;
-    bufferId?: string;
-    buffer_id?: string;
-    files?: PatchFile[];
 }
 
 class PatchContentProvider implements vscode.TextDocumentContentProvider {
@@ -53,18 +62,26 @@ class PatchContentProvider implements vscode.TextDocumentContentProvider {
 const patchProvider = new PatchContentProvider();
 
 export async function activate(context: vscode.ExtensionContext) {
-    const config = vscode.workspace.getConfiguration('aiAgentBridge');
-    governanceUrl = config.get<string>('governanceUrl') || governanceUrl;
-    devToken = await context.secrets.get('aiAgentBridge.devToken') || config.get<string>('devToken') || devToken;
-    identity = config.get<string>('identity') || identity;
-
     const outputChannel = vscode.window.createOutputChannel('AI Agent Bridge');
+    await refreshBridgeSettings(context);
 
     context.subscriptions.push(
         vscode.workspace.registerTextDocumentContentProvider('aiagentbridge-patch', patchProvider)
     );
 
+    const onboardCommand = vscode.commands.registerCommand('aiAgentBridge.onboard', async () => {
+        await runOnboarding(context, outputChannel);
+    });
+
+    const checkConnectionCommand = vscode.commands.registerCommand('aiAgentBridge.checkConnection', async () => {
+        await runConnectionCheck(context, outputChannel, true);
+    });
+
     const invokeCommand = vscode.commands.registerCommand('aiAgentBridge.invokeAgent', async () => {
+        if (!await ensureBridgeReady(context, outputChannel)) {
+            return;
+        }
+
         const prompt = await vscode.window.showInputBox({
             prompt: 'What would you like the agent to do?',
             placeHolder: 'e.g., write Playwright tests for this component'
@@ -74,13 +91,16 @@ export async function activate(context: vscode.ExtensionContext) {
             return;
         }
 
+        const workspaceContext = await collectWorkspacePromptContext(outputChannel);
+        const governedPrompt = buildContextualPrompt(prompt, workspaceContext);
         outputChannel.appendLine(`Invoking agent with prompt length: ${prompt.length} chars`);
+        outputChannel.appendLine(`[context] ${contextSummary(workspaceContext)}`);
 
         try {
-            const session = await createSession(prompt);
+            const session = await createSession(governedPrompt, workspaceContext, prompt);
             outputChannel.appendLine(`Session created: ${session.session_id}`);
 
-            const routeResult = await sendMessage(session.session_id, prompt);
+            const routeResult = await sendMessage(session.session_id, governedPrompt);
             outputChannel.appendLine(`Recommended specialist: ${routeResult.specialist} (${routeResult.reason})`);
 
             const confirm = await vscode.window.showInformationMessage(
@@ -124,6 +144,10 @@ export async function activate(context: vscode.ExtensionContext) {
     });
 
     const showAuditCommand = vscode.commands.registerCommand('aiAgentBridge.showAudit', async (sessionId?: string) => {
+        if (!await ensureBridgeReady(context, outputChannel)) {
+            return;
+        }
+
         const id = sessionId || await vscode.window.showInputBox({
             prompt: 'Enter session ID to view audit',
             placeHolder: 'sess_...'
@@ -147,10 +171,209 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     });
 
-    context.subscriptions.push(invokeCommand, showAuditCommand, outputChannel);
+    const settings = await refreshBridgeSettings(context);
+    if (!hasUsableDevToken(settings)) {
+        const action = await vscode.window.showInformationMessage(
+            'AI Agent Bridge needs first-run setup before it can call the Governance Shell.',
+            'Run Setup',
+            'Later'
+        );
+        if (action === 'Run Setup') {
+            await runOnboarding(context, outputChannel);
+        }
+    }
+
+    context.subscriptions.push(onboardCommand, checkConnectionCommand, invokeCommand, showAuditCommand, outputChannel);
 }
 
-async function createSession(prompt: string): Promise<AgentSession> {
+async function refreshBridgeSettings(context: vscode.ExtensionContext): Promise<BridgeSettings> {
+    const config = vscode.workspace.getConfiguration('aiAgentBridge');
+    const settings = resolveBridgeSettings({
+        configuredGovernanceUrl: config.get<string>('governanceUrl'),
+        configuredDevToken: config.get<string>('devToken'),
+        configuredIdentity: config.get<string>('identity'),
+        envDevToken: process.env.AI_ORCH_DEV_TOKEN,
+        secretDevToken: await context.secrets.get(DEV_TOKEN_SECRET_KEY),
+    });
+
+    governanceUrl = settings.governanceUrl;
+    devToken = settings.devToken;
+    identity = settings.identity;
+    return settings;
+}
+
+async function runOnboarding(context: vscode.ExtensionContext, outputChannel: vscode.OutputChannel): Promise<boolean> {
+    const current = await refreshBridgeSettings(context);
+    const config = vscode.workspace.getConfiguration('aiAgentBridge');
+
+    const urlInput = await vscode.window.showInputBox({
+        title: 'AI Agent Bridge Setup',
+        prompt: 'Governance Shell URL',
+        value: current.governanceUrl,
+        placeHolder: DEFAULT_GOVERNANCE_URL,
+        validateInput: (value) => {
+            try {
+                normalizeGovernanceUrl(value);
+                return undefined;
+            } catch (err: any) {
+                return err.message;
+            }
+        },
+    });
+    if (urlInput === undefined) {
+        return false;
+    }
+
+    const nextUrl = normalizeGovernanceUrl(urlInput);
+    await config.update('governanceUrl', nextUrl, vscode.ConfigurationTarget.Global);
+
+    const identityInput = await vscode.window.showInputBox({
+        title: 'AI Agent Bridge Setup',
+        prompt: 'Identity label for audit events',
+        value: current.identity || DEFAULT_IDENTITY,
+        placeHolder: DEFAULT_IDENTITY,
+    });
+    if (identityInput === undefined) {
+        return false;
+    }
+    await config.update('identity', identityInput.trim() || DEFAULT_IDENTITY, vscode.ConfigurationTarget.Global);
+
+    const existingToken = hasUsableDevToken(current);
+    const tokenInput = await vscode.window.showInputBox({
+        title: 'AI Agent Bridge Setup',
+        prompt: existingToken
+            ? 'Developer token. Leave blank to keep the stored token.'
+            : 'Developer token. For the local Compose default, use local-dev.',
+        placeHolder: 'local-dev',
+        password: true,
+        validateInput: (value) => {
+            if (existingToken || value.trim()) {
+                return undefined;
+            }
+            return 'A developer token is required. Use local-dev for the default local Compose stack.';
+        },
+    });
+    if (tokenInput === undefined) {
+        return false;
+    }
+    if (tokenInput.trim()) {
+        await context.secrets.store(DEV_TOKEN_SECRET_KEY, tokenInput.trim());
+    }
+
+    outputChannel.appendLine(`Bridge setup saved. Governance URL: ${nextUrl}`);
+    const ready = await runConnectionCheck(context, outputChannel, false);
+    if (!ready) {
+        const action = await vscode.window.showWarningMessage(
+            'Setup saved, but the Governance Shell is not reachable yet.',
+            'Show Output'
+        );
+        if (action === 'Show Output') {
+            outputChannel.show();
+        }
+        return false;
+    }
+
+    const action = await vscode.window.showInformationMessage(
+        'AI Agent Bridge is ready.',
+        'Invoke Agent',
+        'Show Output'
+    );
+    if (action === 'Invoke Agent') {
+        vscode.commands.executeCommand('aiAgentBridge.invokeAgent');
+    } else if (action === 'Show Output') {
+        outputChannel.show();
+    }
+    return true;
+}
+
+async function ensureBridgeReady(context: vscode.ExtensionContext, outputChannel: vscode.OutputChannel): Promise<boolean> {
+    const settings = await refreshBridgeSettings(context);
+    if (!hasUsableDevToken(settings)) {
+        const action = await vscode.window.showWarningMessage(
+            'AI Agent Bridge needs setup before it can call the Governance Shell.',
+            'Run Setup',
+            'Cancel'
+        );
+        if (action === 'Run Setup') {
+            return runOnboarding(context, outputChannel);
+        }
+        return false;
+    }
+
+    const ready = await checkGovernanceReady(settings.governanceUrl);
+    if (ready.ok) {
+        return true;
+    }
+
+    outputChannel.appendLine(`[setup] Governance Shell is not reachable at ${settings.governanceUrl}: ${ready.message}`);
+    outputChannel.appendLine('[setup] Start it from ai-agent-orch with: docker compose --env-file ../.env.dev up -d governance-shell orchestrator');
+    const action = await vscode.window.showWarningMessage(
+        `Governance Shell is not reachable at ${settings.governanceUrl}.`,
+        'Run Setup',
+        'Show Output',
+        'Cancel'
+    );
+    if (action === 'Run Setup') {
+        return runOnboarding(context, outputChannel);
+    }
+    if (action === 'Show Output') {
+        outputChannel.show();
+    }
+    return false;
+}
+
+async function runConnectionCheck(context: vscode.ExtensionContext, outputChannel: vscode.OutputChannel, showResult: boolean): Promise<boolean> {
+    const settings = await refreshBridgeSettings(context);
+    const ready = await checkGovernanceReady(settings.governanceUrl);
+    if (!ready.ok) {
+        outputChannel.appendLine(`[setup] Governance Shell check failed at ${settings.governanceUrl}: ${ready.message}`);
+        outputChannel.appendLine('[setup] Expected local startup command: docker compose --env-file ../.env.dev up -d governance-shell orchestrator');
+        if (showResult) {
+            const action = await vscode.window.showWarningMessage(
+                `Governance Shell check failed: ${ready.message}`,
+                'Show Output'
+            );
+            if (action === 'Show Output') {
+                outputChannel.show();
+            }
+        }
+        return false;
+    }
+
+    const status = bridgeConnectionStatus({ settings, ready: ready.ok, readyMessage: ready.message });
+    outputChannel.appendLine(`[setup] Governance Shell ready at ${settings.governanceUrl}; ${status.tokenMessage}.`);
+    if (showResult) {
+        if (status.needsSetup) {
+            const action = await vscode.window.showWarningMessage(
+                status.message,
+                'Run Setup',
+                'Show Output',
+                'Cancel'
+            );
+            if (action === 'Run Setup') {
+                return runOnboarding(context, outputChannel);
+            }
+            if (action === 'Show Output') {
+                outputChannel.show();
+            }
+        } else {
+            vscode.window.showInformationMessage(status.message);
+        }
+    }
+    return status.ok;
+}
+
+async function checkGovernanceReady(baseUrl: string): Promise<{ ok: boolean; message: string }> {
+    try {
+        const response = await fetch(`${baseUrl}/readyz`, { method: 'GET' });
+        const body = await response.text();
+        return validateGovernanceReadyResponse(response.status, body);
+    } catch (err: any) {
+        return { ok: false, message: err.message || String(err) };
+    }
+}
+
+async function createSession(prompt: string, workspaceContext: WorkspacePromptContext, userIntent: string): Promise<AgentSession> {
     const response = await fetch(`${governanceUrl}/v1/sessions`, {
         method: 'POST',
         headers: authHeaders({
@@ -159,7 +382,10 @@ async function createSession(prompt: string): Promise<AgentSession> {
         body: JSON.stringify({
             agent: 'test-generation',
             classification: 'internal',
-            prompt
+            prompt,
+            repo_url: workspaceContext.repoUrl || undefined,
+            branch: workspaceContext.branch || undefined,
+            intent: userIntent
         })
     });
 
@@ -169,6 +395,58 @@ async function createSession(prompt: string): Promise<AgentSession> {
     }
 
     return response.json() as Promise<AgentSession>;
+}
+
+async function collectWorkspacePromptContext(outputChannel: vscode.OutputChannel): Promise<WorkspacePromptContext> {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    const editor = vscode.window.activeTextEditor;
+    const context: WorkspacePromptContext = {};
+
+    if (workspaceFolder) {
+        context.workspaceName = workspaceFolder.name;
+        const gitMetadata = await readGitMetadata(workspaceFolder.uri, outputChannel);
+        context.branch = gitMetadata.branch;
+        context.repoUrl = gitMetadata.repoUrl;
+    }
+
+    if (editor && (!workspaceFolder || editor.document.uri.scheme === 'file')) {
+        const relative = workspaceFolder
+            ? vscode.workspace.asRelativePath(editor.document.uri, false)
+            : editor.document.uri.fsPath.split(/[\\/]+/).pop();
+        context.activeFile = relative || undefined;
+        context.languageId = editor.document.languageId;
+
+        if (!editor.selection.isEmpty) {
+            context.selectedText = editor.document.getText(editor.selection);
+            context.selectedRange = `${editor.selection.start.line + 1}-${editor.selection.end.line + 1}`;
+        } else {
+            context.activeFileExcerpt = editor.document.getText().slice(0, 12000);
+        }
+    }
+
+    return context;
+}
+
+async function readGitMetadata(workspaceUri: vscode.Uri, outputChannel: vscode.OutputChannel): Promise<{ branch?: string; repoUrl?: string }> {
+    const result: { branch?: string; repoUrl?: string } = {};
+    try {
+        const head = await readWorkspaceText(vscode.Uri.joinPath(workspaceUri, '.git', 'HEAD'));
+        result.branch = parseGitBranch(head) || undefined;
+    } catch {
+        outputChannel.appendLine('[context] No readable .git/HEAD found for workspace.');
+    }
+
+    try {
+        const config = await readWorkspaceText(vscode.Uri.joinPath(workspaceUri, '.git', 'config'));
+        result.repoUrl = parseGitRemote(config) || undefined;
+    } catch {
+        outputChannel.appendLine('[context] No readable .git/config found for workspace.');
+    }
+    return result;
+}
+
+async function readWorkspaceText(uri: vscode.Uri): Promise<string> {
+    return Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
 }
 
 async function sendMessage(sessionId: string, prompt: string): Promise<RouteResult> {
@@ -252,16 +530,15 @@ async function connectToEvents(sessionId: string, outputChannel: vscode.OutputCh
                 buffer = lines.pop() || '';
 
                 for (const line of lines) {
-                    if (!line.startsWith('data: ')) {
-                        continue;
-                    }
-
                     try {
-                        const data = JSON.parse(line.substring(6));
+                        const data = parseSessionEventLine(line);
+                        if (!data) {
+                            continue;
+                        }
                         outputChannel.appendLine(`[${data.type}] ${data.payload}`);
 
                         if (data.type === 'patch') {
-                            const patch = parsePatchPayload(data.payload);
+                            const patch = parsePatchPayload(data.payload || '');
                             patches.push(patch);
                             outputChannel.appendLine(`[patch] Collected patch ${patchID(patch)} with ${patch.files?.length || 0} file(s)`);
                         }
@@ -372,7 +649,7 @@ async function showPatchDiffs(patches: PatchEnvelope[], outputChannel: vscode.Ou
     for (const patch of patches) {
         const files = patch.files || [];
         for (const file of files) {
-            const filePath = file.path || file.filename || 'unknown';
+            const filePath = workspacePathParts(file.path || file.filename || 'unknown').join('/');
             const action = file.action || 'modify';
             const newContent = file.newContent ?? file.new_content ?? '';
 
@@ -381,8 +658,7 @@ async function showPatchDiffs(patches: PatchEnvelope[], outputChannel: vscode.Ou
             const patchUri = vscode.Uri.parse(`aiagentbridge-patch:${encodeURIComponent(filePath)}?patch=${encodeURIComponent(patchID(patch))}`);
             patchProvider.setContent(patchUri, newContent);
 
-            const workspaceFiles = await vscode.workspace.findFiles(filePath, null, 1);
-            const existingUri = workspaceFiles.length > 0 ? workspaceFiles[0] : undefined;
+            const existingUri = await existingWorkspaceFileUri(filePath);
 
             let leftUri: vscode.Uri;
             let title: string;
@@ -399,6 +675,21 @@ async function showPatchDiffs(patches: PatchEnvelope[], outputChannel: vscode.Ou
 
             await vscode.commands.executeCommand('vscode.diff', leftUri, patchUri, title);
         }
+    }
+}
+
+async function existingWorkspaceFileUri(filePath: string): Promise<vscode.Uri | undefined> {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
+        return undefined;
+    }
+
+    const uri = workspaceFileUri(workspaceFolder.uri, filePath);
+    try {
+        await vscode.workspace.fs.stat(uri);
+        return uri;
+    } catch {
+        return undefined;
     }
 }
 
@@ -474,44 +765,12 @@ async function lookupAudit(sessionId: string): Promise<any> {
     return response.json();
 }
 
-function parsePatchPayload(payload: string): PatchEnvelope {
-    const patch = JSON.parse(payload) as PatchEnvelope;
-    if (!patchID(patch) || patchID(patch) === 'unknown') {
-        throw new Error('patch payload is missing patchId');
-    }
-    return patch;
-}
-
-function patchID(patch: PatchEnvelope): string {
-    return patch.patchId || patch.patch_id || 'unknown';
-}
-
 function workspaceFileUri(root: vscode.Uri, filePath: string): vscode.Uri {
-    if (!filePath || filePath === 'unknown') {
-        throw new Error('Patch file path is required.');
-    }
-    if (filePath.startsWith('/') || /^[A-Za-z]:/.test(filePath)) {
-        throw new Error(`Patch file path must be relative: ${filePath}`);
-    }
-
-    const parts = filePath.split(/[\\/]+/).filter(Boolean);
-    if (parts.some((part) => part === '..' || part === '.')) {
-        throw new Error(`Patch file path contains unsafe segments: ${filePath}`);
-    }
-
-    return vscode.Uri.joinPath(root, ...parts);
+    return vscode.Uri.joinPath(root, ...workspacePathParts(filePath));
 }
 
 function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
-    const token = devToken.trim();
-    if (!token) {
-        throw new Error('AI_ORCH_DEV_TOKEN is required for the VS Code Bridge.');
-    }
-    return {
-        'Authorization': `Bearer ${token}`,
-        'X-AI-Orch-Local-Identity': identity,
-        ...extra
-    };
+    return authHeadersForBridge({ devToken, identity }, extra);
 }
 
 function escapeHtml(value: string): string {

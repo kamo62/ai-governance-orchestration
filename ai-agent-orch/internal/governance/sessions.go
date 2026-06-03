@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ai-agent-orch/internal/audit"
+	"ai-agent-orch/internal/httpauth"
 	"ai-agent-orch/internal/policyengine"
 )
 
@@ -47,6 +48,7 @@ func AuthInfoFromContext(ctx context.Context) (AuthInfo, bool) {
 
 type SessionConfig struct {
 	DevToken          string
+	AdminToken        string // Separate admin token for /v1/admin/* endpoints.
 	Authorizer        RequestAuthorizer
 	Audit             AuditAppender
 	Sessions          SessionStore
@@ -69,6 +71,7 @@ const defaultLocalStateTTL = 30 * time.Minute
 
 type SessionService struct {
 	devToken          string
+	adminToken        string // Separate token for admin endpoints; empty means admin is disabled.
 	authorizer        RequestAuthorizer
 	audit             AuditAppender
 	sessions          SessionStore
@@ -169,6 +172,19 @@ func (s *SessionService) setSessionStatus(ctx context.Context, sessionID string,
 	_ = s.sessions.UpdateStatus(ctx, sessionID, status)
 }
 
+// SessionExists verifies that a session id is known to the Governance Shell.
+func (s *SessionService) SessionExists(ctx context.Context, sessionID string) bool {
+	if s == nil || sessionID == "" {
+		return false
+	}
+	if s.sessions != nil {
+		_, err := s.sessions.Get(ctx, sessionID)
+		return err == nil
+	}
+	_, ok := s.promptForSession(sessionID)
+	return ok
+}
+
 type CreateSessionRequest struct {
 	Agent            string  `json:"agent"`
 	Classification   string  `json:"classification"`
@@ -226,6 +242,7 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 	}
 	return &SessionService{
 		devToken:          cfg.DevToken,
+		adminToken:        cfg.AdminToken,
 		authorizer:        cfg.Authorizer,
 		audit:             cfg.Audit,
 		sessions:          cfg.Sessions,
@@ -295,30 +312,18 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusLocked, map[string]any{"error": reason})
 		return
 	}
-	exceeds, err := classificationExceedsMax(request.Classification, s.classificationMax)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	if exceeds {
-		reason := fmt.Sprintf("classification %s exceeds max %s", request.Classification, s.classificationMax)
-		if err := s.appendDenied(r.Context(), reason, nil, request.Classification); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
-			return
-		}
-		s.recordClassificationBlocked()
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": reason})
-		return
-	}
-	findings := detectSecrets(request.Prompt)
 	decision, err := s.evaluatePolicy(r.Context(), policyengine.Request{
-		AgentName:      request.Agent,
-		ActionType:     "session.create",
-		Classification: request.Classification,
-		Findings:       findings,
+		AgentName:         request.Agent,
+		ActionType:        "session.create",
+		Classification:    request.Classification,
+		ClassificationMax: s.classificationMax,
 		Metadata: map[string]any{
 			"prompt_length": len(request.Prompt),
+			"prompt":        request.Prompt,
 		},
+		CostCapEnabled:    s.costCapEnabled,
+		SessionCostCapUSD: s.sessionCostCapUSD,
+		EstimatedCostUSD:  request.EstimatedCostUSD,
 	})
 	if err != nil {
 		if auditErr := s.appendDenied(r.Context(), "policy engine unavailable", nil, request.Classification); auditErr != nil {
@@ -333,28 +338,29 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		if reason == "" {
 			reason = "policy denied"
 		}
-		if len(findings) > 0 {
-			reason = "secret detected"
+		findings := decision.Findings
+		if reason == "cost cap exceeded" {
+			if err := s.appendDeniedWithCost(r.Context(), reason, request.Classification, request.EstimatedCostUSD, s.sessionCostCapUSD); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+				return
+			}
+			s.recordCostCapped()
+			writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": reason})
+			return
 		}
 		if err := s.appendDenied(r.Context(), reason, findings, request.Classification); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
-		if len(findings) > 0 {
+		switch reason {
+		case "secret detected":
 			s.recordSecretBlocked()
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "secret detected"})
-			return
+		default:
+			if strings.HasPrefix(reason, "classification ") {
+				s.recordClassificationBlocked()
+			}
 		}
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": reason})
-		return
-	}
-	if s.costCapEnabled && s.sessionCostCapUSD > 0 && request.EstimatedCostUSD > s.sessionCostCapUSD {
-		if err := s.appendDeniedWithCost(r.Context(), "cost cap exceeded", request.Classification, request.EstimatedCostUSD, s.sessionCostCapUSD); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
-			return
-		}
-		s.recordCostCapped()
-		writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": "cost cap exceeded"})
 		return
 	}
 
@@ -558,6 +564,9 @@ func (s *SessionService) RequireAuthorizedRequest(w http.ResponseWriter, r *http
 		return r, false
 	}
 	subject := "local-dev"
+	// X-AI-Orch-Local-Identity is a dev-mode convenience header for local testing.
+	// It allows the bridge or CLI to assert an actor label without OIDC.
+	// In production, actor identity must come from OIDC claims, not client headers.
 	if localIdentity := r.Header.Get("X-AI-Orch-Local-Identity"); localIdentity != "" {
 		if !validActorLabel(localIdentity) {
 			if err := s.appendDenied(r.Context(), "invalid local identity", nil, ""); err != nil {
@@ -571,6 +580,30 @@ func (s *SessionService) RequireAuthorizedRequest(w http.ResponseWriter, r *http
 	}
 	r = r.WithContext(WithAuthInfo(r.Context(), AuthInfo{Subject: subject, Method: "dev"}))
 	return r, true
+}
+
+// RequireAdminRequest validates the request carries the separate admin token.
+// Admin endpoints (kill switch, audit retention) must use a token distinct from
+// ordinary session auth. If no admin token is configured, admin endpoints are disabled.
+func (s *SessionService) RequireAdminRequest(w http.ResponseWriter, r *http.Request) bool {
+	if s == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
+		return false
+	}
+	if s.adminToken == "" {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "admin not configured"})
+		return false
+	}
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(auth, "Bearer ")), []byte(s.adminToken)) != 1 {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "admin access required"})
+		return false
+	}
+	return true
 }
 
 type RequestAuthorizer interface {
@@ -689,12 +722,11 @@ func (s *SessionService) evictPatchesLocked() {
 	}
 }
 
+// authorizedBearer delegates to httpauth.AuthorizedBearer so there is a single
+// constant-time bearer comparison shared across the shell and the standalone
+// services. An empty configured token always fails closed.
 func authorizedBearer(header string, token string) bool {
-	const prefix = "Bearer "
-	if !strings.HasPrefix(header, prefix) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(header, prefix)), []byte(token)) == 1
+	return httpauth.AuthorizedBearer(header, token)
 }
 
 // maxRequestBodyBytes limits JSON request bodies to 1 MiB.

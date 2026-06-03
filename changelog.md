@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.6.0-alpha - 2026-06-03 (Minor)
+
+Release impact: Minor because this adds first-run Bridge onboarding plus local governance gateway hardening in the alpha line. Admin routes now use a separate local admin token, and runtime model endpoints use a separate runtime token.
+
+- **Added VS Code Bridge onboarding**: the extension now exposes `Setup AI Agent Bridge` for configuring the Governance Shell URL, local identity, and developer token without hand-editing settings.
+- **Added Bridge connection checks**: the extension now exposes `Check AI Agent Bridge Connection` and preflights readiness before invoke/audit commands, with output-panel guidance for starting the local Compose stack.
+- **Made missing-token checks actionable**: a ready Governance Shell with no developer token now prompts `Run Setup` directly instead of leaving the Bridge in a connected-but-unusable state.
+- **Improved token handling for first run**: setup stores the developer token in VS Code SecretStorage and keeps machine-scoped settings for non-secret configuration.
+- **Added Bridge workflow tests**: Bun tests now cover URL normalisation, SecretStorage token precedence, missing-token detection, command registration, patch IDs, SSE event parsing, auth headers, and safe patch paths.
+- **Added bounded workspace context for the Bridge**: VS Code invocation now includes current workspace name, git branch and origin remote where available, active file metadata, and either selected text or a capped active-file excerpt.
+- **Hardened Bridge diff review**: proposed patch paths are now validated before both native diff review and workspace apply.
+- **Hardened Bridge readiness checks**: the extension now requires `/readyz` to identify the `governance-shell` service, so another local app on port `8080` is not treated as this POC.
+- **Moved the local host default to `18080`**: Compose, the CLI default, VS Code Bridge default, and `.env.example` now avoid the common app-dev `8080` port while keeping internal container traffic on `8080`.
+- **Clarified agent workflow expectations**: deployment docs now include a workflow checklist, alternate-port CLI smoke guidance, wrong-service troubleshooting, and the current CLine-style agent-plane limitation.
+- **Added the governed IDE agent-plane plan**: documented the path towards CLine-style ergonomics while keeping the Governance Shell as the authority boundary.
+- **Documented the MCP gateway direction**: root planning notes now capture why `ai-orch-mcp`, Tool Gateway mode, and a Governance Skills Factory are the preferred next abstraction over a VSIX-only agent experience.
+- **Clarified README abstraction uncertainty**: README now describes the live POC tension between VS Code Bridge, MCP gateway, runtime adapters, CLI and governance UI while keeping the Governance Shell as the stable boundary.
+- **Expanded integration thinking**: README and planning notes now frame Factory Router as a Governance Router signal, GitHub App as the delivery/evidence boundary, and `t3code` as a workbench UX reference rather than a product shape to copy.
+- **Re-centred the near-term roadmap on governance plumbing**: README and planning notes now explicitly prioritise Governance Shell contracts and `ai-orch-mcp` before workbench, GitHub/Azure DevOps app, OpenCode sandbox, or Kubernetes runtime work.
+- **Added model compatibility gateway planning**: documented why OpenCode-style runtimes need governed OpenAI-compatible `/v1/models`, `/v1/chat/completions`, `/v1/responses`, and streaming endpoints separate from the MCP tool gateway.
+- **Cleaned VSIX metadata**: the Bridge package now includes repository and licence metadata so local packaging is warning-free.
+- **Strengthened OpenRouter smoke validation**: the smoke tool now fails on blank or unexpected assistant content and requests hidden reasoning with a larger default token budget for DeepSeek V4 Flash.
+- **Aligned runtime version reporting**: ACP client metadata now uses a shared Go version constant instead of a stale hard-coded `v0.5.0-alpha` string.
+- **Updated canonical version references**: root `VERSION`, README current state, and changelog now agree on `v0.6.0-alpha`.
+- **Added a drift guard**: app version tests now compare the Go runtime version constant with the root `VERSION` file.
+- **Split local auth tokens by boundary**: the CLI now uses `AI_ORCH_ADMIN_TOKEN` for `/v1/admin/*` routes, while developer, service and runtime paths keep their own tokens.
+- **Exposed the model compatibility gateway in Compose**: local Compose now passes `AI_ORCH_RUNTIME_TOKEN`, exposes `MODEL_GATEWAY_PORT`, and documents OpenAI-compatible model-gateway smoke calls.
+- **Required real session correlation for model generation**: `/v1/chat/completions` and `/v1/responses` now require `X-AI-Orch-Session-ID`, and the Governance Shell gateway validates that the session exists before generation.
+- **Hardened MCP HTTP transport**: HTTP MCP mode now fails closed without a developer token, binds locally by default through the CLI, uses constant-time bearer-token checks, and rejects non-local browser origins.
+- **Made MCP setup safer for arbitrary repos**: `ai-orch mcp install` now refuses to overwrite existing client config files unless `--force` is passed, and generated VS Code config uses stdio instead of unauthenticated SSE.
+- **Made self-reported MCP evidence honest**: external tool/model self-report tools now surface persistence failures instead of claiming evidence was recorded when the Governance Shell call failed.
+- **Expanded CI coverage**: GitHub Actions now runs Bridge Bun install, tests, typecheck, lint and compile alongside Go build, vet and tests.
+- **Removed accidental nested Go module metadata**: the VS Code Bridge no longer contains a stray `go.mod`.
+
 ## v0.5.4-alpha - 2026-06-02 (Patch)
 
 Release impact: Patch because this fixes follow-up governance review findings and smoke-test stability without changing public API contracts.

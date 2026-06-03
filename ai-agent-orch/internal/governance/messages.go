@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"ai-agent-orch/internal/audit"
+	"ai-agent-orch/internal/policyengine"
 )
 
 // OrchestratorClient is the interface used by the Governance Shell to call the Orchestrator.
@@ -111,7 +112,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Re-check secrets on the new prompt.
-	if findings := detectSecrets(req.Prompt); len(findings) > 0 {
+	if findings := policyengine.DetectSecrets(req.Prompt); len(findings) > 0 {
 		if err := h.service.appendDenied(r.Context(), "secret detected in follow-up message", findings, ""); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return

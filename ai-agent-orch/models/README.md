@@ -61,7 +61,11 @@ The registry also contains smoke-test aliases such as `smoke-deepseek-v4-flash` 
 
 **Phase 1 (Current):** OpenRouter provides a single OpenAI-compatible API across multiple providers.
 
-**Phase 2+:** LiteLLM or direct cloud providers such as Azure OpenAI or private gateways can be added behind the same alias system without changing agent definitions.
+**Phase 1G.2:** Add an `ai-orch` model compatibility gateway for runtime-facing OpenAI-compatible endpoints such as `/v1/models`, `/v1/chat/completions`, `/v1/responses`, and streaming. Runtimes such as OpenCode should call governed aliases through that gateway instead of receiving provider API keys.
+
+**Phase 2+:** LiteLLM or direct cloud providers such as Azure OpenAI or private gateways can be added behind the same alias system without changing agent definitions. LiteLLM should remain an optional backend adapter or compatibility reference, not the authority for policy, audit, session identity, or patch decisions.
+
+See [Governed Model Compatibility Gateway](../docs/model-compatibility-gateway.md) for the runtime-facing model API plan.
 
 ## Environment Overrides
 

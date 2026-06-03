@@ -520,11 +520,11 @@ func TestPatchDecisionHandlerRejectsInvalidDecision(t *testing.T) {
 func TestAdminKillSwitchList(t *testing.T) {
 	store := NewMemoryKillSwitch()
 	store.Block("agent", "test-generation")
-	service := NewSessionService(SessionConfig{DevToken: "local-test-token"})
+	service := NewSessionService(SessionConfig{DevToken: "local-test-token", AdminToken: "admin-token"})
 	handler := NewAdminHandler(store, service)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/admin/killswitch", nil)
-	req.Header.Set("Authorization", "Bearer local-test-token")
+	req.Header.Set("Authorization", "Bearer admin-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -543,9 +543,9 @@ func TestAdminKillSwitchList(t *testing.T) {
 	}
 }
 
-func TestAdminKillSwitchFailsClosedWhenDevTokenEmpty(t *testing.T) {
+func TestAdminKillSwitchFailsClosedWhenAdminTokenEmpty(t *testing.T) {
 	store := NewMemoryKillSwitch()
-	service := NewSessionService(SessionConfig{})
+	service := NewSessionService(SessionConfig{DevToken: "local-test-token"})
 	handler := NewAdminHandler(store, service)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/admin/killswitch", nil)
@@ -553,19 +553,19 @@ func TestAdminKillSwitchFailsClosedWhenDevTokenEmpty(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestAdminKillSwitchBlockAndUnblock(t *testing.T) {
 	store := NewMemoryKillSwitch()
-	service := NewSessionService(SessionConfig{DevToken: "local-test-token"})
+	service := NewSessionService(SessionConfig{DevToken: "local-test-token", AdminToken: "admin-token"})
 	handler := NewAdminHandler(store, service)
 
 	// Block
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/killswitch/agent/test-generation", nil)
-	req.Header.Set("Authorization", "Bearer local-test-token")
+	req.Header.Set("Authorization", "Bearer admin-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -577,7 +577,7 @@ func TestAdminKillSwitchBlockAndUnblock(t *testing.T) {
 
 	// Unblock
 	req = httptest.NewRequest(http.MethodDelete, "/v1/admin/killswitch/agent/test-generation", nil)
-	req.Header.Set("Authorization", "Bearer local-test-token")
+	req.Header.Set("Authorization", "Bearer admin-token")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

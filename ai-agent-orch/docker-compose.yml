@@ -28,7 +28,10 @@ services:
     environment:
       <<: *app-environment
       AI_ORCH_DEV_TOKEN: ${AI_ORCH_DEV_TOKEN:-local-dev}
+      AI_ORCH_ADMIN_TOKEN: ${AI_ORCH_ADMIN_TOKEN:-local-admin}
       AI_ORCH_MCP_TOKEN: ${AI_ORCH_MCP_TOKEN:-local-dev-token}
+      AI_ORCH_RUNTIME_TOKEN: ${AI_ORCH_RUNTIME_TOKEN:-local-runtime-token}
+      AI_ORCH_GATEWAY_ADDR: ${AI_ORCH_GATEWAY_ADDR:-:18082}
       AI_ORCH_CLASSIFICATION_MAX: ${AI_ORCH_CLASSIFICATION_MAX:-internal}
       AI_ORCH_KILL_SWITCH: ${AI_ORCH_KILL_SWITCH:-false}
       AI_ORCH_COST_CAP_ENABLED: ${AI_ORCH_COST_CAP_ENABLED:-false}
@@ -43,7 +46,8 @@ services:
       orchestrator:
         condition: service_healthy
     ports:
-      - "${GOVERNANCE_SHELL_PORT:-8080}:8080"
+      - "${GOVERNANCE_SHELL_PORT:-18080}:8080"
+      - "${MODEL_GATEWAY_PORT:-18082}:18082"
     volumes: *runtime-volumes
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]

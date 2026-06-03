@@ -1,0 +1,6 @@
+src/**
+test/**
+*.vsix
+eslint.config.mjs
+tsconfig.json
+*.lock

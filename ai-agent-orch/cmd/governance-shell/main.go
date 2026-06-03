@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"ai-agent-orch/internal/appconfig"
@@ -13,9 +17,11 @@ import (
 	"ai-agent-orch/internal/composition"
 	"ai-agent-orch/internal/governance"
 	"ai-agent-orch/internal/httpauth"
+	"ai-agent-orch/internal/modelgateway"
 	"ai-agent-orch/internal/oauth"
 	"ai-agent-orch/internal/openrouter"
 	"ai-agent-orch/internal/policyengine"
+	"ai-agent-orch/internal/router"
 	"ai-agent-orch/internal/server"
 )
 
@@ -73,6 +79,7 @@ func main() {
 
 	sessionService := governance.NewSessionService(governance.SessionConfig{
 		DevToken:          cfg.DevToken,
+		AdminToken:        cfg.AdminToken,
 		Authorizer:        requestAuthorizer,
 		Audit:             auditStore,
 		Sessions:          sessionStore,
@@ -145,18 +152,96 @@ func main() {
 	}))
 	handler.Handle("/metrics", metricsHandler)
 
-	wrappedHandler := logRequestLatency(handler)
+	// Centralized auth middleware with explicit public allow-list.
+	// Internal proxy endpoints use service-token auth inside their own handlers.
+	publicPaths := []string{"/mcp/healthz", "/readyz", "/healthz", "/internal/v1/model/", "/internal/v1/mcp/"}
+	authHandler := governance.AuthMiddleware(sessionService, publicPaths)(handler)
+
+	wrappedHandler := logRequestLatency(authHandler)
+	// TLS note: ListenAndServe runs plain HTTP. In production, terminate TLS at
+	// a reverse proxy (nginx, Envoy, cloud LB) and forward to this port. If
+	// running directly on the internet, replace ListenAndServe with
+	// ListenAndServeTLS or use autocert.
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           wrappedHandler,
 		ReadTimeout:       15 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      10 * time.Minute,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    1 << 20, // 1 MiB
+		// WriteTimeout is 0 because SSE streams need indefinite write time.
+		// Per-request deadlines are enforced by handlers where appropriate.
+		WriteTimeout:   0,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1 MiB
 	}
-	log.Printf("governance-shell listening on %s", cfg.Addr)
-	log.Fatal(srv.ListenAndServe())
+
+	// Model Compatibility Gateway (Phase 1G + 1J).
+	var gatewaySrv *http.Server
+	if cfg.RuntimeToken != "" {
+		modelRegistry, err := catalog.LoadModelRegistry(cfg.CatalogRoot)
+		if err != nil {
+			log.Printf("model registry load failed: %v", err)
+		} else {
+			govRouter := router.New(modelRegistry)
+			gateway := modelgateway.NewGateway(modelgateway.GatewayConfig{
+				RuntimeToken: cfg.RuntimeToken,
+				Router:       govRouter,
+				OpenRouter: openrouter.NewClient(openrouter.Config{
+					APIKey:   os.Getenv("OPENROUTER_API_KEY"),
+					BaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
+					Referer:  os.Getenv("OPENROUTER_HTTP_REFERER"),
+					AppTitle: envOrDefault("OPENROUTER_APP_TITLE", "ai-agent-orch-local"),
+				}),
+				Audit: auditStore,
+				ValidateSession: func(ctx context.Context, sessionID string) error {
+					if !sessionService.SessionExists(ctx, sessionID) {
+						return errors.New("session not found")
+					}
+					return nil
+				},
+			})
+			gatewaySrv = &http.Server{
+				Addr:              cfg.GatewayAddr,
+				Handler:           gateway.Handler(),
+				ReadTimeout:       15 * time.Second,
+				ReadHeaderTimeout: 5 * time.Second,
+				WriteTimeout:      0, // SSE streams need indefinite write time
+				IdleTimeout:       120 * time.Second,
+				MaxHeaderBytes:    1 << 20,
+			}
+			go func() {
+				log.Printf("model compatibility gateway listening on %s", cfg.GatewayAddr)
+				if err := gatewaySrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					log.Fatalf("gateway error: %v", err)
+				}
+			}()
+		}
+	} else {
+		log.Println("model compatibility gateway disabled: no runtime token configured")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		log.Printf("governance-shell listening on %s", cfg.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("shutting down gracefully...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("shutdown error: %v", err)
+	}
+	if gatewaySrv != nil {
+		if err := gatewaySrv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("gateway shutdown error: %v", err)
+		}
+	}
+	log.Println("shutdown complete")
 }
 
 func registerRegistryHandlers(mux *http.ServeMux, registryHandler http.Handler) {

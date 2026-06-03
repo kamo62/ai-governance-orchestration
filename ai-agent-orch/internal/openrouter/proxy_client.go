@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -83,4 +84,10 @@ func (c *ProxyClient) ChatCompletion(ctx context.Context, request ChatCompletion
 		return ChatCompletionResponse{}, fmt.Errorf("decode model proxy response: %w", err)
 	}
 	return result, nil
+}
+
+// ChatCompletionStream is not yet supported by the internal model proxy.
+// It returns an error indicating that streaming should use the model compatibility gateway directly.
+func (c *ProxyClient) ChatCompletionStream(_ context.Context, _ ChatCompletionRequest) (io.ReadCloser, error) {
+	return nil, errors.New("streaming not supported through internal model proxy; use model compatibility gateway")
 }

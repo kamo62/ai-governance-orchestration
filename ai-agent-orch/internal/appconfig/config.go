@@ -12,13 +12,16 @@ type Config struct {
 	CatalogRoot       string
 	AuditPath         string
 	DevToken          string
+	AdminToken        string // Separate token for /v1/admin/* endpoints.
 	ServiceToken      string
+	RuntimeToken      string // Token for model compatibility gateway runtime calls.
 	ClassificationMax string
 	KillSwitch        bool
 	CostCapEnabled    bool
 	SessionCostCapUSD float64
 	PolicyEngine      string
 	ToolLoopMax       int
+	GatewayAddr       string // Listen address for the model compatibility gateway.
 }
 
 func Load(args []string) (Config, error) {
@@ -43,13 +46,16 @@ func Load(args []string) (Config, error) {
 		CatalogRoot:       envOrDefault("AI_ORCH_CATALOG_ROOT", "."),
 		AuditPath:         envOrDefault("AI_ORCH_AUDIT_PATH", "var/audit/audit.jsonl"),
 		DevToken:          envOrDefault("AI_ORCH_DEV_TOKEN", ""),
+		AdminToken:        envOrDefault("AI_ORCH_ADMIN_TOKEN", ""),
 		ServiceToken:      envOrDefault("AI_ORCH_SERVICE_TOKEN", ""),
+		RuntimeToken:      envOrDefault("AI_ORCH_RUNTIME_TOKEN", ""),
 		ClassificationMax: envOrDefault("AI_ORCH_CLASSIFICATION_MAX", "internal"),
 		KillSwitch:        killSwitch,
 		CostCapEnabled:    costCapEnabled,
 		SessionCostCapUSD: sessionCostCapUSD,
 		PolicyEngine:      envOrDefault("AI_ORCH_POLICY_ENGINE", "native"),
 		ToolLoopMax:       toolLoopMax,
+		GatewayAddr:       envOrDefault("AI_ORCH_GATEWAY_ADDR", ":18082"),
 	}
 
 	fs := flag.NewFlagSet("ai-agent-orch", flag.ContinueOnError)
@@ -57,8 +63,11 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.CatalogRoot, "catalog-root", cfg.CatalogRoot, "catalog root directory")
 	fs.StringVar(&cfg.AuditPath, "audit-path", cfg.AuditPath, "append-only JSONL audit path")
 	fs.StringVar(&cfg.DevToken, "dev-token", cfg.DevToken, "local development bearer token")
+	fs.StringVar(&cfg.AdminToken, "admin-token", cfg.AdminToken, "admin bearer token for /v1/admin/* endpoints")
 	fs.StringVar(&cfg.ServiceToken, "service-token", cfg.ServiceToken, "local service-to-service bearer token")
+	fs.StringVar(&cfg.RuntimeToken, "runtime-token", cfg.RuntimeToken, "runtime bearer token for model compatibility gateway")
 	fs.StringVar(&cfg.ClassificationMax, "classification-max", cfg.ClassificationMax, "maximum allowed classification")
+	fs.StringVar(&cfg.GatewayAddr, "gateway-addr", cfg.GatewayAddr, "model compatibility gateway listen address")
 	fs.BoolVar(&cfg.KillSwitch, "kill-switch", cfg.KillSwitch, "block new session creation")
 	fs.BoolVar(&cfg.CostCapEnabled, "cost-cap-enabled", cfg.CostCapEnabled, "enforce the session cost cap")
 	fs.Float64Var(&cfg.SessionCostCapUSD, "session-cost-cap-usd", cfg.SessionCostCapUSD, "maximum estimated cost per session")

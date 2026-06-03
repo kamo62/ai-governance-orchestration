@@ -32,6 +32,7 @@ type Client struct {
 
 type ChatClient interface {
 	ChatCompletion(context.Context, ChatCompletionRequest) (ChatCompletionResponse, error)
+	ChatCompletionStream(context.Context, ChatCompletionRequest) (io.ReadCloser, error)
 }
 
 type Message struct {
@@ -143,4 +144,80 @@ func (r ChatCompletionResponse) FirstContent() string {
 		return ""
 	}
 	return r.Choices[0].Message.Content
+}
+
+// ChatCompletionStream initiates a streaming chat completion and returns an
+// io.ReadCloser of server-sent events. The caller is responsible for closing
+// the reader.
+func (c *Client) ChatCompletionStream(ctx context.Context, request ChatCompletionRequest) (io.ReadCloser, error) {
+	if c.apiKey == "" {
+		return nil, errors.New("OPENROUTER_API_KEY is required")
+	}
+	if request.Model == "" {
+		return nil, errors.New("model is required")
+	}
+	if len(request.Messages) == 0 {
+		return nil, errors.New("at least one message is required")
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("encode chat completion request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create chat completion request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	if c.referer != "" {
+		httpReq.Header.Set("HTTP-Referer", c.referer)
+	}
+	if c.appTitle != "" {
+		httpReq.Header.Set("X-Title", c.appTitle)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("call OpenRouter chat completions stream: %w", err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		return nil, fmt.Errorf("OpenRouter returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return resp.Body, nil
+}
+
+// StreamChunk is a single SSE chunk from a streaming chat completion.
+type StreamChunk struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Model   string `json:"model"`
+	Choices []struct {
+		Index int `json:"index"`
+		Delta struct {
+			Role    string `json:"role,omitempty"`
+			Content string `json:"content,omitempty"`
+		} `json:"delta"`
+		FinishReason *string `json:"finish_reason,omitempty"`
+	} `json:"choices"`
+}
+
+// DecodeStreamChunk parses a single SSE data line into a StreamChunk.
+func DecodeStreamChunk(line string) (StreamChunk, error) {
+	const prefix = "data: "
+	if !strings.HasPrefix(line, prefix) {
+		return StreamChunk{}, fmt.Errorf("not a data line")
+	}
+	data := strings.TrimPrefix(line, prefix)
+	if data == "[DONE]" {
+		return StreamChunk{}, io.EOF
+	}
+	var chunk StreamChunk
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return StreamChunk{}, fmt.Errorf("decode chunk: %w", err)
+	}
+	return chunk, nil
 }

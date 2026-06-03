@@ -2,7 +2,13 @@
   "name": "ai-agent-bridge",
   "displayName": "AI Agent Bridge",
   "description": "Local AI agent orchestration bridge for VS Code",
-  "version": "0.2.3-alpha",
+  "version": "0.4.0-alpha",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kamo62/ai-governance-orchestration.git",
+    "directory": "ai-agent-orch/agent-bridge"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -11,7 +17,10 @@
     "Debuggers"
   ],
   "activationEvents": [
-    "onCommand:aiAgentBridge.invokeAgent"
+    "onCommand:aiAgentBridge.invokeAgent",
+    "onCommand:aiAgentBridge.onboard",
+    "onCommand:aiAgentBridge.checkConnection",
+    "onCommand:aiAgentBridge.showAudit"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -19,6 +28,16 @@
       {
         "command": "aiAgentBridge.invokeAgent",
         "title": "Invoke AI Agent",
+        "category": "AI Agent"
+      },
+      {
+        "command": "aiAgentBridge.onboard",
+        "title": "Setup AI Agent Bridge",
+        "category": "AI Agent"
+      },
+      {
+        "command": "aiAgentBridge.checkConnection",
+        "title": "Check AI Agent Bridge Connection",
         "category": "AI Agent"
       },
       {
@@ -35,12 +54,28 @@
         "when": "editorTextFocus"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "aiAgentBridge.invokeAgent"
+        },
+        {
+          "command": "aiAgentBridge.onboard"
+        },
+        {
+          "command": "aiAgentBridge.checkConnection"
+        },
+        {
+          "command": "aiAgentBridge.showAudit"
+        }
+      ]
+    },
     "configuration": {
       "title": "AI Agent Bridge",
       "properties": {
         "aiAgentBridge.governanceUrl": {
           "type": "string",
-          "default": "http://127.0.0.1:8080",
+          "default": "http://127.0.0.1:18080",
           "scope": "machine",
           "description": "URL of the AI Agent Orchestrator governance server."
         },
@@ -64,6 +99,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src",
+    "test": "bun test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "package": "bunx @vscode/vsce package --out ai-agent-bridge.vsix"
   },

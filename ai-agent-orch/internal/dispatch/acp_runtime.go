@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ai-agent-orch/internal/appversion"
 )
 
 // ACPRuntime implements Runtime using OpenCode ACP JSON-RPC over stdio.
@@ -134,7 +136,7 @@ func (h *acpHandle) runSession() {
 			},
 			"clientInfo": map[string]string{
 				"name":    "ai-agent-orch",
-				"version": "v0.5.0-alpha",
+				"version": appversion.Version,
 			},
 		},
 	}

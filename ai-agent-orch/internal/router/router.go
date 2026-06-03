@@ -1,0 +1,225 @@
+// Package router implements the Governance Router that selects model aliases
+// based on task context, classification, cost, risk, and evidence needs.
+package router
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"ai-agent-orch/internal/catalog"
+)
+
+// Request is the input to a routing decision.
+type Request struct {
+	TaskType           string // e.g. "coding", "review", "test", "architecture"
+	Classification     string // e.g. "public", "internal", "confidential", "restricted"
+	WorkflowStage      string // e.g. "draft", "review", "verify", "merge"
+	RiskLevel          string // e.g. "low", "medium", "high"
+	CostSensitivity    string // e.g. "low", "medium", "high"
+	LatencySensitivity string // e.g. "low", "medium", "high"
+	EvidenceNeeds      string // e.g. "none", "basic", "full"
+	PreferredAlias     string // optional user preference; validated, not blindly trusted
+}
+
+// Decision is the output of a routing decision.
+type Decision struct {
+	SelectedAlias   string   `json:"selected_alias"`
+	SelectedModelID string   `json:"selected_model_id"`
+	Provider        string   `json:"provider"`
+	Reasons         []string `json:"reasons"`
+	FallbackChain   []string `json:"fallback_chain,omitempty"`
+	RejectedAliases []string `json:"rejected_aliases,omitempty"`
+}
+
+// Router selects model aliases from the catalog registry based on governance context.
+type Router struct {
+	registry catalog.ModelRegistry
+}
+
+// New creates a Router from the catalog registry loaded at the given root.
+func New(registry catalog.ModelRegistry) *Router {
+	return &Router{registry: registry}
+}
+
+// Route selects the best model alias for the given request.
+// It filters by classification compatibility, then scores by task alignment.
+func (r *Router) Route(ctx context.Context, req Request) (Decision, error) {
+	if r == nil || len(r.registry.Models) == 0 {
+		return Decision{}, errors.New("router not configured")
+	}
+
+	decision := Decision{Reasons: []string{}}
+
+	// Build candidate list filtered by classification.
+	var candidates []catalog.ModelDefinition
+	for _, m := range r.registry.Models {
+		if !m.AllowsClassification(req.Classification) {
+			decision.RejectedAliases = append(decision.RejectedAliases, m.Alias)
+			continue
+		}
+		candidates = append(candidates, m)
+	}
+
+	if len(candidates) == 0 {
+		return Decision{}, fmt.Errorf("no models available for classification %q", req.Classification)
+	}
+
+	// If a preferred alias is provided, validate it.
+	if req.PreferredAlias != "" {
+		for _, m := range candidates {
+			if m.Alias == req.PreferredAlias {
+				decision.SelectedAlias = m.Alias
+				decision.SelectedModelID = m.ModelID
+				decision.Provider = m.Provider
+				decision.Reasons = append(decision.Reasons, fmt.Sprintf("preferred alias %q accepted", m.Alias))
+				decision.FallbackChain = buildFallbackChain(r.registry, m)
+				return decision, nil
+			}
+		}
+		return Decision{}, fmt.Errorf("preferred alias %q not found or not allowed for classification %q", req.PreferredAlias, req.Classification)
+	}
+
+	// Score candidates by task alignment.
+	best := selectBestCandidate(candidates, req)
+	if best.Alias == "" {
+		return Decision{}, errors.New("no suitable model found after scoring")
+	}
+
+	decision.SelectedAlias = best.Alias
+	decision.SelectedModelID = best.ModelID
+	decision.Provider = best.Provider
+	decision.Reasons = append(decision.Reasons, fmt.Sprintf("selected by task alignment: %s", best.Purpose))
+	decision.FallbackChain = buildFallbackChain(r.registry, best)
+
+	return decision, nil
+}
+
+// Resolve returns the concrete provider model ID for a given alias.
+func (r *Router) Resolve(alias string) (modelID string, provider string, err error) {
+	for _, m := range r.registry.Models {
+		if m.Alias == alias {
+			if m.ModelID == "" {
+				return "", "", fmt.Errorf("alias %q has no model_id", alias)
+			}
+			return m.ModelID, m.Provider, nil
+		}
+	}
+	return "", "", fmt.Errorf("alias %q not found", alias)
+}
+
+// Aliases returns all governed aliases, optionally filtered by classification.
+func (r *Router) Aliases(classification string) []catalog.ModelDefinition {
+	var out []catalog.ModelDefinition
+	for _, m := range r.registry.Models {
+		if classification == "" || m.AllowsClassification(classification) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func selectBestCandidate(candidates []catalog.ModelDefinition, req Request) catalog.ModelDefinition {
+	if len(candidates) == 0 {
+		return catalog.ModelDefinition{}
+	}
+
+	// Simple scoring: match keywords from task type and risk level against purpose.
+	var best catalog.ModelDefinition
+	bestScore := -1
+
+	for _, m := range candidates {
+		score := scoreCandidate(m, req)
+		if score > bestScore {
+			bestScore = score
+			best = m
+		}
+	}
+
+	return best
+}
+
+func scoreCandidate(m catalog.ModelDefinition, req Request) int {
+	score := 0
+	purpose := strings.ToLower(m.Purpose)
+	task := strings.ToLower(req.TaskType)
+	risk := strings.ToLower(req.RiskLevel)
+
+	// Task type alignment
+	switch task {
+	case "coding", "implementation":
+		if strings.Contains(purpose, "coding") || strings.Contains(purpose, "implementation") {
+			score += 10
+		}
+	case "review", "audit":
+		if strings.Contains(purpose, "review") || strings.Contains(purpose, "audit") || strings.Contains(purpose, "quality") {
+			score += 10
+		}
+	case "test", "testing":
+		if strings.Contains(purpose, "test") {
+			score += 10
+		}
+	case "architecture", "design":
+		if strings.Contains(purpose, "architecture") || strings.Contains(purpose, "design") {
+			score += 10
+		}
+	case "routing", "summarization":
+		if strings.Contains(purpose, "routing") || strings.Contains(purpose, "summarization") || strings.Contains(purpose, "classification") {
+			score += 10
+		}
+	}
+
+	// Risk level alignment
+	if risk == "high" {
+		if strings.Contains(purpose, "highest-quality") || strings.Contains(purpose, "security") || strings.Contains(purpose, "deep") {
+			score += 5
+		}
+	} else if risk == "low" {
+		if strings.Contains(purpose, "fast") || strings.Contains(purpose, "economy") || strings.Contains(purpose, "cheap") {
+			score += 5
+		}
+	}
+
+	// Cost sensitivity
+	if strings.ToLower(req.CostSensitivity) == "high" {
+		if strings.Contains(purpose, "economy") || strings.Contains(purpose, "cheap") {
+			score += 3
+		}
+	}
+
+	// Evidence needs
+	if strings.ToLower(req.EvidenceNeeds) == "full" {
+		if strings.Contains(purpose, "highest-quality") || strings.Contains(purpose, "security") {
+			score += 3
+		}
+	}
+
+	return score
+}
+
+func buildFallbackChain(registry catalog.ModelRegistry, start catalog.ModelDefinition) []string {
+	var chain []string
+	seen := map[string]struct{}{start.Alias: {}}
+	current := start.FallbackAlias
+	for current != nil && *current != "" {
+		if _, ok := seen[*current]; ok {
+			break // cycle detected
+		}
+		seen[*current] = struct{}{}
+		chain = append(chain, *current)
+		// Find next fallback
+		found := false
+		for _, m := range registry.Models {
+			if m.Alias == *current {
+				current = m.FallbackAlias
+				found = true
+				break
+			}
+		}
+		if !found {
+			break
+		}
+	}
+	return chain
+}
