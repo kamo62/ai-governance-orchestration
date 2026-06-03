@@ -745,7 +745,8 @@ func (cfg Config) bearerTokenForURL(rawURL string) string {
 func isAdminRoute(rawURL string) bool {
 	parsed, err := url.Parse(rawURL)
 	if err == nil {
-		return strings.HasPrefix(parsed.Path, "/v1/admin/")
+		path := parsed.EscapedPath()
+		return path == "/v1/admin" || strings.Contains(path, "/v1/admin/")
 	}
 	return strings.Contains(rawURL, "/v1/admin/")
 }

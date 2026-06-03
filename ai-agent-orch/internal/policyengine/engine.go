@@ -66,14 +66,16 @@ func (NativeEngine) Evaluate(_ context.Context, req Request) (Decision, error) {
 	}
 
 	// 1. Classification ceiling
-	if req.ClassificationMax != "" {
-		exceeds, err := classificationExceedsMax(req.Classification, req.ClassificationMax)
-		if err != nil {
-			return Decision{Allowed: false, Reason: err.Error(), Engine: "native", DecisionID: decision.DecisionID}, nil
+	exceeds, err := classificationExceedsMax(req.Classification, req.ClassificationMax)
+	if err != nil {
+		return Decision{Allowed: false, Reason: err.Error(), Engine: "native", DecisionID: decision.DecisionID}, nil
+	}
+	if exceeds {
+		max := strings.TrimSpace(req.ClassificationMax)
+		if max == "" {
+			max = "internal"
 		}
-		if exceeds {
-			return Decision{Allowed: false, Reason: fmt.Sprintf("classification %s exceeds max %s", req.Classification, req.ClassificationMax), Engine: "native", DecisionID: decision.DecisionID}, nil
-		}
+		return Decision{Allowed: false, Reason: fmt.Sprintf("classification %s exceeds max %s", req.Classification, max), Engine: "native", DecisionID: decision.DecisionID}, nil
 	}
 
 	// 2. Secret detection

@@ -45,7 +45,12 @@ export function normalizeGovernanceUrl(value?: string): string {
     }
 
     const withProtocol = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
-    const url = new URL(withProtocol);
+    let url: URL;
+    try {
+        url = new URL(withProtocol);
+    } catch {
+        throw new Error('Governance URL must be a valid http or https URL.');
+    }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
         throw new Error('Governance URL must use http or https.');
     }

@@ -23,6 +23,7 @@ import {
     workspacePathParts,
 } from './bridgeWorkflow';
 import {
+    DEFAULT_CONTEXT_CHAR_LIMIT,
     WorkspacePromptContext,
     buildContextualPrompt,
     contextSummary,
@@ -420,7 +421,7 @@ async function collectWorkspacePromptContext(outputChannel: vscode.OutputChannel
             context.selectedText = editor.document.getText(editor.selection);
             context.selectedRange = `${editor.selection.start.line + 1}-${editor.selection.end.line + 1}`;
         } else {
-            context.activeFileExcerpt = editor.document.getText().slice(0, 12000);
+            context.activeFileExcerpt = editor.document.getText().slice(0, DEFAULT_CONTEXT_CHAR_LIMIT);
         }
     }
 

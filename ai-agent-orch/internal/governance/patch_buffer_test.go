@@ -86,3 +86,16 @@ func TestPatchBufferRejectsUnsafePathAndSecrets(t *testing.T) {
 		t.Fatal("expected secret content to be rejected")
 	}
 }
+
+func TestPatchBufferAllowsRemovingSecretFromOriginalContent(t *testing.T) {
+	buffer := NewPatchBuffer()
+
+	payload := `{"protocolVersion":1,"patchId":"patch_remediate","sessionId":"sess_patch","files":[{"path":"safe.txt","action":"update","originalContent":"OPENROUTER_API_KEY=sk-or-v1-test1234567890","newContent":"OPENROUTER_API_KEY="}]}`
+	sanitized, err := buffer.Store(context.Background(), "sess_patch", payload)
+	if err != nil {
+		t.Fatalf("expected remediation patch to be allowed, got %v", err)
+	}
+	if strings.Contains(sanitized, "sk-or-v1") {
+		t.Fatalf("sanitized remediation patch leaked original content: %s", sanitized)
+	}
+}

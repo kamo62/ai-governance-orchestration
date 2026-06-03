@@ -107,6 +107,30 @@ func TestRouterFallbackChain(t *testing.T) {
 	}
 }
 
+func TestRouterFallbackChainFiltersByClassification(t *testing.T) {
+	publicFallback := "public-only"
+	internalFallback := "internal-ok"
+	r := New(catalog.ModelRegistry{
+		Models: []catalog.ModelDefinition{
+			{Alias: "coding-primary", Provider: "openrouter", ModelID: "m1", FallbackAlias: &publicFallback, AllowedClassifications: []string{"public", "internal"}},
+			{Alias: "public-only", Provider: "openrouter", ModelID: "m2", FallbackAlias: &internalFallback, AllowedClassifications: []string{"public"}},
+			{Alias: "internal-ok", Provider: "openrouter", ModelID: "m3", AllowedClassifications: []string{"internal"}},
+		},
+	})
+
+	decision, err := r.Route(context.Background(), Request{
+		TaskType:       "coding",
+		Classification: "internal",
+		PreferredAlias: "coding-primary",
+	})
+	if err != nil {
+		t.Fatalf("route failed: %v", err)
+	}
+	if len(decision.FallbackChain) != 0 {
+		t.Fatalf("expected public fallback to be excluded, got %v", decision.FallbackChain)
+	}
+}
+
 func TestRouterResolve(t *testing.T) {
 	r := New(catalog.ModelRegistry{
 		Models: []catalog.ModelDefinition{
@@ -138,13 +162,4 @@ func TestRouterAliasesFiltered(t *testing.T) {
 	if len(aliases) != 1 || aliases[0].Alias != "internal-ok" {
 		t.Fatalf("expected 1 internal alias, got %v", aliases)
 	}
-}
-
-func contains(slice []string, substr string) bool {
-	for _, s := range slice {
-		if strings.Contains(s, substr) {
-			return true
-		}
-	}
-	return false
 }

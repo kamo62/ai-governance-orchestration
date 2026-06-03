@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -154,7 +153,7 @@ func main() {
 
 	// Centralized auth middleware with explicit public allow-list.
 	// Internal proxy endpoints use service-token auth inside their own handlers.
-	publicPaths := []string{"/mcp/healthz", "/readyz", "/healthz", "/internal/v1/model/", "/internal/v1/mcp/"}
+	publicPaths := []string{"/mcp/healthz", "/readyz", "/healthz", "/metrics", "/internal/v1/model/", "/internal/v1/mcp/"}
 	authHandler := governance.AuthMiddleware(sessionService, publicPaths)(handler)
 
 	wrappedHandler := logRequestLatency(authHandler)
@@ -177,6 +176,9 @@ func main() {
 	// Model Compatibility Gateway (Phase 1G + 1J).
 	var gatewaySrv *http.Server
 	if cfg.RuntimeToken != "" {
+		if sessionStore == nil {
+			log.Fatal("model compatibility gateway requires durable session storage; configure a SQLite audit path")
+		}
 		modelRegistry, err := catalog.LoadModelRegistry(cfg.CatalogRoot)
 		if err != nil {
 			log.Printf("model registry load failed: %v", err)
@@ -192,11 +194,12 @@ func main() {
 					AppTitle: envOrDefault("OPENROUTER_APP_TITLE", "ai-agent-orch-local"),
 				}),
 				Audit: auditStore,
-				ValidateSession: func(ctx context.Context, sessionID string) error {
-					if !sessionService.SessionExists(ctx, sessionID) {
-						return errors.New("session not found")
+				LookupSession: func(ctx context.Context, sessionID string) (modelgateway.SessionInfo, error) {
+					record, err := sessionService.SessionRecord(ctx, sessionID)
+					if err != nil {
+						return modelgateway.SessionInfo{}, err
 					}
-					return nil
+					return modelgateway.SessionInfo{Classification: record.Classification}, nil
 				},
 			})
 			gatewaySrv = &http.Server{

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -18,15 +19,18 @@ import (
 )
 
 type fakeChatClient struct {
-	resp openrouter.ChatCompletionResponse
-	err  error
+	resp        openrouter.ChatCompletionResponse
+	err         error
+	lastRequest openrouter.ChatCompletionRequest
 }
 
-func (f *fakeChatClient) ChatCompletion(_ context.Context, _ openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
+func (f *fakeChatClient) ChatCompletion(_ context.Context, req openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
+	f.lastRequest = req
 	return f.resp, f.err
 }
 
-func (f *fakeChatClient) ChatCompletionStream(_ context.Context, _ openrouter.ChatCompletionRequest) (io.ReadCloser, error) {
+func (f *fakeChatClient) ChatCompletionStream(_ context.Context, req openrouter.ChatCompletionRequest) (io.ReadCloser, error) {
+	f.lastRequest = req
 	return nil, f.err
 }
 
@@ -182,6 +186,35 @@ func TestGatewayChatCompletionsInvalidAlias(t *testing.T) {
 	}
 }
 
+func TestGatewayChatCompletionsIgnoresCallerClassificationHeader(t *testing.T) {
+	g := NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.New(catalog.ModelRegistry{
+			Models: []catalog.ModelDefinition{
+				{Alias: "public-only", Provider: "openrouter", ModelID: "m-public", AllowedClassifications: []string{"public"}},
+				{Alias: "coding-primary", Provider: "openrouter", ModelID: "m-internal", AllowedClassifications: []string{"internal"}},
+			},
+		}),
+		OpenRouter: &fakeChatClient{},
+		LookupSession: func(context.Context, string) (SessionInfo, error) {
+			return SessionInfo{Classification: "internal"}, nil
+		},
+	})
+
+	body := []byte(`{"model":"public-only","messages":[{"role":"user","content":"hello"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-test-token")
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_internal")
+	req.Header.Set("X-AI-Orch-Classification", "public")
+	rec := httptest.NewRecorder()
+
+	g.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 when session classification disallows alias, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestGatewayResponsesSuccess(t *testing.T) {
 	g := newTestGateway()
 	body := []byte(`{"model":"coding-primary","input":[{"role":"user","content":"hello"}]}`)
@@ -221,6 +254,8 @@ func TestGatewayResponsesRequiresSessionID(t *testing.T) {
 }
 
 func TestGatewayStreamTranslatesChunks(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	streamClient := &streamFakeClient{}
 	g := NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
 		Router: router.New(catalog.ModelRegistry{
@@ -228,7 +263,8 @@ func TestGatewayStreamTranslatesChunks(t *testing.T) {
 				{Alias: "coding-primary", Provider: "openrouter", ModelID: "m1", AllowedClassifications: []string{"public", "internal"}},
 			},
 		}),
-		OpenRouter: &streamFakeClient{},
+		OpenRouter: streamClient,
+		Audit:      auditStore,
 		NewID:      func(prefix string) string { return prefix + "_test" },
 	})
 
@@ -247,15 +283,34 @@ func TestGatewayStreamTranslatesChunks(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "coding-primary") {
 		t.Fatalf("expected alias in stream chunks, got: %s", rec.Body.String())
 	}
+	if !streamClient.lastRequest.Stream {
+		t.Fatal("expected upstream stream request to set stream=true")
+	}
+	events, err := auditStore.EventsBySession(context.Background(), "sess_model_gateway")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one stream completion audit event, got %d", len(events))
+	}
+	if events[0].EventType != "model.gateway_stream.completed" {
+		t.Fatalf("expected stream completion audit, got %q", events[0].EventType)
+	}
+	if events[0].ResponseSHA256 == "" {
+		t.Fatal("expected response hash on stream completion audit")
+	}
 }
 
-type streamFakeClient struct{}
+type streamFakeClient struct {
+	lastRequest openrouter.ChatCompletionRequest
+}
 
 func (s *streamFakeClient) ChatCompletion(_ context.Context, _ openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
 	return openrouter.ChatCompletionResponse{}, nil
 }
 
-func (s *streamFakeClient) ChatCompletionStream(_ context.Context, _ openrouter.ChatCompletionRequest) (io.ReadCloser, error) {
+func (s *streamFakeClient) ChatCompletionStream(_ context.Context, req openrouter.ChatCompletionRequest) (io.ReadCloser, error) {
+	s.lastRequest = req
 	data := `data: {"id":"chunk1","object":"chat.completion.chunk","model":"m1","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"}}]}` + "\n\n" +
 		`data: [DONE]` + "\n\n"
 	return io.NopCloser(strings.NewReader(data)), nil

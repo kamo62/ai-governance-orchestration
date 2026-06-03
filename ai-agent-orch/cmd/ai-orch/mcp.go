@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"ai-agent-orch/internal/appversion"
 	"ai-agent-orch/internal/mcpgateway"
 )
 
@@ -20,7 +22,7 @@ func handleMCPStart(ctx context.Context, cfg Config, args []string) {
 	port := fs.String("port", "18081", "HTTP port (for http transport)")
 	_ = fs.Parse(args)
 
-	mcp := mcpgateway.NewServer("ai-orch-mcp", "0.4.0-alpha")
+	mcp := mcpgateway.NewServer("ai-orch-mcp", appversion.Version)
 	gatewayCfg := &mcpgateway.GatewayConfig{
 		GovernanceURL: cfg.GovernanceURL,
 		DevToken:      cfg.Token,
@@ -48,7 +50,12 @@ func handleMCPStart(ctx context.Context, cfg Config, args []string) {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		fmt.Println("\nShutting down MCP gateway...")
-		server.Shutdown(ctx)
+		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			fmt.Fprintf(os.Stderr, "shutdown error: %v\n", err)
+			os.Exit(1)
+		}
 
 	case "stdio":
 		stdio := mcpgateway.NewStdioTransport(mcp)

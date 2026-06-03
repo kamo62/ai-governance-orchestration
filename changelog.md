@@ -33,6 +33,16 @@ Release impact: Minor because this adds first-run Bridge onboarding plus local g
 - **Made self-reported MCP evidence honest**: external tool/model self-report tools now surface persistence failures instead of claiming evidence was recorded when the Governance Shell call failed.
 - **Expanded CI coverage**: GitHub Actions now runs Bridge Bun install, tests, typecheck, lint and compile alongside Go build, vet and tests.
 - **Removed accidental nested Go module metadata**: the VS Code Bridge no longer contains a stray `go.mod`.
+- **Added policy-engine boundary tests**: direct policyengine coverage now exercises classification ceilings, secret-pattern detection, command allow-list permissions, required permissions, and tool-loop cap behaviour.
+- **Guaranteed critical ACP runtime events**: patch, done, and error events now use a blocking send path with cancellation awareness, while non-critical stream chatter remains best-effort.
+- **Required explicit ACP workspaces**: ACP runtime startup now fails closed when no workspace path is configured instead of defaulting to the Governance Shell process directory.
+- **Bound model gateway routing to durable sessions**: OpenAI-compatible model calls now derive classification from the stored session record, require durable session storage when the runtime gateway is enabled, and ignore caller-supplied classification headers for routing.
+- **Hardened streaming model calls**: OpenRouter streaming requests now send `stream: true`, use a no-overall-timeout streaming client, accept both `data:` and `data: ` SSE prefixes, and audit stream completion or failure with hashes.
+- **Hardened local MCP gateway plumbing**: MCP HTTP transport now uses loopback Host enforcement, request-size caps, cryptographically random SSE session IDs, and stdio reads that support large final JSON-RPC lines without a trailing newline.
+- **Fixed MCP evidence and path handling**: self-reported MCP evidence now posts to `/v1/evidence`, and MCP session IDs are escaped before use in Governance Shell URL paths.
+- **Tightened patch-buffer remediation behaviour**: patch proposals may remove secrets from pre-existing original content, but proposed new content is still rejected when it contains secret patterns.
+- **Improved local CI and image hardening**: GitHub Actions and Docker builds now use Go `1.26.4`; CI also pins `govulncheck`, disables persistent checkout credentials, and declares read-only repository permissions.
+- **Aligned Bridge package and typechecks**: the Bridge package version now matches `v0.6.0-alpha`, malformed Governance Shell URLs return friendly errors, and Bridge tests are included in TypeScript checking.
 
 ## v0.5.4-alpha - 2026-06-02 (Patch)
 

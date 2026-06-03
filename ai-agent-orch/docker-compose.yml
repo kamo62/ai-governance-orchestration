@@ -46,8 +46,8 @@ services:
       orchestrator:
         condition: service_healthy
     ports:
-      - "${GOVERNANCE_SHELL_PORT:-18080}:8080"
-      - "${MODEL_GATEWAY_PORT:-18082}:18082"
+      - "127.0.0.1:${GOVERNANCE_SHELL_PORT:-18080}:8080"
+      - "127.0.0.1:${MODEL_GATEWAY_PORT:-18082}:18082"
     volumes: *runtime-volumes
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]

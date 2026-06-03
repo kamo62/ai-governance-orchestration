@@ -114,7 +114,11 @@ func TestACPHandle_WorkspaceAndMCPParams(t *testing.T) {
 			},
 		},
 	}
-	if got := h.workspacePath(); got != "/workspace/project" {
+	got, err := h.workspacePath()
+	if err != nil {
+		t.Fatalf("workspacePath returned error: %v", err)
+	}
+	if got != "/workspace/project" {
 		t.Fatalf("unexpected workspace path: %s", got)
 	}
 	servers := acpMCPServers(h.config.MCPEndpoints, "service-token", h.config.SessionID)
@@ -133,6 +137,52 @@ func TestACPHandle_WorkspaceAndMCPParams(t *testing.T) {
 	}
 	if headers["X-AI-Orch-Session-ID"] != "sess_acp" {
 		t.Fatalf("expected session header, got %#v", headers)
+	}
+}
+
+func TestACPHandle_WorkspacePathRequiresExplicitConfig(t *testing.T) {
+	h := &acpHandle{}
+	_, err := h.workspacePath()
+	if err == nil {
+		t.Fatal("expected missing workspace path to fail closed")
+	}
+	if err.Error() != "ACP workspace path is required" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestACPHandle_CriticalEventsWaitForBufferSpace(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := &acpHandle{
+		ctx:    ctx,
+		events: make(chan RuntimeEvent, 1),
+	}
+	h.emitEvent(RuntimeEvent{Type: "stream", Payload: "fills buffer"})
+
+	delivered := make(chan struct{})
+	go func() {
+		h.emitEvent(RuntimeEvent{Type: "patch", Payload: "critical patch"})
+		close(delivered)
+	}()
+
+	select {
+	case <-delivered:
+		t.Fatal("critical event should wait while buffer is full")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	<-h.events
+
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("critical event was not delivered after buffer space became available")
+	}
+
+	evt := <-h.events
+	if evt.Type != "patch" || evt.Payload != "critical patch" {
+		t.Fatalf("unexpected critical event: %+v", evt)
 	}
 }
 
@@ -275,12 +325,22 @@ func TestACPHandle_handleNotification_routesToSessionUpdate(t *testing.T) {
 	}
 }
 
-func TestACPHandle_emitError_nonBlocking(t *testing.T) {
+func TestACPHandle_emitNonCriticalEventNonBlocking(t *testing.T) {
 	h := &acpHandle{
 		events: make(chan RuntimeEvent, 0), // unbuffered
 		done:   make(chan struct{}),
 	}
-	// Should not block even when channel is full.
+	h.emitEvent(RuntimeEvent{Type: "stream", Payload: "drop me"})
+}
+
+func TestACPHandle_emitErrorStopsOnContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h := &acpHandle{
+		ctx:    ctx,
+		events: make(chan RuntimeEvent, 0), // unbuffered
+		done:   make(chan struct{}),
+	}
 	h.emitError("test error")
 }
 

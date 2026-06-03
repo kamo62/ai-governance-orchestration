@@ -209,6 +209,7 @@ func TestHTTPServerAuth(t *testing.T) {
 
 	// Missing auth.
 	req := httptest.NewRequest(http.MethodGet, "/mcp/v1/sse", nil)
+	req.Host = "127.0.0.1:18081"
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
@@ -217,6 +218,7 @@ func TestHTTPServerAuth(t *testing.T) {
 
 	// Wrong auth.
 	req = httptest.NewRequest(http.MethodGet, "/mcp/v1/sse", nil)
+	req.Host = "127.0.0.1:18081"
 	req.Header.Set("Authorization", "Bearer wrong")
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -232,6 +234,7 @@ func TestHTTPServerFailsClosedWhenTokenMissing(t *testing.T) {
 	hs.RegisterRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/messages", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Host = "127.0.0.1:18081"
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -247,6 +250,7 @@ func TestHTTPServerRejectsNonLocalOrigin(t *testing.T) {
 	hs.RegisterRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/messages", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Host = "127.0.0.1:18081"
 	req.Header.Set("Authorization", "Bearer secret-token")
 	req.Header.Set("Origin", "https://example.com")
 	w := httptest.NewRecorder()
@@ -264,6 +268,7 @@ func TestHTTPServerAllowsLocalOrigin(t *testing.T) {
 	hs.RegisterRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/messages", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Host = "127.0.0.1:18081"
 	req.Header.Set("Authorization", "Bearer secret-token")
 	req.Header.Set("Origin", "http://127.0.0.1:18081")
 	w := httptest.NewRecorder()
@@ -274,6 +279,23 @@ func TestHTTPServerAllowsLocalOrigin(t *testing.T) {
 	}
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "http://127.0.0.1:18081" {
 		t.Fatalf("expected local CORS echo, got %q", got)
+	}
+}
+
+func TestHTTPServerRejectsNonLocalHost(t *testing.T) {
+	s := NewServer("test-server", "1.0.0")
+	hs := NewHTTPServer(s, "secret-token")
+	mux := http.NewServeMux()
+	hs.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/messages", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Host = "example.com"
+	req.Header.Set("Authorization", "Bearer secret-token")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-local host, got %d", w.Code)
 	}
 }
 
@@ -312,6 +334,21 @@ func TestStdioTransport(t *testing.T) {
 	output := out.String()
 	if !strings.Contains(output, `"result"`) {
 		t.Fatalf("expected result in output, got: %s", output)
+	}
+}
+
+func TestStdioTransportProcessesLargeFinalLineWithoutTrailingNewline(t *testing.T) {
+	s := NewServer("test-server", "1.0.0")
+	largeParam := strings.Repeat("x", 80*1024)
+	in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"` + largeParam + `","version":"1.0.0"}}}`)
+	var out strings.Builder
+	trans := NewReadWriteTransport(s, in, &out)
+
+	if err := trans.Run(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out.String(), `"result"`) {
+		t.Fatalf("expected result for large final line, got: %s", out.String())
 	}
 }
 

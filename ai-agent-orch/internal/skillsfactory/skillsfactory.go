@@ -2,6 +2,7 @@
 package skillsfactory
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,20 +60,23 @@ func installVSCode(dir, gatewayURL string, opts InstallOptions) (*InstallResult,
 		return nil, fmt.Errorf("mkdir .vscode: %w", err)
 	}
 
-	mcpConfig := fmt.Sprintf(`{
-  "servers": {
-    "ai-orch-gateway": {
-      "command": "ai-orch",
-      "args": ["mcp", "start", "--transport", "stdio"],
-      "env": {
-        "AI_ORCH_GOVERNANCE_URL": "%s"
-      }
-    }
-  }
-}`, gatewayURL)
+	mcpConfig, err := marshalConfig(map[string]any{
+		"servers": map[string]any{
+			"ai-orch-gateway": map[string]any{
+				"command": "ai-orch",
+				"args":    []string{"mcp", "start", "--transport", "stdio"},
+				"env": map[string]string{
+					"AI_ORCH_GOVERNANCE_URL": gatewayURL,
+				},
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode mcp.json: %w", err)
+	}
 
 	mcpPath := filepath.Join(vscodeDir, "mcp.json")
-	if err := writeConfigFile(mcpPath, []byte(mcpConfig), opts); err != nil {
+	if err := writeConfigFile(mcpPath, mcpConfig, opts); err != nil {
 		return nil, fmt.Errorf("write mcp.json: %w", err)
 	}
 	result.FilesWritten = append(result.FilesWritten, mcpPath)
@@ -127,20 +131,23 @@ func installClaudeCode(dir, gatewayURL string, opts InstallOptions) (*InstallRes
 	result.FilesWritten = append(result.FilesWritten, claudePath)
 
 	// Write .mcp.json for Claude Code
-	mcpConfig := fmt.Sprintf(`{
-  "mcpServers": {
-    "ai-orch-gateway": {
-      "command": "ai-orch",
-      "args": ["mcp", "start", "--transport", "stdio"],
-      "env": {
-        "AI_ORCH_GOVERNANCE_URL": "%s"
-      }
-    }
-  }
-}`, gatewayURL)
+	mcpConfig, err := marshalConfig(map[string]any{
+		"mcpServers": map[string]any{
+			"ai-orch-gateway": map[string]any{
+				"command": "ai-orch",
+				"args":    []string{"mcp", "start", "--transport", "stdio"},
+				"env": map[string]string{
+					"AI_ORCH_GOVERNANCE_URL": gatewayURL,
+				},
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode .mcp.json: %w", err)
+	}
 
 	mcpPath := filepath.Join(dir, ".mcp.json")
-	if err := writeConfigFile(mcpPath, []byte(mcpConfig), opts); err != nil {
+	if err := writeConfigFile(mcpPath, mcpConfig, opts); err != nil {
 		return nil, fmt.Errorf("write .mcp.json: %w", err)
 	}
 	result.FilesWritten = append(result.FilesWritten, mcpPath)
@@ -190,6 +197,14 @@ func writeConfigFile(path string, content []byte, opts InstallOptions) error {
 		}
 	}
 	return os.WriteFile(path, content, 0644)
+}
+
+func marshalConfig(value any) ([]byte, error) {
+	content, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(content, '\n'), nil
 }
 
 // GenerateAGENTSMarkdown creates the AGENTS.md content.

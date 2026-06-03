@@ -185,6 +185,15 @@ func (s *SessionService) SessionExists(ctx context.Context, sessionID string) bo
 	return ok
 }
 
+// SessionRecord returns the durable session record for server-side policy
+// decisions. It deliberately does not fall back to process-local prompt state.
+func (s *SessionService) SessionRecord(ctx context.Context, sessionID string) (SessionRecord, error) {
+	if s == nil || s.sessions == nil || sessionID == "" {
+		return SessionRecord{}, errors.New("session not found")
+	}
+	return s.sessions.Get(ctx, sessionID)
+}
+
 type CreateSessionRequest struct {
 	Agent            string  `json:"agent"`
 	Classification   string  `json:"classification"`

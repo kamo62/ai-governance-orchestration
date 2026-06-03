@@ -19,7 +19,7 @@ func AuthMiddleware(svc *SessionService, publicPrefixes []string) func(http.Hand
 					return
 				}
 			}
-			if strings.HasPrefix(path, "/v1/admin/") {
+			if path == "/v1/admin" || strings.HasPrefix(path, "/v1/admin/") {
 				if !svc.RequireAdminRequest(w, r) {
 					return
 				}

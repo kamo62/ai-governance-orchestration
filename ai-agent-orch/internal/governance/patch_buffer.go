@@ -73,9 +73,6 @@ func (b *PatchBuffer) Store(ctx context.Context, sessionID string, payload strin
 		if findings := policyengine.DetectSecrets(file.NewContent); len(findings) > 0 {
 			return "", fmt.Errorf("secret detected in patch content: %s", strings.Join(findings, ","))
 		}
-		if findings := policyengine.DetectSecrets(file.OriginalContent); len(findings) > 0 {
-			return "", fmt.Errorf("secret detected in original patch content: %s", strings.Join(findings, ","))
-		}
 		if file.NewContent != "" {
 			file.ProposedContentHash = sha256Hex([]byte(file.NewContent))
 		}

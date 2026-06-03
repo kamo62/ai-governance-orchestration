@@ -1,13 +1,17 @@
 package mcpgateway
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"sync"
-	"time"
+	"sync/atomic"
 
 	"ai-agent-orch/internal/httpauth"
 )
@@ -59,7 +63,7 @@ func (h *HTTPServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !h.allowOrigin(w, r) {
+	if !h.allowLocalRequest(w, r) {
 		return
 	}
 	if !h.authenticate(w, r) {
@@ -103,14 +107,14 @@ func (h *HTTPServer) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !h.allowOrigin(w, r) {
+	if !h.allowLocalRequest(w, r) {
 		return
 	}
 	if !h.authenticate(w, r) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "read body", http.StatusBadRequest)
 		return
@@ -162,7 +166,7 @@ func (h *HTTPServer) authenticate(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (h *HTTPServer) handleOptions(w http.ResponseWriter, r *http.Request) {
-	if !h.allowOrigin(w, r) {
+	if !h.allowLocalRequest(w, r) {
 		return
 	}
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -170,7 +174,11 @@ func (h *HTTPServer) handleOptions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *HTTPServer) allowOrigin(w http.ResponseWriter, r *http.Request) bool {
+func (h *HTTPServer) allowLocalRequest(w http.ResponseWriter, r *http.Request) bool {
+	if !isLocalHost(r.Host) {
+		http.Error(w, "host not allowed", http.StatusForbidden)
+		return false
+	}
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true
@@ -182,6 +190,26 @@ func (h *HTTPServer) allowOrigin(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Vary", "Origin")
 	return true
+}
+
+func isLocalHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	u := host
+	if strings.HasPrefix(u, "[") {
+		if parsed, err := url.Parse("http://" + u); err == nil {
+			u = parsed.Hostname()
+		}
+	} else if parsed, err := url.Parse("http://" + u); err == nil {
+		u = parsed.Hostname()
+	}
+	switch u {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return false
+	}
 }
 
 func isLocalOrigin(origin string) bool {
@@ -204,5 +232,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func generateSessionID() string {
-	return fmt.Sprintf("sess_%d", time.Now().UnixNano())
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "sess_fallback_" + strconv.FormatUint(fallbackSessionIDCounter.Add(1), 16)
+	}
+	return "sess_" + hex.EncodeToString(b[:])
 }
+
+var fallbackSessionIDCounter atomic.Uint64

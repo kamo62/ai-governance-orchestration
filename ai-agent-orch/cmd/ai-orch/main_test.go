@@ -99,6 +99,15 @@ func TestDoRequestUsesAdminTokenForAdminRoutes(t *testing.T) {
 	}
 }
 
+func TestIsAdminRouteHandlesBasePathProxies(t *testing.T) {
+	if !isAdminRoute("https://example.test/governance/v1/admin/killswitch") {
+		t.Fatal("expected base-path admin route to be detected")
+	}
+	if isAdminRoute("https://example.test/governance/v1/agents") {
+		t.Fatal("did not expect user route to be treated as admin")
+	}
+}
+
 func TestDoRequestUsesDeveloperTokenForUserRoutes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/agents" {

@@ -62,7 +62,7 @@ ai-orch mcp doctor
 
 ## Authentication
 
-The gateway supports dev-token authentication via the `Authorization: Bearer <token>` header. If no token is configured, the gateway runs in unauthenticated mode (suitable for local development only).
+The HTTP/SSE gateway supports dev-token authentication via the `Authorization: Bearer <token>` header. If no token is configured, HTTP/SSE tools fail closed with `503`. Stdio mode still relies on local process boundaries and the Governance Shell token used by the tool handlers.
 
 Set the token via environment variable:
 
@@ -72,7 +72,7 @@ export AI_ORCH_DEV_TOKEN=your-token
 
 ## Architecture
 
-```
+```text
 MCP Client (VS Code, CLine, Claude Code, Codex)
     |
     | MCP protocol (HTTP/SSE or stdio)

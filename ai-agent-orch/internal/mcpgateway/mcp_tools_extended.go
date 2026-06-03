@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 )
 
 // RegisterPhase1ITools registers Phase 1I (Governed Delegation) and 1K (Self-Reported Audit) tools.
@@ -154,9 +155,10 @@ func handleDelegateGovernedWork(cfg *GatewayConfig) ToolHandler {
 		if params.ContextManifestID != "" {
 			body["context_manifest_id"] = params.ContextManifestID
 		}
+		sessionID := url.PathEscape(params.SessionID)
 
 		respBody, err := cfg.doJSON(ctx, http.MethodPost,
-			fmt.Sprintf("%s/v1/sessions/%s/messages", cfg.GovernanceURL, params.SessionID),
+			fmt.Sprintf("%s/v1/sessions/%s/messages", cfg.GovernanceURL, sessionID),
 			body, cfg.authHeaders(map[string]string{"Content-Type": "application/json"}))
 		if err != nil {
 			return nil, fmt.Errorf("delegate work failed: %w", err)
@@ -195,9 +197,10 @@ func handleRecordPatchDecision(cfg *GatewayConfig) ToolHandler {
 		if params.Reason != "" {
 			body["reason"] = params.Reason
 		}
+		sessionID := url.PathEscape(params.SessionID)
 
 		_, err := cfg.doJSON(ctx, http.MethodPost,
-			fmt.Sprintf("%s/v1/sessions/%s/patch-decision", cfg.GovernanceURL, params.SessionID),
+			fmt.Sprintf("%s/v1/sessions/%s/patch-decision", cfg.GovernanceURL, sessionID),
 			body, cfg.authHeaders(map[string]string{"Content-Type": "application/json"}))
 		if err != nil {
 			return nil, fmt.Errorf("record patch decision failed: %w", err)
@@ -215,9 +218,10 @@ func handleLookupAudit(cfg *GatewayConfig) ToolHandler {
 		if err := json.Unmarshal(args, &params); err != nil {
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
+		sessionID := url.PathEscape(params.SessionID)
 
 		respBody, err := cfg.doJSON(ctx, http.MethodGet,
-			fmt.Sprintf("%s/v1/audit/sessions/%s", cfg.GovernanceURL, params.SessionID),
+			fmt.Sprintf("%s/v1/audit/sessions/%s", cfg.GovernanceURL, sessionID),
 			nil, cfg.authHeaders(nil))
 		if err != nil {
 			return nil, fmt.Errorf("lookup audit failed: %w", err)
@@ -267,7 +271,7 @@ func handleRecordExternalToolCall(cfg *GatewayConfig) ToolHandler {
 		}
 
 		_, err := cfg.doJSON(ctx, http.MethodPost,
-			fmt.Sprintf("%s/v1/sessions/%s/evidence", cfg.GovernanceURL, params.SessionID),
+			fmt.Sprintf("%s/v1/evidence", cfg.GovernanceURL),
 			body, cfg.authHeaders(map[string]string{"Content-Type": "application/json"}))
 		if err != nil {
 			return nil, fmt.Errorf("record self-reported tool call failed: %w", err)
@@ -302,7 +306,7 @@ func handleRecordExternalModelCall(cfg *GatewayConfig) ToolHandler {
 		}
 
 		_, err := cfg.doJSON(ctx, http.MethodPost,
-			fmt.Sprintf("%s/v1/sessions/%s/evidence", cfg.GovernanceURL, params.SessionID),
+			fmt.Sprintf("%s/v1/evidence", cfg.GovernanceURL),
 			body, cfg.authHeaders(map[string]string{"Content-Type": "application/json"}))
 		if err != nil {
 			return nil, fmt.Errorf("record self-reported model call failed: %w", err)

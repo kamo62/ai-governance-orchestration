@@ -5,6 +5,7 @@ package modelgateway
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,8 +13,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
-	"time"
+	"sync/atomic"
 
 	"ai-agent-orch/internal/audit"
 	"ai-agent-orch/internal/openrouter"
@@ -28,6 +30,12 @@ type GatewayConfig struct {
 	Audit           audit.Store
 	NewID           func(prefix string) string
 	ValidateSession func(context.Context, string) error
+	LookupSession   func(context.Context, string) (SessionInfo, error)
+}
+
+// SessionInfo is server-side session context used by runtime model routing.
+type SessionInfo struct {
+	Classification string
 }
 
 // Gateway is an OpenAI-compatible model endpoint owned by the Governance Shell.
@@ -38,17 +46,14 @@ type Gateway struct {
 	audit           audit.Store
 	newID           func(prefix string) string
 	validateSession func(context.Context, string) error
+	lookupSession   func(context.Context, string) (SessionInfo, error)
 }
 
 // NewGateway creates a new model compatibility gateway.
 func NewGateway(cfg GatewayConfig) *Gateway {
 	newID := cfg.NewID
 	if newID == nil {
-		newID = func(prefix string) string {
-			// In production this should use crypto/rand.
-			// Using timestamp-based fallback for deterministic tests.
-			return prefix + "_" + fmt.Sprintf("%x", time.Now().UnixNano())[:16]
-		}
+		newID = randomID
 	}
 	return &Gateway{
 		runtimeToken:    cfg.RuntimeToken,
@@ -57,6 +62,7 @@ func NewGateway(cfg GatewayConfig) *Gateway {
 		audit:           cfg.Audit,
 		newID:           newID,
 		validateSession: cfg.ValidateSession,
+		lookupSession:   cfg.LookupSession,
 	}
 }
 
@@ -127,7 +133,8 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if !g.sessionValid(w, r, sessionID) {
+	session, ok := g.sessionInfo(w, r, sessionID)
+	if !ok {
 		return
 	}
 
@@ -151,14 +158,9 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Route alias to concrete model.
-	classification := r.Header.Get("X-AI-Orch-Classification")
-	if classification == "" {
-		classification = "internal"
-	}
 	decision, err := g.router.Route(r.Context(), router.Request{
 		TaskType:       inferTaskType(req.Messages),
-		Classification: classification,
+		Classification: session.Classification,
 		PreferredAlias: req.Model,
 	})
 	if err != nil {
@@ -206,18 +208,19 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 }
 
 func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream openrouter.ChatCompletionRequest, decision router.Decision, sessionID string, reqBody []byte) {
+	reqHash := sha256Hex(reqBody)
+	upstream.Stream = true
 	streamReader, err := g.openRouter.ChatCompletionStream(r.Context(), upstream)
 	if err != nil {
-		g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_stream", reqBody, nil, err.Error())
+		g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", err.Error())
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("stream start failed: %v", err)})
 		return
 	}
 	defer streamReader.Close()
 
-	g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_stream", reqBody, nil, "")
-
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", "streaming not supported")
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "streaming not supported"})
 		return
 	}
@@ -228,16 +231,28 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream 
 	w.WriteHeader(http.StatusOK)
 
 	scanner := bufio.NewScanner(streamReader)
+	scanner.Buffer(make([]byte, 0, 256*1024), 10*1024*1024)
+	responseHash := sha256.New()
+	done := false
 	for scanner.Scan() {
+		select {
+		case <-r.Context().Done():
+			g.auditModelCallHashes(context.Background(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", r.Context().Err().Error())
+			return
+		default:
+		}
 		line := scanner.Text()
 		if line == "" {
 			continue
 		}
 		chunk, err := openrouter.DecodeStreamChunk(line)
 		if err != nil {
-			if errors.Is(err, io.EOF) || line == "data: [DONE]" {
-				fmt.Fprintf(w, "data: [DONE]\n\n")
+			if errors.Is(err, io.EOF) {
+				frame := "data: [DONE]\n\n"
+				_, _ = responseHash.Write([]byte(frame))
+				fmt.Fprint(w, frame)
 				flusher.Flush()
+				done = true
 				break
 			}
 			continue // skip malformed lines
@@ -264,9 +279,21 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream 
 		}
 
 		data, _ := json.Marshal(openAIChunk)
-		fmt.Fprintf(w, "data: %s\n\n", data)
+		frame := fmt.Sprintf("data: %s\n\n", data)
+		_, _ = responseHash.Write([]byte(frame))
+		fmt.Fprint(w, frame)
 		flusher.Flush()
 	}
+	if err := scanner.Err(); err != nil {
+		g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", err.Error())
+		return
+	}
+	if !done {
+		g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", "stream ended before done")
+		return
+	}
+	respHash := "sha256:" + hex.EncodeToString(responseHash.Sum(nil))
+	g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.completed", reqHash, respHash, "")
 }
 
 func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
@@ -286,7 +313,8 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !g.sessionValid(w, r, sessionID) {
+	session, ok := g.sessionInfo(w, r, sessionID)
+	if !ok {
 		return
 	}
 
@@ -312,13 +340,9 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	classification := r.Header.Get("X-AI-Orch-Classification")
-	if classification == "" {
-		classification = "internal"
-	}
 	decision, err := g.router.Route(r.Context(), router.Request{
 		TaskType:       inferTaskTypeFromInput(req.Input),
-		Classification: classification,
+		Classification: session.Classification,
 		PreferredAlias: req.Model,
 	})
 	if err != nil {
@@ -373,16 +397,36 @@ func requiredSessionID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return sessionID, true
 }
 
-func (g *Gateway) sessionValid(w http.ResponseWriter, r *http.Request, sessionID string) bool {
-	if g.validateSession == nil {
-		return true
+func (g *Gateway) sessionInfo(w http.ResponseWriter, r *http.Request, sessionID string) (SessionInfo, bool) {
+	if g.lookupSession != nil {
+		info, err := g.lookupSession(r.Context(), sessionID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			return SessionInfo{}, false
+		}
+		if strings.TrimSpace(info.Classification) == "" {
+			info.Classification = "internal"
+		}
+		return info, true
 	}
-	if err := g.validateSession(r.Context(), sessionID); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
-		return false
+	if g.validateSession != nil {
+		if err := g.validateSession(r.Context(), sessionID); err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			return SessionInfo{}, false
+		}
 	}
-	return true
+	return SessionInfo{Classification: "internal"}, true
 }
+
+func randomID(prefix string) string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return prefix + "_fallback_" + strconv.FormatUint(fallbackIDCounter.Add(1), 16)
+	}
+	return prefix + "_" + hex.EncodeToString(b[:])
+}
+
+var fallbackIDCounter atomic.Uint64
 
 func (g *Gateway) authorized(r *http.Request) bool {
 	if g.runtimeToken == "" {
@@ -417,6 +461,13 @@ func (g *Gateway) auditModelCall(ctx context.Context, sessionID string, decision
 	}
 	if len(respBody) > 0 {
 		respHash = sha256Hex(respBody)
+	}
+	g.auditModelCallHashes(ctx, sessionID, decision, eventType, reqHash, respHash, errMsg)
+}
+
+func (g *Gateway) auditModelCallHashes(ctx context.Context, sessionID string, decision router.Decision, eventType string, reqHash, respHash, errMsg string) {
+	if g.audit == nil {
+		return
 	}
 	reason := ""
 	if errMsg != "" {
@@ -454,26 +505,18 @@ func inferTaskType(messages []openAIMessage) string {
 	if len(messages) == 0 {
 		return "general"
 	}
-	content := strings.ToLower(messages[len(messages)-1].Content)
-	switch {
-	case strings.Contains(content, "test") || strings.Contains(content, "spec"):
-		return "test"
-	case strings.Contains(content, "review") || strings.Contains(content, "audit"):
-		return "review"
-	case strings.Contains(content, "refactor") || strings.Contains(content, "architecture"):
-		return "architecture"
-	case strings.Contains(content, "implement") || strings.Contains(content, "code"):
-		return "coding"
-	default:
-		return "general"
-	}
+	return inferTaskTypeFromText(messages[len(messages)-1].Content)
 }
 
 func inferTaskTypeFromInput(input []openAIResponsesInput) string {
 	if len(input) == 0 {
 		return "general"
 	}
-	content := strings.ToLower(input[len(input)-1].Content)
+	return inferTaskTypeFromText(input[len(input)-1].Content)
+}
+
+func inferTaskTypeFromText(text string) string {
+	content := strings.ToLower(text)
 	switch {
 	case strings.Contains(content, "test") || strings.Contains(content, "spec"):
 		return "test"

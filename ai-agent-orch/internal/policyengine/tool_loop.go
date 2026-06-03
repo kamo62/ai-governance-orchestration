@@ -1,7 +1,10 @@
 package policyengine
 
+import "sync"
+
 // ToolLoopCounter enforces a limit on consecutive tool/MCP calls.
 type ToolLoopCounter struct {
+	mu          sync.Mutex
 	limit       int
 	consecutive int
 }
@@ -19,6 +22,8 @@ func (c *ToolLoopCounter) Observe(eventType string) bool {
 	if c == nil || c.limit <= 0 {
 		return false
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	switch eventType {
 	case "mcp_call", "tool_call", "command":
 		c.consecutive++
@@ -34,5 +39,7 @@ func (c *ToolLoopCounter) Count() int {
 	if c == nil {
 		return 0
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.consecutive
 }

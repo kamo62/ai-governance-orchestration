@@ -74,7 +74,7 @@ func (r *Router) Route(ctx context.Context, req Request) (Decision, error) {
 				decision.SelectedModelID = m.ModelID
 				decision.Provider = m.Provider
 				decision.Reasons = append(decision.Reasons, fmt.Sprintf("preferred alias %q accepted", m.Alias))
-				decision.FallbackChain = buildFallbackChain(r.registry, m)
+				decision.FallbackChain = buildFallbackChain(r.registry, m, req.Classification)
 				return decision, nil
 			}
 		}
@@ -91,7 +91,7 @@ func (r *Router) Route(ctx context.Context, req Request) (Decision, error) {
 	decision.SelectedModelID = best.ModelID
 	decision.Provider = best.Provider
 	decision.Reasons = append(decision.Reasons, fmt.Sprintf("selected by task alignment: %s", best.Purpose))
-	decision.FallbackChain = buildFallbackChain(r.registry, best)
+	decision.FallbackChain = buildFallbackChain(r.registry, best, req.Classification)
 
 	return decision, nil
 }
@@ -198,7 +198,7 @@ func scoreCandidate(m catalog.ModelDefinition, req Request) int {
 	return score
 }
 
-func buildFallbackChain(registry catalog.ModelRegistry, start catalog.ModelDefinition) []string {
+func buildFallbackChain(registry catalog.ModelRegistry, start catalog.ModelDefinition, classification string) []string {
 	var chain []string
 	seen := map[string]struct{}{start.Alias: {}}
 	current := start.FallbackAlias
@@ -207,11 +207,14 @@ func buildFallbackChain(registry catalog.ModelRegistry, start catalog.ModelDefin
 			break // cycle detected
 		}
 		seen[*current] = struct{}{}
-		chain = append(chain, *current)
 		// Find next fallback
 		found := false
 		for _, m := range registry.Models {
 			if m.Alias == *current {
+				if !m.AllowsClassification(classification) {
+					return chain
+				}
+				chain = append(chain, *current)
 				current = m.FallbackAlias
 				found = true
 				break

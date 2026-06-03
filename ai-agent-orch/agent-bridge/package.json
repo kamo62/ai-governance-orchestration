@@ -2,7 +2,7 @@
   "name": "ai-agent-bridge",
   "displayName": "AI Agent Bridge",
   "description": "Local AI agent orchestration bridge for VS Code",
-  "version": "0.4.0-alpha",
+  "version": "0.6.0-alpha",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -100,7 +100,7 @@
     "watch": "tsc -watch -p ./",
     "lint": "eslint src",
     "test": "bun test test/*.test.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit --project tsconfig.test.json",
     "package": "bunx @vscode/vsce package --out ai-agent-bridge.vsix"
   },
   "devDependencies": {

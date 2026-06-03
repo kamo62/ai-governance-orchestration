@@ -23,11 +23,12 @@ type Config struct {
 }
 
 type Client struct {
-	apiKey     string
-	baseURL    string
-	httpClient *http.Client
-	referer    string
-	appTitle   string
+	apiKey       string
+	baseURL      string
+	httpClient   *http.Client
+	streamClient *http.Client
+	referer      string
+	appTitle     string
 }
 
 type ChatClient interface {
@@ -48,6 +49,7 @@ type ChatCompletionRequest struct {
 	Temperature float64          `json:"temperature,omitempty"`
 	MaxTokens   int              `json:"max_tokens,omitempty"`
 	Reasoning   *ReasoningConfig `json:"reasoning,omitempty"`
+	Stream      bool             `json:"stream,omitempty"`
 }
 
 type ReasoningConfig struct {
@@ -83,12 +85,17 @@ func NewClient(cfg Config) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
+	streamClient := cfg.HTTPClient
+	if streamClient == nil {
+		streamClient = &http.Client{Timeout: 0}
+	}
 	return &Client{
-		apiKey:     cfg.APIKey,
-		baseURL:    baseURL,
-		httpClient: httpClient,
-		referer:    cfg.Referer,
-		appTitle:   cfg.AppTitle,
+		apiKey:       cfg.APIKey,
+		baseURL:      baseURL,
+		httpClient:   httpClient,
+		streamClient: streamClient,
+		referer:      cfg.Referer,
+		appTitle:     cfg.AppTitle,
 	}
 }
 
@@ -159,6 +166,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, request ChatCompletio
 	if len(request.Messages) == 0 {
 		return nil, errors.New("at least one message is required")
 	}
+	request.Stream = true
 	body, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("encode chat completion request: %w", err)
@@ -178,7 +186,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, request ChatCompletio
 		httpReq.Header.Set("X-Title", c.appTitle)
 	}
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.streamClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("call OpenRouter chat completions stream: %w", err)
 	}
@@ -207,11 +215,11 @@ type StreamChunk struct {
 
 // DecodeStreamChunk parses a single SSE data line into a StreamChunk.
 func DecodeStreamChunk(line string) (StreamChunk, error) {
-	const prefix = "data: "
+	const prefix = "data:"
 	if !strings.HasPrefix(line, prefix) {
 		return StreamChunk{}, fmt.Errorf("not a data line")
 	}
-	data := strings.TrimPrefix(line, prefix)
+	data := strings.TrimSpace(strings.TrimPrefix(line, prefix))
 	if data == "[DONE]" {
 		return StreamChunk{}, io.EOF
 	}

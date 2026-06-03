@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 // StdioTransport runs the MCP server over stdin/stdout.
@@ -21,10 +22,16 @@ func NewStdioTransport(mcp *Server) *StdioTransport {
 
 // Run starts reading from stdin and writing responses to stdout.
 func (t *StdioTransport) Run(ctx context.Context) error {
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		line := scanner.Text()
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		line, eof, err := readJSONRPCLine(reader)
+		if err != nil {
+			return err
+		}
 		if line == "" {
+			if eof {
+				return nil
+			}
 			continue
 		}
 
@@ -38,8 +45,10 @@ func (t *StdioTransport) Run(ctx context.Context) error {
 		if resp != nil {
 			t.writeResponse(resp)
 		}
+		if eof {
+			return nil
+		}
 	}
-	return scanner.Err()
 }
 
 func (t *StdioTransport) writeResponse(resp *Response) {
@@ -69,15 +78,14 @@ func NewReadWriteTransport(mcp *Server, r io.Reader, w io.Writer) *ReadWriteTran
 // Run processes requests from the reader and writes responses to the writer.
 func (t *ReadWriteTransport) Run(ctx context.Context) error {
 	for {
-		line, err := t.reader.ReadString('\n')
+		line, eof, err := readJSONRPCLine(t.reader)
 		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
 			return err
 		}
-		line = line[:len(line)-1] // trim newline
 		if line == "" {
+			if eof {
+				return nil
+			}
 			continue
 		}
 
@@ -91,6 +99,9 @@ func (t *ReadWriteTransport) Run(ctx context.Context) error {
 		if resp != nil {
 			t.writeResponse(resp)
 		}
+		if eof {
+			return nil
+		}
 	}
 }
 
@@ -100,4 +111,20 @@ func (t *ReadWriteTransport) writeResponse(resp *Response) {
 		return
 	}
 	fmt.Fprintln(t.writer, string(data))
+}
+
+func readJSONRPCLine(reader *bufio.Reader) (line string, eof bool, err error) {
+	line, err = reader.ReadString('\n')
+	if err != nil {
+		if err != io.EOF {
+			return "", false, err
+		}
+		if line == "" {
+			return "", true, nil
+		}
+		eof = true
+	}
+	line = strings.TrimSuffix(line, "\n")
+	line = strings.TrimSuffix(line, "\r")
+	return line, eof, nil
 }

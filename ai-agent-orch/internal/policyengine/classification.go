@@ -32,6 +32,9 @@ var SecretPatterns = []secretPattern{
 func classificationExceedsMax(classification string, max string) (bool, error) {
 	classification = strings.ToLower(strings.TrimSpace(classification))
 	max = strings.ToLower(strings.TrimSpace(max))
+	if classification == "" {
+		classification = "internal"
+	}
 	if max == "" {
 		max = "internal"
 	}

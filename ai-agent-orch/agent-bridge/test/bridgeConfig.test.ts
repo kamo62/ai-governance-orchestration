@@ -21,6 +21,10 @@ describe('Bridge configuration helpers', () => {
         expect(() => normalizeGovernanceUrl('file:///tmp/server')).toThrow('Governance URL must use http or https');
     });
 
+    test('rejects malformed governance URLs with a friendly message', () => {
+        expect(() => normalizeGovernanceUrl('http://[::1')).toThrow('Governance URL must be a valid http or https URL');
+    });
+
     test('resolves Bridge settings with SecretStorage token first', () => {
         const settings = resolveBridgeSettings({
             configuredGovernanceUrl: 'localhost:8080/',
