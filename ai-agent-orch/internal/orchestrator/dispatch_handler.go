@@ -1,8 +1,10 @@
 package orchestrator
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"ai-agent-orch/internal/audit"
 	"ai-agent-orch/internal/dispatch"
@@ -63,8 +65,12 @@ func (h *DispatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start the runtime session asynchronously.
-	handle, err := h.dispatcher.Dispatch(r.Context(), sessionID, req.Agent, req.Prompt)
+	// Start the runtime session with a bounded context that is not cancelled
+	// merely because the internal HTTP caller disconnects while the runtime is
+	// still producing governed evidence.
+	runtimeCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
+	defer cancel()
+	handle, err := h.dispatcher.Dispatch(runtimeCtx, sessionID, req.Agent, req.Prompt)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("dispatch failed: %v", err)})
 		return
@@ -100,7 +106,7 @@ func (h *DispatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Record specialist execution audit event before reporting completion.
-	if _, err := h.audit.Append(r.Context(), audit.Event{
+	if _, err := h.audit.Append(runtimeCtx, audit.Event{
 		EventID:            h.newID("evt"),
 		SessionID:          sessionID,
 		EventType:          "specialist.execution",

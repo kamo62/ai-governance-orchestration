@@ -207,4 +207,7 @@ func TestGenerateAGENTSMarkdown(t *testing.T) {
 	if !strings.Contains(md, "gateway_enforced") {
 		t.Fatal("expected gateway_enforced in markdown")
 	}
+	if !strings.Contains(md, "managed_client") {
+		t.Fatal("expected managed_client in markdown")
+	}
 }

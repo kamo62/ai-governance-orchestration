@@ -2,7 +2,7 @@
   "name": "ai-agent-bridge",
   "displayName": "AI Agent Bridge",
   "description": "Local AI agent orchestration bridge for VS Code",
-  "version": "0.6.0-alpha",
+  "version": "0.7.0-alpha",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

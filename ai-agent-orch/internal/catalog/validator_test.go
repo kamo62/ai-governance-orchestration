@@ -17,8 +17,22 @@ func TestValidateCatalogAcceptsCurrentPhase0Catalog(t *testing.T) {
 	if len(report.Agents) != 9 {
 		t.Fatalf("expected 9 agents, got %d: %#v", len(report.Agents), report.Agents)
 	}
-	if len(report.ModelAliases) != 7 {
-		t.Fatalf("expected 7 model aliases, got %d: %#v", len(report.ModelAliases), report.ModelAliases)
+	requiredAliases := []string{
+		"coding-primary",
+		"coding-balanced",
+		"coding-fast",
+		"coding-economy",
+		"router-small",
+		"smoke-deepseek-v4-flash",
+		"smoke-openai-gpt4o-mini",
+		"smoke-anthropic-haiku",
+		"smoke-deepseek-chat",
+		"coding-gpt55",
+	}
+	for _, alias := range requiredAliases {
+		if !containsString(report.ModelAliases, alias) {
+			t.Fatalf("expected model alias %q in report, got %#v", alias, report.ModelAliases)
+		}
 	}
 	if !report.HasAgent("test-generation") {
 		t.Fatalf("expected test-generation agent in report")
@@ -135,4 +149,13 @@ func TestValidateCatalogRequiresRouterCasesForTempAgents(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected missing router golden case for temp agent to fail validation")
 	}
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }

@@ -22,6 +22,9 @@ type Config struct {
 	PolicyEngine      string
 	ToolLoopMax       int
 	GatewayAddr       string // Listen address for the model compatibility gateway.
+	ModelBackend      string // native-openrouter or bifrost.
+	BifrostBaseURL    string // Base URL for the Bifrost sidecar when selected.
+	BifrostAPIKey     string // Optional Bifrost bearer token if sidecar auth is enabled.
 }
 
 func Load(args []string) (Config, error) {
@@ -56,6 +59,9 @@ func Load(args []string) (Config, error) {
 		PolicyEngine:      envOrDefault("AI_ORCH_POLICY_ENGINE", "native"),
 		ToolLoopMax:       toolLoopMax,
 		GatewayAddr:       envOrDefault("AI_ORCH_GATEWAY_ADDR", ":18082"),
+		ModelBackend:      envOrDefault("AI_ORCH_MODEL_BACKEND", "native-openrouter"),
+		BifrostBaseURL:    envOrDefault("AI_ORCH_BIFROST_BASE_URL", ""),
+		BifrostAPIKey:     envOrDefault("AI_ORCH_BIFROST_API_KEY", ""),
 	}
 
 	fs := flag.NewFlagSet("ai-agent-orch", flag.ContinueOnError)
@@ -73,6 +79,9 @@ func Load(args []string) (Config, error) {
 	fs.Float64Var(&cfg.SessionCostCapUSD, "session-cost-cap-usd", cfg.SessionCostCapUSD, "maximum estimated cost per session")
 	fs.StringVar(&cfg.PolicyEngine, "policy-engine", cfg.PolicyEngine, "policy engine adapter (native; agt is reserved)")
 	fs.IntVar(&cfg.ToolLoopMax, "consecutive-tool-call-max", cfg.ToolLoopMax, "maximum consecutive tool/MCP calls before output")
+	fs.StringVar(&cfg.ModelBackend, "model-backend", cfg.ModelBackend, "model backend adapter (native-openrouter or bifrost)")
+	fs.StringVar(&cfg.BifrostBaseURL, "bifrost-base-url", cfg.BifrostBaseURL, "Bifrost sidecar base URL")
+	fs.StringVar(&cfg.BifrostAPIKey, "bifrost-api-key", cfg.BifrostAPIKey, "optional Bifrost sidecar bearer token")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}

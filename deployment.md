@@ -12,10 +12,11 @@ The local Compose stack runs:
 
 - `governance-shell`: public local API and policy boundary.
 - `orchestrator`: internal runtime orchestration service.
+- `bifrost`: internal OSS provider gateway sidecar used by the Governance Shell by default.
 - optional MCP stub services.
 - optional tools such as `catalog-validator`, `openrouter-smoke`, and `ai-orch`.
 
-The Orchestrator is intentionally internal to Docker Compose. OpenRouter credentials belong to the Governance Shell, and runtime model calls go through the internal model proxy.
+The Orchestrator is intentionally internal to Docker Compose. Provider credentials belong to the Governance Shell or the Bifrost sidecar, never to Orchestrator, the VS Code Bridge, MCP clients or runtime containers. Runtime model calls go through the ai-orch model gateway; they do not call Bifrost or provider APIs directly.
 
 ## Prerequisites
 
@@ -27,14 +28,34 @@ The Orchestrator is intentionally internal to Docker Compose. OpenRouter credent
 
 Keep local secrets in the ignored root `.env.dev` file. Do not commit it.
 
-Expected `.env.dev` fields:
+For the default Compose path, the only required secret is:
 
 ```sh
 OPENROUTER_API_KEY=...
+```
+
+The local tokens and ports have Compose defaults. Add these fields only when you want to override those defaults locally:
+
+```sh
 AI_ORCH_DEV_TOKEN=local-dev
 AI_ORCH_ADMIN_TOKEN=local-admin
 AI_ORCH_SERVICE_TOKEN=local-service-token
 AI_ORCH_RUNTIME_TOKEN=local-runtime-token
+AI_ORCH_MODEL_GATEWAY_URL=http://127.0.0.1:18082
+AI_ORCH_MODEL_BACKEND=bifrost
+AI_ORCH_BIFROST_BASE_URL=http://bifrost:8080
+BIFROST_ENCRYPTION_KEY=local-bifrost-enc-key-32-bytes!!
+```
+
+Optional provider credentials for Bifrost can be added only when you are deliberately testing those paths:
+
+```sh
+OPENAI_API_KEY=...
+ANTHROPIC_API_KEY=...
+DEEPSEEK_API_KEY=...
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+AWS_REGION=...
 ```
 
 ## Fast Local Verification
@@ -64,6 +85,7 @@ When Docker changes are involved, clean old local Compose images first:
 ```sh
 cd ai-agent-orch
 docker compose --env-file ../.env.dev --profile tools --profile phase2 down --remove-orphans --rmi local
+docker compose --env-file ../.env.dev pull bifrost
 docker compose --env-file ../.env.dev --profile tools build governance-shell orchestrator catalog-validator openrouter-smoke ai-orch
 ```
 
@@ -73,7 +95,7 @@ Run the containerised catalogue validator:
 docker compose --env-file ../.env.dev --profile tools run --rm catalog-validator
 ```
 
-Run the OpenRouter provider smoke test:
+Run the direct OpenRouter provider smoke test:
 
 ```sh
 docker compose --env-file ../.env.dev --profile tools run --rm openrouter-smoke \
@@ -81,6 +103,8 @@ docker compose --env-file ../.env.dev --profile tools run --rm openrouter-smoke 
   -model-alias smoke-deepseek-v4-flash \
   -prompt 'Reply with exactly: docker-smoke-ok'
 ```
+
+That smoke test intentionally bypasses Bifrost. It checks provider availability, not the full governed orchestration path.
 
 ## Start The Local Services
 
@@ -93,6 +117,7 @@ Check readiness:
 
 ```sh
 curl http://127.0.0.1:18080/readyz
+docker compose --env-file ../.env.dev exec bifrost wget -qO- http://127.0.0.1:8080/health
 ```
 
 Create a governed session:
@@ -116,7 +141,7 @@ If `/readyz` returns HTML, or a different JSON service name, the Bridge is point
 
 ## CLI Smoke
 
-The `ai-orch` CLI can exercise the governed path without VS Code.
+The `ai-orch` CLI can exercise the governed path without VS Code. With the default Compose settings, this path uses the Bifrost backend through the Governance Shell.
 
 ```sh
 docker compose --env-file ../.env.dev --profile tools run --rm ai-orch \
@@ -148,6 +173,10 @@ Then run the CLI smoke command above.
 
 The local model compatibility gateway is exposed separately from the Governance Shell API. It is for runtimes that expect OpenAI-compatible model endpoints.
 
+The model compatibility gateway is the only runtime-facing model endpoint. Bifrost is private Compose plumbing behind the Governance Shell and has no host port by default.
+
+The local Bifrost config is intentionally headless and no-content-logging. ai-orch owns the audit trail; Bifrost should not become a second raw prompt/response store in this phase.
+
 Start the local services:
 
 ```sh
@@ -175,6 +204,43 @@ curl -H "Authorization: Bearer local-runtime-token" \
 The `X-AI-Orch-Session-ID` header is required for model generation endpoints. `/v1/models` can be called without a session, but `/v1/chat/completions` and `/v1/responses` must attach to a governed session so audit evidence is correlated. The local Governance Shell validates that the session exists before model generation; stronger runtime-session token binding is a later hardening step.
 
 The model gateway uses `AI_ORCH_RUNTIME_TOKEN`, not `AI_ORCH_DEV_TOKEN`. Runtime tokens belong to runtime adapters. Developer tokens belong to the CLI, VS Code Bridge and MCP tools.
+
+Backend selection is controlled by:
+
+```sh
+AI_ORCH_MODEL_BACKEND=bifrost
+AI_ORCH_BIFROST_BASE_URL=http://bifrost:8080
+```
+
+Use `AI_ORCH_MODEL_BACKEND=native-openrouter` only when you intentionally want to bypass the Bifrost sidecar and use the native OpenRouter backend.
+
+### Bifrost Provider Routing Smoke
+
+The current local Bifrost config supports these governed smoke aliases:
+
+| Alias | Provider | Purpose |
+| --- | --- | --- |
+| `smoke-openai-gpt4o-mini` | `openai` | Direct OpenAI credential route through Bifrost. |
+| `smoke-anthropic-haiku` | `anthropic` | Direct Anthropic Haiku credential route through Bifrost. |
+| `smoke-deepseek-chat` | `deepseek` | Direct DeepSeek credential route through Bifrost. |
+| `smoke-deepseek-v4-flash` | `openrouter` | OpenRouter-routed DeepSeek provider-health path. |
+
+For direct model-gateway checks, create a governed session first, then call `/v1/chat/completions` with one of the aliases and the returned session ID.
+
+For a full CLI orchestration smoke with a temporary provider override, recreate Orchestrator with the alias and then run the CLI tool without recreating dependencies:
+
+```sh
+AI_ORCH_MODEL_ALIAS_OVERRIDE=smoke-openai-gpt4o-mini \
+GOVERNANCE_SHELL_PORT=19080 \
+MODEL_GATEWAY_PORT=19082 \
+docker compose --env-file ../.env.dev up -d --force-recreate orchestrator governance-shell
+
+GOVERNANCE_SHELL_PORT=19080 \
+MODEL_GATEWAY_PORT=19082 \
+docker compose --env-file ../.env.dev --profile tools run --no-deps --rm ai-orch ai-orch smoke
+```
+
+Remove the `AI_ORCH_MODEL_ALIAS_OVERRIDE` environment value and recreate Orchestrator again when you want to return to the default agent model.
 
 ## MCP Gateway
 
@@ -290,6 +356,7 @@ Use this checklist when validating the local agent experience. These are the wor
 | Patch decision | Bridge `Apply`, `Mark Partially Applied`, or `Reject`; CLI smoke auto-decision | Records an explicit patch decision against `/v1/sessions/{id}/patch-decision`. |
 | Audit lookup | `AI Agent: Show Audit Link` or CLI audit step | Fetches the governed session audit trail without exposing the raw prompt or provider secrets. |
 | Provider health | `openrouter-smoke` | Tests OpenRouter availability directly; this is provider health, not the full governed orchestration path. |
+| Bifrost health | Compose `bifrost` health check | Confirms the internal provider-plumbing sidecar is reachable by the Governance Shell. |
 
 Current context shape: the Bridge packages the current workspace name, git branch and origin remote where available, active file metadata, and either the selected text or a capped active-file excerpt. It does not scan the whole repo or automatically fill the model context window with every file.
 

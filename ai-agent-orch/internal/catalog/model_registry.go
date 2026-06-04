@@ -46,24 +46,35 @@ func LoadModelRegistry(root string) (ModelRegistry, error) {
 }
 
 func ResolveOpenRouterModelID(root string, alias string) (string, error) {
+	model, err := ResolveModelDefinition(root, alias)
+	if err != nil {
+		return "", err
+	}
+	if model.Provider != "openrouter" {
+		return "", fmt.Errorf("model alias %q uses provider %q, expected openrouter", alias, model.Provider)
+	}
+	return model.ModelID, nil
+}
+
+func ResolveModelDefinition(root string, alias string) (ModelDefinition, error) {
 	if alias == "" {
-		return "", errors.New("model alias is required")
+		return ModelDefinition{}, errors.New("model alias is required")
 	}
 
 	registry, err := LoadModelRegistry(root)
 	if err != nil {
-		return "", err
+		return ModelDefinition{}, err
 	}
 	for _, model := range registry.Models {
 		if model.Alias == alias {
-			if model.Provider != "openrouter" {
-				return "", fmt.Errorf("model alias %q uses provider %q, expected openrouter", alias, model.Provider)
+			if model.Provider == "" {
+				return ModelDefinition{}, fmt.Errorf("model alias %q has no provider", alias)
 			}
 			if model.ModelID == "" {
-				return "", fmt.Errorf("model alias %q has no model_id", alias)
+				return ModelDefinition{}, fmt.Errorf("model alias %q has no model_id", alias)
 			}
-			return model.ModelID, nil
+			return model, nil
 		}
 	}
-	return "", fmt.Errorf("model alias %q not found", alias)
+	return ModelDefinition{}, fmt.Errorf("model alias %q not found", alias)
 }

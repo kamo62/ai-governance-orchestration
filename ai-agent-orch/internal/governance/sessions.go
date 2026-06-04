@@ -392,6 +392,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
+		TrustLevel:         trustLevelFromRequest(r),
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
@@ -447,6 +448,22 @@ func actorFromContext(ctx context.Context) string {
 		return info.Subject
 	}
 	return "local-dev"
+}
+
+func trustLevelFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(r.Header.Get("X-AI-Orch-Trust-Level"))) {
+	case "gateway_enforced":
+		return "gateway_enforced"
+	case "managed_client":
+		return "managed_client"
+	case "self_reported":
+		return "self_reported"
+	default:
+		return ""
+	}
 }
 
 func (s *SessionService) appendDeniedWithCost(ctx context.Context, reason string, classification string, estimatedCostUSD float64, costCapUSD float64) error {

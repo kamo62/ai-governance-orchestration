@@ -398,8 +398,12 @@ func TestGatewayConfigDoctor(t *testing.T) {
 }
 
 func TestGatewayConfigStartSession(t *testing.T) {
+	var gotTrustLevel string
+	var gotClient string
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/sessions" {
+			gotTrustLevel = r.Header.Get("X-AI-Orch-Trust-Level")
+			gotClient = r.Header.Get("X-AI-Orch-Client")
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]string{"session_id": "sess_123", "status": "created"})
 			return
@@ -443,6 +447,12 @@ func TestGatewayConfigStartSession(t *testing.T) {
 	}
 	if !strings.Contains(result.Content[0].Text, "sess_123") {
 		t.Fatalf("expected session ID in response, got: %s", result.Content[0].Text)
+	}
+	if gotTrustLevel != "gateway_enforced" {
+		t.Fatalf("expected gateway_enforced trust header, got %q", gotTrustLevel)
+	}
+	if gotClient != "ai-orch-mcp" {
+		t.Fatalf("expected ai-orch-mcp client header, got %q", gotClient)
 	}
 }
 

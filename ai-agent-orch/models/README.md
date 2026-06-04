@@ -41,7 +41,7 @@ models:
     fallback_alias: null
 ```
 
-The registry also contains smoke-test aliases such as `smoke-deepseek-v4-flash` and `coding-gpt55`. Treat those as local validation aliases, not default routing policy.
+The registry also contains smoke-test aliases such as `smoke-openai-gpt4o-mini`, `smoke-anthropic-haiku` for direct Anthropic Haiku validation, `smoke-deepseek-chat`, `smoke-deepseek-v4-flash`, and `coding-gpt55`. Treat those as local validation aliases, not default routing policy.
 
 ## Rules
 
@@ -59,11 +59,11 @@ The registry also contains smoke-test aliases such as `smoke-deepseek-v4-flash` 
 
 ## Provider Strategy
 
-**Phase 1 (Current):** OpenRouter provides a single OpenAI-compatible API across multiple providers.
+**Phase 1 (Current):** The Governance Shell owns the model-backend decision. Compose defaults to Bifrost OSS as the provider-plumbing sidecar, with native OpenRouter kept as a fallback and direct provider-health smoke path.
 
-**Phase 1G.2:** Add an `ai-orch` model compatibility gateway for runtime-facing OpenAI-compatible endpoints such as `/v1/models`, `/v1/chat/completions`, `/v1/responses`, and streaming. Runtimes such as OpenCode should call governed aliases through that gateway instead of receiving provider API keys.
+**Phase 1G.2:** The `ai-orch` model compatibility gateway exposes runtime-facing OpenAI-compatible endpoints such as `/v1/models`, `/v1/chat/completions`, `/v1/responses`, and streaming. Runtimes such as OpenCode should call governed aliases through that gateway instead of receiving provider API keys or calling Bifrost directly.
 
-**Phase 2+:** LiteLLM or direct cloud providers such as Azure OpenAI or private gateways can be added behind the same alias system without changing agent definitions. LiteLLM should remain an optional backend adapter or compatibility reference, not the authority for policy, audit, session identity, or patch decisions.
+**Phase 2+:** Additional Bifrost providers, LiteLLM, direct cloud providers such as Azure OpenAI, or private gateways can be added behind the same alias system without changing agent definitions. Bifrost and LiteLLM should remain backend adapters or compatibility references, not the authority for policy, audit, session identity, or patch decisions.
 
 See [Governed Model Compatibility Gateway](../docs/model-compatibility-gateway.md) for the runtime-facing model API plan.
 
@@ -79,6 +79,10 @@ export AI_ORCH_MODEL_ALIAS_OVERRIDE=coding-economy
 export OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 export OPENROUTER_HTTP_REFERER=https://localhost
 export OPENROUTER_APP_TITLE=ai-agent-orch-local
+
+# Select model backend
+export AI_ORCH_MODEL_BACKEND=bifrost
+export AI_ORCH_BIFROST_BASE_URL=http://bifrost:8080
 
 # Enable reasoning effort for supported models
 export AI_ORCH_OPENROUTER_REASONING_EFFORT=high

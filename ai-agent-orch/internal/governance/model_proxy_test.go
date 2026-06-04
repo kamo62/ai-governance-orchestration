@@ -65,6 +65,12 @@ func TestModelProxyForwardsWithProviderKeyAndAuditsHashes(t *testing.T) {
 	if event.ModelAlias != "coding-gpt55" || event.ModelResolved != "openai/gpt-5.5" {
 		t.Fatalf("unexpected model audit fields: %#v", event)
 	}
+	if event.GatewayBackend != "native-openrouter" {
+		t.Fatalf("expected native-openrouter gateway backend, got %q", event.GatewayBackend)
+	}
+	if event.TrustLevel != "gateway_enforced" {
+		t.Fatalf("expected gateway_enforced trust level, got %q", event.TrustLevel)
+	}
 }
 
 func TestModelProxyRejectsMissingServiceToken(t *testing.T) {

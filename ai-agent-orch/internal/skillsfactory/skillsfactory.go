@@ -231,6 +231,7 @@ func generateAGENTSMarkdown(gatewayURL string) string {
 		"6. **Lookup audit** with `lookup_audit` to verify governance metadata.\n\n"+
 		"## Trust Levels\n\n"+
 		"- `gateway_enforced`: work that routed through the MCP Gateway and was evaluated by the Governance Shell.\n"+
+		"- `managed_client`: work from a managed client path where setup is controlled, but enforcement still differs from gateway-routed tools.\n"+
 		"- `self_reported`: work that the agent reports natively but did not route through the gateway.\n\n"+
 		"Always prefer gateway_enforced paths for file-changing, model-calling and tool-calling work.\n\n"+
 		"## Security\n\n"+

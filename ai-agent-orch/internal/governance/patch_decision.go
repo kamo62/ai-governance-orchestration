@@ -95,6 +95,7 @@ func (h *PatchDecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
+		TrustLevel:         trustLevelFromRequest(r),
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})

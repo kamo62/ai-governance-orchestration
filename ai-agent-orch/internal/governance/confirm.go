@@ -123,6 +123,7 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
+		TrustLevel:         trustLevelFromRequest(r),
 	})
 	if err != nil {
 		h.service.setSessionStatus(r.Context(), sessionID, "awaiting_confirmation")

@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 
 	"ai-agent-orch/internal/audit"
+	"ai-agent-orch/internal/httpauth"
+	"ai-agent-orch/internal/modelbackend"
 	"ai-agent-orch/internal/openrouter"
 	"ai-agent-orch/internal/router"
 )
@@ -26,6 +28,7 @@ import (
 type GatewayConfig struct {
 	RuntimeToken    string
 	Router          *router.Router
+	Backend         modelbackend.Backend
 	OpenRouter      openrouter.ChatClient
 	Audit           audit.Store
 	NewID           func(prefix string) string
@@ -42,7 +45,7 @@ type SessionInfo struct {
 type Gateway struct {
 	runtimeToken    string
 	router          *router.Router
-	openRouter      openrouter.ChatClient
+	backend         modelbackend.Backend
 	audit           audit.Store
 	newID           func(prefix string) string
 	validateSession func(context.Context, string) error
@@ -55,10 +58,14 @@ func NewGateway(cfg GatewayConfig) *Gateway {
 	if newID == nil {
 		newID = randomID
 	}
+	backend := cfg.Backend
+	if backend == nil && cfg.OpenRouter != nil {
+		backend = modelbackend.NewOpenRouterBackend(cfg.OpenRouter)
+	}
 	return &Gateway{
 		runtimeToken:    cfg.RuntimeToken,
 		router:          cfg.Router,
-		openRouter:      cfg.OpenRouter,
+		backend:         backend,
 		audit:           cfg.Audit,
 		newID:           newID,
 		validateSession: cfg.ValidateSession,
@@ -125,7 +132,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
-	if g.router == nil || g.openRouter == nil {
+	if g.router == nil || g.backend == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "gateway unavailable"})
 		return
 	}
@@ -170,6 +177,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 
 	// Build upstream request.
 	upstream := openrouter.ChatCompletionRequest{
+		Provider:    decision.Provider,
 		ModelAlias:  decision.SelectedAlias,
 		Model:       decision.SelectedModelID,
 		Messages:    convertMessages(req.Messages),
@@ -182,15 +190,15 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	resp, err := g.openRouter.ChatCompletion(r.Context(), upstream)
+	resp, err := g.backend.ChatCompletion(r.Context(), upstream)
 	if err != nil {
-		g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_call", body, nil, err.Error())
+		g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_call", body, nil, nil, err.Error())
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 		return
 	}
 
 	respBody, _ := json.Marshal(resp)
-	g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_call", body, respBody, "")
+	g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_call", body, respBody, &resp.Usage, "")
 
 	openAIResp := openAIChatCompletionResponse{
 		ID:      resp.ID,
@@ -210,7 +218,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream openrouter.ChatCompletionRequest, decision router.Decision, sessionID string, reqBody []byte) {
 	reqHash := sha256Hex(reqBody)
 	upstream.Stream = true
-	streamReader, err := g.openRouter.ChatCompletionStream(r.Context(), upstream)
+	streamReader, err := g.backend.ChatCompletionStream(r.Context(), upstream)
 	if err != nil {
 		g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", err.Error())
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("stream start failed: %v", err)})
@@ -305,7 +313,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
-	if g.router == nil || g.openRouter == nil {
+	if g.router == nil || g.backend == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "gateway unavailable"})
 		return
 	}
@@ -351,20 +359,21 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	upstream := openrouter.ChatCompletionRequest{
+		Provider:   decision.Provider,
 		ModelAlias: decision.SelectedAlias,
 		Model:      decision.SelectedModelID,
 		Messages:   convertResponsesInput(req.Input),
 	}
 
-	resp, err := g.openRouter.ChatCompletion(r.Context(), upstream)
+	resp, err := g.backend.ChatCompletion(r.Context(), upstream)
 	if err != nil {
-		g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_responses", body, nil, err.Error())
+		g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_responses", body, nil, nil, err.Error())
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 		return
 	}
 
 	respBody, _ := json.Marshal(resp)
-	g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_responses", body, respBody, "")
+	g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_responses", body, respBody, &resp.Usage, "")
 
 	openAIResp := openAIResponsesResponse{
 		ID:     g.newID("resp"),
@@ -428,30 +437,14 @@ func randomID(prefix string) string {
 
 var fallbackIDCounter atomic.Uint64
 
+// authorized delegates to httpauth.AuthorizedBearer so the constant-time bearer
+// comparison has a single implementation shared across every endpoint. An empty
+// runtime token always fails closed.
 func (g *Gateway) authorized(r *http.Request) bool {
-	if g.runtimeToken == "" {
-		return false
-	}
-	auth := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if !strings.HasPrefix(auth, prefix) {
-		return false
-	}
-	return subtleStrEq(strings.TrimPrefix(auth, prefix), g.runtimeToken)
+	return httpauth.AuthorizedBearer(r.Header.Get("Authorization"), g.runtimeToken)
 }
 
-func subtleStrEq(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var v byte
-	for i := 0; i < len(a); i++ {
-		v |= a[i] ^ b[i]
-	}
-	return v == 0
-}
-
-func (g *Gateway) auditModelCall(ctx context.Context, sessionID string, decision router.Decision, eventType string, reqBody, respBody []byte, errMsg string) {
+func (g *Gateway) auditModelCall(ctx context.Context, sessionID string, decision router.Decision, eventType string, reqBody, respBody []byte, usage *openrouter.Usage, errMsg string) {
 	if g.audit == nil {
 		return
 	}
@@ -462,10 +455,14 @@ func (g *Gateway) auditModelCall(ctx context.Context, sessionID string, decision
 	if len(respBody) > 0 {
 		respHash = sha256Hex(respBody)
 	}
-	g.auditModelCallHashes(ctx, sessionID, decision, eventType, reqHash, respHash, errMsg)
+	g.auditModelCallHashesWithUsage(ctx, sessionID, decision, eventType, reqHash, respHash, openrouterUsageMap(usage), errMsg)
 }
 
 func (g *Gateway) auditModelCallHashes(ctx context.Context, sessionID string, decision router.Decision, eventType string, reqHash, respHash, errMsg string) {
+	g.auditModelCallHashesWithUsage(ctx, sessionID, decision, eventType, reqHash, respHash, nil, errMsg)
+}
+
+func (g *Gateway) auditModelCallHashesWithUsage(ctx context.Context, sessionID string, decision router.Decision, eventType string, reqHash, respHash string, usage map[string]any, errMsg string) {
 	if g.audit == nil {
 		return
 	}
@@ -480,14 +477,30 @@ func (g *Gateway) auditModelCallHashes(ctx context.Context, sessionID string, de
 		Actor:              "runtime",
 		Provider:           decision.Provider,
 		ModelAlias:         decision.SelectedAlias,
-		ModelResolved:      decision.SelectedModelID,
+		ModelResolved:      g.resolvedModel(decision),
 		RequestSHA256:      reqHash,
 		ResponseSHA256:     respHash,
+		TokenUsage:         usage,
+		GatewayBackend:     g.backendName(),
+		TrustLevel:         "gateway_enforced",
 		Reason:             reason,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "model-gateway",
 	})
+}
+
+func openrouterUsageMap(usage *openrouter.Usage) map[string]any {
+	if usage == nil {
+		return nil
+	}
+	return map[string]any{
+		"prompt_tokens":     usage.PromptTokens,
+		"completion_tokens": usage.CompletionTokens,
+		"total_tokens":      usage.TotalTokens,
+		"reasoning_tokens":  usage.CompletionTokensDetails.ReasoningTokens,
+		"cost_usd":          usage.Cost,
+	}
 }
 
 func sha256Hex(body []byte) string {
@@ -529,6 +542,20 @@ func inferTaskTypeFromText(text string) string {
 	default:
 		return "general"
 	}
+}
+
+func (g *Gateway) backendName() string {
+	if g == nil || g.backend == nil {
+		return ""
+	}
+	return g.backend.Name()
+}
+
+func (g *Gateway) resolvedModel(decision router.Decision) string {
+	if g == nil || g.backend == nil {
+		return decision.SelectedModelID
+	}
+	return g.backend.ResolvedModel(decision.Provider, decision.SelectedModelID)
 }
 
 func convertMessages(msgs []openAIMessage) []openrouter.Message {

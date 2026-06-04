@@ -59,6 +59,36 @@ models:
       pricing_source: openrouter
       verified_on: 2026-05-23
 
+  - alias: smoke-openai-gpt4o-mini
+    provider: openai
+    model_id: gpt-4o-mini
+    purpose: Local Bifrost provider-routing smoke test for direct OpenAI API credentials.
+    allowed_classifications: [public, internal]
+    fallback_alias: smoke-anthropic-haiku
+    cost:
+      pricing_source: openai
+      verified_on: 2026-06-04
+
+  - alias: smoke-anthropic-haiku
+    provider: anthropic
+    model_id: claude-haiku-4-5-20251001
+    purpose: Local Bifrost provider-routing smoke test for direct Anthropic API credentials.
+    allowed_classifications: [public, internal]
+    fallback_alias: smoke-deepseek-chat
+    cost:
+      pricing_source: anthropic
+      verified_on: 2026-06-04
+
+  - alias: smoke-deepseek-chat
+    provider: deepseek
+    model_id: deepseek-chat
+    purpose: Local Bifrost provider-routing smoke test for direct DeepSeek API credentials.
+    allowed_classifications: [public, internal]
+    fallback_alias: smoke-deepseek-v4-flash
+    cost:
+      pricing_source: deepseek
+      verified_on: 2026-06-04
+
   - alias: coding-gpt55
     provider: openrouter
     model_id: openai/gpt-5.5

@@ -112,6 +112,38 @@ func TestChatCompletionRequiresAPIKey(t *testing.T) {
 	}
 }
 
+func TestUsageUnmarshalAcceptsObjectCost(t *testing.T) {
+	var usage Usage
+	if err := json.Unmarshal([]byte(`{
+		"prompt_tokens": 10,
+		"completion_tokens": 5,
+		"total_tokens": 15,
+		"cost": {"prompt": 0.001, "completion": 0.002},
+		"completion_tokens_details": {"reasoning_tokens": 3}
+	}`), &usage); err != nil {
+		t.Fatalf("unmarshal usage: %v", err)
+	}
+	if usage.Cost < 0.0029 || usage.Cost > 0.0031 {
+		t.Fatalf("expected summed cost 0.003, got %v", usage.Cost)
+	}
+	if usage.TotalTokens != 15 {
+		t.Fatalf("expected total tokens 15, got %d", usage.TotalTokens)
+	}
+	if usage.CompletionTokensDetails.ReasoningTokens != 3 {
+		t.Fatalf("expected reasoning tokens 3, got %d", usage.CompletionTokensDetails.ReasoningTokens)
+	}
+}
+
+func TestUsageUnmarshalAcceptsStringCost(t *testing.T) {
+	var usage Usage
+	if err := json.Unmarshal([]byte(`{"total_tokens": 1, "cost": "0.004"}`), &usage); err != nil {
+		t.Fatalf("unmarshal usage: %v", err)
+	}
+	if usage.Cost != 0.004 {
+		t.Fatalf("expected cost 0.004, got %v", usage.Cost)
+	}
+}
+
 func TestChatCompletionReportsOpenRouterErrors(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "quota exceeded", http.StatusTooManyRequests)

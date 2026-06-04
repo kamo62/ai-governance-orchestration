@@ -2,7 +2,7 @@
 
 ## Summary
 
-OpenCode can be the worker runtime, but it still needs a model API to call. If the runtime calls OpenRouter, OpenAI, Anthropic, Azure OpenAI, LiteLLM or another provider directly, the governance boundary is weakened.
+OpenCode can be the worker runtime, but it still needs a model API to call. If the runtime calls Bifrost, OpenRouter, OpenAI, Anthropic, Bedrock, Azure OpenAI, LiteLLM or another provider directly, the governance boundary is weakened.
 
 The missing piece is a small model compatibility gateway owned by this system:
 
@@ -11,7 +11,8 @@ OpenCode runtime model calls
   -> ai-orch Model Compatibility Gateway
   -> Governance Shell
   -> Governance Router
-  -> OpenRouter or another approved provider
+  -> selected model backend
+  -> approved provider
 ```
 
 This is separate from the MCP gateway:
@@ -49,7 +50,7 @@ This avoids giving the worker runtime provider keys. The runtime receives only a
 
 The model compatibility gateway should be boring and narrow.
 
-It should not try to compete with OpenRouter, LiteLLM or provider-native gateways. Its job is to translate common runtime-facing model APIs into governed model calls.
+It should not try to compete with Bifrost, OpenRouter, LiteLLM or provider-native gateways. Its job is to translate common runtime-facing model APIs into governed model calls.
 
 The authority stays here:
 
@@ -63,7 +64,7 @@ Governance Shell
   -> cost and usage records
 ```
 
-The provider abstraction can remain OpenRouter in the current POC. LiteLLM can be evaluated later as an optional backend adapter if compatibility work grows too large.
+Bifrost is the preferred OSS provider-plumbing sidecar in the current Compose path. Native OpenRouter remains a fallback backend and direct provider-health smoke path. LiteLLM can still be evaluated later as an optional backend adapter if compatibility work grows too large.
 
 ## Minimal API Surface
 
@@ -111,7 +112,7 @@ Requirements:
 - accept model aliases, not raw provider model IDs;
 - reject unknown or disallowed aliases;
 - route through the Governance Router;
-- call the existing Governance Shell model proxy;
+- call the selected Governance Shell model backend;
 - support `stream: true`;
 - redact or hash sensitive request/response metadata in audit;
 - record token usage, estimated cost, selected model and router reasons.
@@ -188,7 +189,7 @@ The eventual OpenCode provider configuration should point at the local compatibi
 }
 ```
 
-The runtime should never receive `OPENROUTER_API_KEY`.
+The runtime should never receive `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, AWS credentials, Bifrost tokens or any provider key.
 
 The runtime should receive:
 
@@ -198,6 +199,34 @@ The runtime should receive:
 - session ID;
 - workspace path or mounted workspace;
 - policy-limited tool configuration.
+
+## Relationship To Bifrost
+
+Bifrost is useful because it already handles a large part of the provider-compatibility problem as open-source plumbing.
+
+Possible roles:
+
+- preferred local Compose backend for OpenAI-compatible provider calls;
+- provider translation for OpenRouter, Anthropic, Bedrock, OpenAI, Vertex, Azure, Ollama/vLLM-style providers;
+- streaming and retry plumbing behind the Governance Shell;
+- replaceable backend adapter if another provider gateway fits better later.
+
+Non-goal:
+
+- replace the Governance Shell;
+- let Bifrost own policy, audit, session identity, patch buffering, evidence, or model-routing decisions;
+- use Bifrost enterprise governance, virtual-key governance, UI governance or MCP governance as the ai-orch control plane in this phase;
+- route runtimes directly to Bifrost without the Governance Shell.
+
+The correct relationship is:
+
+```text
+Runtime
+  -> ai-orch Model Compatibility Gateway
+  -> Governance Shell
+  -> Bifrost sidecar
+  -> approved provider
+```
 
 ## Relationship To LiteLLM
 
@@ -221,7 +250,7 @@ The correct relationship is:
 Runtime
   -> ai-orch Model Compatibility Gateway
   -> Governance Shell
-  -> optional LiteLLM backend or OpenRouter backend
+  -> optional Bifrost, LiteLLM or native OpenRouter backend
 ```
 
 ## Security Contract
@@ -229,6 +258,7 @@ Runtime
 The gateway must enforce:
 
 - no provider keys in runtime environment;
+- no Bifrost endpoint exposed to runtimes or host network by default;
 - session-scoped runtime token required;
 - model aliases only;
 - classification ceilings;
@@ -282,6 +312,8 @@ This gives reporting and maturity exports a clean record without making the audi
 
 Deliverables:
 
+- define selectable model backends: `native-openrouter` and `bifrost`;
+- define Bifrost sidecar health and fail-closed startup behaviour;
 - define runtime-token authentication for model calls;
 - define OpenAI-compatible response shapes for `/v1/models`, `/v1/chat/completions` and `/v1/responses`;
 - define streaming subset and failure semantics;
@@ -295,7 +327,7 @@ Deliverables:
 
 - implement `GET /v1/models`;
 - implement non-streaming `POST /v1/chat/completions`;
-- route model alias through the Governance Shell model proxy;
+- route model alias through the Governance Shell backend selector;
 - record model decision audit event;
 - prove the runtime does not receive provider keys.
 
@@ -329,6 +361,6 @@ The local OpenCode sandbox should not start until the compatibility gateway can 
 ## References
 
 - [OpenCode providers](https://opencode.ai/docs/providers/)
+- [Bifrost](https://github.com/maximhq/bifrost)
 - [LiteLLM Responses API](https://docs.litellm.ai/docs/response_api)
 - [OpenAI streaming Responses guide](https://platform.openai.com/docs/guides/streaming-responses)
-

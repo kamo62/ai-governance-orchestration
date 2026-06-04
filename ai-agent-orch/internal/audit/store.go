@@ -44,6 +44,8 @@ type Event struct {
 	MCPToolName        string         `json:"mcp_tool_name,omitempty"`
 	AuthMode           string         `json:"auth_mode,omitempty"`
 	TokenUsage         map[string]any `json:"token_usage,omitempty"`
+	GatewayBackend     string         `json:"gateway_backend,omitempty"`
+	TrustLevel         string         `json:"trust_level,omitempty"`
 	RawPromptStored    bool           `json:"raw_prompt_stored"`
 	RawResponseStored  bool           `json:"raw_response_stored"`
 	CorrelationSubject string         `json:"correlation_subject,omitempty"`

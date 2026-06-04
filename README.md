@@ -10,7 +10,7 @@ The newer wrinkle is that the developer integration surface may not be one thing
 
 The current practical priority is simpler than the long-term architecture: get the Governance Shell and MCP plumbing right first. The workbench, GitHub/Azure DevOps app layer and Kubernetes runtime pool can wait until the policy, audit, routing and tool-gateway contracts are boring enough to trust.
 
-There is one more piece of plumbing in that first bucket: a small model compatibility gateway. OpenCode and similar runtimes need OpenAI-compatible model endpoints. They should call an `ai-orch` endpoint, not OpenRouter or provider APIs directly, so model routing, streaming, cost and audit still cross the Governance Shell.
+There is one more piece of plumbing in that first bucket: a model compatibility gateway. OpenCode and similar runtimes need OpenAI-compatible model endpoints. They should call an `ai-orch` endpoint, not OpenRouter, Bifrost, Bedrock, Anthropic or provider APIs directly, so model routing, streaming, cost and audit still cross the Governance Shell.
 
 This README is also a working view of the current thinking. The operational runbook lives in [deployment.md](deployment.md); this file is meant to explain what is being investigated, what is influencing the design, and what the POC is deliberately avoiding.
 
@@ -50,7 +50,7 @@ This repo is an attempt to answer those questions without rebuilding the whole d
 
 ## Current State
 
-Current version: `v0.6.0-alpha`.
+Current version: `v0.7.0-alpha`.
 
 This is an early local POC. It is not production-ready.
 
@@ -58,8 +58,9 @@ What exists today:
 
 - Go Governance Shell and Orchestrator services.
 - Agent catalogue using `agent.md` plus `agent.config.yaml`.
-- OpenRouter model proxy owned by the Governance Shell.
+- Selectable model backend owned by the Governance Shell: Bifrost OSS by default in Compose, native OpenRouter as fallback.
 - Model compatibility gateway MVP for OpenAI-compatible `/v1/models`, `/v1/chat/completions`, `/v1/responses`, and streaming calls.
+- Bifrost OSS sidecar for provider plumbing across OpenRouter, OpenAI, Anthropic and direct DeepSeek today, with optional Bedrock, Vertex, Azure, Ollama or vLLM-style routes later.
 - Separate developer, admin, service and runtime-token boundaries for local testing.
 - Local CLI smoke path.
 - VS Code Bridge scaffold with first-run setup, connection checks, bounded workspace-context packaging, and tested workflow helpers. This is useful, but optional.
@@ -70,8 +71,9 @@ What exists today:
 - Use-case, workflow, context-manifest, cache-outcome, evidence, and maturity-export APIs.
 - MCP proxy scaffolding with `oauth-user` fail-closed behaviour.
 - Local MCP gateway CLI scaffold with stdio client config generation and fail-closed local HTTP transport.
+- Audit trust labels for gateway-enforced, managed-client and self-reported activity.
 - Command allow-list and tool-loop cap enforcement.
-- Docker Compose local runner and OpenRouter smoke tooling.
+- Docker Compose local runner, Bifrost sidecar and direct OpenRouter smoke tooling.
 
 Still pending:
 
@@ -82,6 +84,7 @@ Still pending:
 - broader CLI coverage for admin and CI workflows;
 - richer governed MCP gateway coverage for CLine, Copilot, Claude Code, Codex, Cursor and similar clients;
 - fuller model compatibility behaviour beyond the current MVP, especially provider-specific streaming and responses compatibility gaps;
+- live Bedrock checks through Bifrost once credentials are deliberately configured;
 - stronger skills/config factory support that makes those clients route meaningful work through the governed path by default without overwriting existing project files unexpectedly;
 - a Governance Router that selects model tier by task, risk, workflow, cost and evidence needs;
 - a GitHub App spike that attaches governed sessions to issues, PRs, checks and review evidence;
@@ -97,7 +100,7 @@ This repo is not trying to become:
 - a Claude Code, OpenCode, Cursor, Aider, or IDE-agent replacement;
 - a new autonomous agent product;
 - a Backstage, Jira, ServiceNow, or documentation portal clone;
-- a model gateway competing with OpenRouter, LiteLLM, or provider-native gateways;
+- a model gateway competing with Bifrost, OpenRouter, LiteLLM, or provider-native gateways;
 - an enterprise identity, secrets, or device-management system;
 - a production deployment template.
 
@@ -122,7 +125,7 @@ The first build priority is therefore not the workbench. It is the plumbing that
 
 - session identity and ownership;
 - policy decisions that fail closed;
-- model calls through the Governance Shell;
+- model calls through the Governance Shell, with Bifrost used as provider plumbing when selected;
 - OpenAI-compatible runtime model calls through a model compatibility gateway;
 - MCP tool calls through a gateway;
 - patch content through the staged buffer;
@@ -153,7 +156,7 @@ The current abstraction is deliberately split:
 - `agent.config.yaml` contains executable configuration, tool access, model aliases, and governance limits.
 - `models/registry.yaml` maps stable model aliases to concrete provider model IDs.
 - MCP registrations declare external context/tool surfaces.
-- The Governance Shell owns policy, audit, model proxying, patch buffering, and session authority.
+- The Governance Shell owns policy, audit, model proxying, patch buffering, model-backend selection, and session authority.
 - The Orchestrator owns catalogue validation, routing, and runtime dispatch.
 
 That separation is the important part. It keeps governance strict while allowing the runtime layer to stay flexible.
@@ -166,7 +169,7 @@ The VS Code Bridge is therefore not meant to be a CLine clone in its current for
 
 The newer thought is that the next serious adapter should probably be `ai-orch-mcp`: a governed MCP gateway plus a small skills/config factory. The gateway would expose governed tools and delegation into CLine, Copilot, Claude Code, Codex, Cursor and similar clients. The skills factory would generate the client-specific instructions and MCP config that nudge those clients to start a governed session, attach a use case, delegate substantial work, submit patches through the buffer and record evidence.
 
-The OpenCode runtime problem adds a second gateway shape: model compatibility. Tool calls should go through `ai-orch-mcp`; model calls should go through an OpenAI-compatible `ai-orch` model endpoint. That endpoint can look boring from the runtime side, but internally it must resolve aliases, apply the Governance Router, call the model proxy, stream responses where needed and audit the decision.
+The OpenCode runtime problem adds a second gateway shape: model compatibility. Tool calls should go through `ai-orch-mcp`; model calls should go through an OpenAI-compatible `ai-orch` model endpoint. That endpoint can look boring from the runtime side, but internally it must resolve aliases, apply the Governance Router, select the model backend, stream responses where needed and audit the decision.
 
 That still does not make the system a CLine clone. The local client can keep doing lightweight navigation and conversation. When the work becomes meaningful, expensive, risky or evidence-worthy, it should cross the Governance Shell boundary.
 
@@ -190,6 +193,8 @@ There is also a useful cost-control shape here: let developer-side agents use sm
 
 Factory Router is interesting because it validates that model routing is becoming its own layer. I do not want to build a generic model gateway, but I do want this POC to route by governance context: task type, risk level, workflow stage, classification, cost sensitivity, latency sensitivity, evidence needs and provider health. That is more useful than a developer manually choosing an expensive model for every task.
 
+Bifrost is useful in a different way. It is good open-source provider plumbing: OpenAI-compatible routing, provider translation, streaming, retries and multiple backend families. The important thing is not to confuse that with the governance plane. In this POC, Bifrost sits behind ai-orch. Runtimes do not call Bifrost directly, Bifrost does not own session authority, Bifrost content logging is disabled locally, and Bifrost governance or enterprise features are not the thing being proved here. The current local smoke setup proves OpenRouter, direct OpenAI, direct Anthropic and direct DeepSeek routes through the Governance Shell; OpenCode still needs a runtime adapter or custom endpoint configuration before it becomes the worker.
+
 ## External Work I Am Watching
 
 This POC is not being built in isolation. The point is to borrow useful ideas without letting this repo become a wrapper around somebody else's agent stack.
@@ -208,6 +213,8 @@ My current read on AGT:
 The Microsoft write-up on [securing MCP with a control plane](https://developer.microsoft.com/blog/securing-mcp-a-control-plane-for-agent-tool-execution) is also important. MCP standardises tool discovery and invocation, but it does not provide the policy checkpoint by itself. That supports this repo's direction: MCP registrations are useful, but credentialed or risky calls need to go through the Governance Shell.
 
 [Factory Router](https://factory.ai/news/factory-router) is interesting for the model-routing question. I am not reading it as something to copy; I am reading it as proof that "which model should do this work?" is becoming a decision layer in its own right. This POC should make that decision auditable and policy-aware.
+
+[Bifrost](https://github.com/maximhq/bifrost) is interesting for the provider-plumbing question. It already does the OpenAI-compatible gateway work across provider families. That makes it a good sidecar candidate behind the Governance Shell, as long as this repo keeps policy, session identity, audit, patch buffering, evidence, and model-routing decisions in ai-orch.
 
 The [GitHub Copilot app preview](https://github.com/features/preview/github-app) is interesting for the delivery-surface question. It points at an issue-to-merge workbench rather than just an IDE extension. That matters because governance has to show up where code is reviewed and merged, not only where prompts are typed.
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -44,6 +45,7 @@ type Message struct {
 type ChatCompletionRequest struct {
 	SessionID   string           `json:"-"`
 	ModelAlias  string           `json:"-"`
+	Provider    string           `json:"-"`
 	Model       string           `json:"model"`
 	Messages    []Message        `json:"messages"`
 	Temperature float64          `json:"temperature,omitempty"`
@@ -74,6 +76,60 @@ type Usage struct {
 	CompletionTokensDetails struct {
 		ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 	} `json:"completion_tokens_details,omitempty"`
+}
+
+func (u *Usage) UnmarshalJSON(data []byte) error {
+	type usageAlias struct {
+		PromptTokens            int             `json:"prompt_tokens"`
+		CompletionTokens        int             `json:"completion_tokens"`
+		TotalTokens             int             `json:"total_tokens"`
+		Cost                    json.RawMessage `json:"cost,omitempty"`
+		CompletionTokensDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+		} `json:"completion_tokens_details,omitempty"`
+	}
+	var raw usageAlias
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	u.PromptTokens = raw.PromptTokens
+	u.CompletionTokens = raw.CompletionTokens
+	u.TotalTokens = raw.TotalTokens
+	u.CompletionTokensDetails = raw.CompletionTokensDetails
+	if len(raw.Cost) > 0 {
+		u.Cost = parseCost(raw.Cost)
+	}
+	return nil
+}
+
+func parseCost(raw json.RawMessage) float64 {
+	var asNumber float64
+	if err := json.Unmarshal(raw, &asNumber); err == nil {
+		return asNumber
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		if n, err := strconv.ParseFloat(strings.TrimSpace(asString), 64); err == nil {
+			return n
+		}
+		return 0
+	}
+	var asObject map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &asObject); err != nil {
+		return 0
+	}
+	for _, key := range []string{"total", "total_cost", "cost", "cost_usd", "amount"} {
+		if value, ok := asObject[key]; ok {
+			if n := parseCost(value); n != 0 {
+				return n
+			}
+		}
+	}
+	var sum float64
+	for _, value := range asObject {
+		sum += parseCost(value)
+	}
+	return sum
 }
 
 func NewClient(cfg Config) *Client {

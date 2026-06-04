@@ -24,6 +24,14 @@ type fakeChatClient struct {
 	lastRequest openrouter.ChatCompletionRequest
 }
 
+func (f *fakeChatClient) Name() string {
+	return "test-backend"
+}
+
+func (f *fakeChatClient) ResolvedModel(_ string, model string) string {
+	return model
+}
+
 func (f *fakeChatClient) ChatCompletion(_ context.Context, req openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
 	f.lastRequest = req
 	return f.resp, f.err
@@ -109,7 +117,20 @@ func TestGatewayChatCompletionsRequiresAuth(t *testing.T) {
 }
 
 func TestGatewayChatCompletionsSuccess(t *testing.T) {
-	g := newTestGateway()
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	backend := &fakeChatClient{
+		resp: openrouter.ChatCompletionResponse{
+			ID:    "chatcmpl-test",
+			Model: "anthropic/claude-opus-4.7",
+			Choices: []struct {
+				Message openrouter.Message `json:"message"`
+			}{
+				{Message: openrouter.Message{Role: "assistant", Content: "Hello"}},
+			},
+			Usage: openrouter.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+	}
+	g := newTestGatewayWithBackend(backend, auditStore)
 	body := []byte(`{"model":"coding-primary","messages":[{"role":"user","content":"hello"}]}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer runtime-test-token")
@@ -128,6 +149,26 @@ func TestGatewayChatCompletionsSuccess(t *testing.T) {
 	}
 	if len(result.Choices) != 1 || result.Choices[0].Message.Content != "Hello" {
 		t.Fatalf("unexpected response: %s", rec.Body.String())
+	}
+	if backend.lastRequest.Provider != "openrouter" {
+		t.Fatalf("expected provider openrouter in backend request, got %q", backend.lastRequest.Provider)
+	}
+
+	events, err := auditStore.EventsBySession(context.Background(), "sess_model_gateway")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one audit event, got %d", len(events))
+	}
+	if events[0].GatewayBackend != "test-backend" {
+		t.Fatalf("expected gateway backend audit metadata, got %#v", events[0])
+	}
+	if events[0].TrustLevel != "gateway_enforced" {
+		t.Fatalf("expected gateway_enforced trust level, got %q", events[0].TrustLevel)
+	}
+	if got := numericAuditValue(events[0].TokenUsage["total_tokens"]); got != 15 {
+		t.Fatalf("expected token usage in audit metadata, got %#v", events[0].TokenUsage)
 	}
 }
 
@@ -216,7 +257,20 @@ func TestGatewayChatCompletionsIgnoresCallerClassificationHeader(t *testing.T) {
 }
 
 func TestGatewayResponsesSuccess(t *testing.T) {
-	g := newTestGateway()
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	backend := &fakeChatClient{
+		resp: openrouter.ChatCompletionResponse{
+			ID:    "chatcmpl-test",
+			Model: "anthropic/claude-opus-4.7",
+			Choices: []struct {
+				Message openrouter.Message `json:"message"`
+			}{
+				{Message: openrouter.Message{Role: "assistant", Content: "Hello"}},
+			},
+			Usage: openrouter.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+	}
+	g := newTestGatewayWithBackend(backend, auditStore)
 	body := []byte(`{"model":"coding-primary","input":[{"role":"user","content":"hello"}]}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer runtime-test-token")
@@ -235,6 +289,19 @@ func TestGatewayResponsesSuccess(t *testing.T) {
 	}
 	if len(result.Output) != 1 {
 		t.Fatalf("expected 1 output, got %d", len(result.Output))
+	}
+	events, err := auditStore.EventsBySession(context.Background(), "sess_model_gateway")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one audit event, got %d", len(events))
+	}
+	if events[0].EventType != "model.gateway_responses" {
+		t.Fatalf("expected responses audit event, got %q", events[0].EventType)
+	}
+	if got := numericAuditValue(events[0].TokenUsage["total_tokens"]); got != 15 {
+		t.Fatalf("expected token usage in audit metadata, got %#v", events[0].TokenUsage)
 	}
 }
 
@@ -305,6 +372,21 @@ type streamFakeClient struct {
 	lastRequest openrouter.ChatCompletionRequest
 }
 
+func newTestGatewayWithBackend(backend *fakeChatClient, auditStore audit.Store) *Gateway {
+	return NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.New(catalog.ModelRegistry{
+			Models: []catalog.ModelDefinition{
+				{Alias: "coding-primary", Provider: "openrouter", ModelID: "anthropic/claude-opus-4.7", AllowedClassifications: []string{"public", "internal"}},
+				{Alias: "coding-fast", Provider: "openrouter", ModelID: "x-ai/grok-build-0.1", AllowedClassifications: []string{"public", "internal"}},
+			},
+		}),
+		Backend: backend,
+		Audit:   auditStore,
+		NewID:   func(prefix string) string { return prefix + "_test" },
+	})
+}
+
 func (s *streamFakeClient) ChatCompletion(_ context.Context, _ openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
 	return openrouter.ChatCompletionResponse{}, nil
 }
@@ -314,4 +396,17 @@ func (s *streamFakeClient) ChatCompletionStream(_ context.Context, req openroute
 	data := `data: {"id":"chunk1","object":"chat.completion.chunk","model":"m1","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"}}]}` + "\n\n" +
 		`data: [DONE]` + "\n\n"
 	return io.NopCloser(strings.NewReader(data)), nil
+}
+
+func numericAuditValue(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
 }

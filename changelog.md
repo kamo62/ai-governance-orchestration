@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.7.0-alpha - 2026-06-04 (Minor)
+
+Release impact: Minor because this adds a selectable model-backend layer, Bifrost OSS sidecar integration, and managed MCP/doctor trust-labelling improvements while preserving the existing native OpenRouter fallback.
+
+- **Added provider-neutral model backends**: Governance Shell model calls now route through a backend interface with `native-openrouter` and `bifrost` implementations.
+- **Added Bifrost OSS sidecar support**: Docker Compose now starts a pinned `maximhq/bifrost:v1.5.7` sidecar by default, keeps it off the host network, mounts file-based config, disables Bifrost content logging, and lets Governance Shell use it through `AI_ORCH_MODEL_BACKEND=bifrost`.
+- **Kept OpenRouter as a fallback and health smoke path**: direct OpenRouter calls remain available through `AI_ORCH_MODEL_BACKEND=native-openrouter` and the `openrouter-smoke` tool remains a provider-health check.
+- **Kept provider secrets out of runtimes**: the Orchestrator, VS Code Bridge, MCP clients, and runtime-facing model gateway still call ai-orch endpoints rather than Bifrost or provider APIs directly.
+- **Added Bifrost model mapping**: provider/model registry entries are translated to Bifrost model names such as `openrouter/deepseek/...`, `anthropic/...`, and `bedrock/...`.
+- **Added direct provider smoke aliases**: model registry now includes local Bifrost smoke aliases for direct OpenAI, Anthropic Haiku, and DeepSeek credentials in addition to the OpenRouter DeepSeek smoke path.
+- **Added model-backend audit metadata**: model gateway and model proxy audit events now record gateway backend, provider, resolved model, usage, request/response hashes, and `trust_level: gateway_enforced` without storing raw prompt or response content.
+- **Added managed-client trust labels**: Governance Shell audit helpers now accept `gateway_enforced`, `managed_client`, and `self_reported` labels, and the MCP gateway marks routed calls as `gateway_enforced`.
+- **Expanded MCP doctor checks**: `ai-orch mcp doctor` now reports generated client config status, developer token status, Governance Shell readiness, runtime token status, and model gateway reachability.
+- **Updated local configuration docs**: `.env.example`, README, implementation notes, deployment guide, MCP gateway notes, and model registry docs now describe Bifrost as replaceable provider plumbing rather than the governance plane.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README current state, and changelog now agree on `v0.7.0-alpha`.
+
 ## v0.6.0-alpha - 2026-06-03 (Minor)
 
 Release impact: Minor because this adds first-run Bridge onboarding plus local governance gateway hardening in the alpha line. Admin routes now use a separate local admin token, and runtime model endpoints use a separate runtime token.

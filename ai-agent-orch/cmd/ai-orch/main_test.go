@@ -130,3 +130,84 @@ func TestDoRequestUsesDeveloperTokenForUserRoutes(t *testing.T) {
 		t.Fatalf("developer request failed: %v", err)
 	}
 }
+
+func TestRuntimeDoctorChecksHealthySetup(t *testing.T) {
+	governance := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/readyz" {
+			t.Fatalf("unexpected governance path %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"service":"governance-shell","status":"ready"}`)
+	}))
+	defer governance.Close()
+	modelGateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("unexpected model gateway path %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer runtime-token" {
+			t.Fatalf("expected runtime bearer token, got %q", got)
+		}
+		fmt.Fprint(w, `{"object":"list","data":[]}`)
+	}))
+	defer modelGateway.Close()
+
+	checks := runtimeDoctorChecks(context.Background(), Config{
+		GovernanceURL:   governance.URL,
+		ModelGatewayURL: modelGateway.URL,
+		Token:           "dev-token",
+		RuntimeToken:    "runtime-token",
+	}, governance.Client())
+
+	want := []string{
+		"Developer token: OK",
+		"Runtime token: OK",
+		"Governance Shell readyz: OK",
+		"Model gateway: OK",
+	}
+	for _, item := range want {
+		if !containsString(checks, item) {
+			t.Fatalf("expected %q in checks, got %#v", item, checks)
+		}
+	}
+}
+
+func TestRuntimeDoctorChecksMissingTokensAndBrokenServices(t *testing.T) {
+	governance := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusServiceUnavailable)
+	}))
+	defer governance.Close()
+
+	checks := runtimeDoctorChecks(context.Background(), Config{
+		GovernanceURL:   governance.URL,
+		ModelGatewayURL: "http://127.0.0.1:1",
+	}, governance.Client())
+
+	wantSubstrings := []string{
+		"Developer token: MISSING",
+		"Runtime token: MISSING",
+		"Governance Shell readyz: FAIL",
+		"Model gateway: SKIP",
+	}
+	for _, item := range wantSubstrings {
+		if !containsSubstring(checks, item) {
+			t.Fatalf("expected substring %q in checks, got %#v", item, checks)
+		}
+	}
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSubstring(items []string, want string) bool {
+	for _, item := range items {
+		if strings.Contains(item, want) {
+			return true
+		}
+	}
+	return false
+}

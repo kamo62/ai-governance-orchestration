@@ -20,13 +20,16 @@ import (
 const (
 	defaultGovernanceURL   = "http://127.0.0.1:18080"
 	defaultOrchestratorURL = "http://127.0.0.1:8081"
+	defaultModelGatewayURL = "http://127.0.0.1:18082"
 )
 
 type Config struct {
 	GovernanceURL   string
 	OrchestratorURL string
+	ModelGatewayURL string
 	Token           string
 	AdminToken      string
+	RuntimeToken    string
 }
 
 type eventStreamResult struct {
@@ -44,8 +47,10 @@ func loadConfig() Config {
 	return Config{
 		GovernanceURL:   envOrDefault("AI_ORCH_GOVERNANCE_URL", defaultGovernanceURL),
 		OrchestratorURL: envOrDefault("AI_ORCH_ORCHESTRATOR_URL", defaultOrchestratorURL),
+		ModelGatewayURL: envOrDefault("AI_ORCH_MODEL_GATEWAY_URL", defaultModelGatewayURL),
 		Token:           envOrDefault("AI_ORCH_DEV_TOKEN", ""),
 		AdminToken:      envOrDefault("AI_ORCH_ADMIN_TOKEN", ""),
+		RuntimeToken:    envOrDefault("AI_ORCH_RUNTIME_TOKEN", ""),
 	}
 }
 
@@ -88,7 +93,7 @@ func main() {
 		case "install":
 			handleMCPInstall(cfg, os.Args[3:])
 		case "doctor":
-			handleMCPDoctor(cfg, os.Args[3:])
+			handleMCPDoctor(ctx, cfg, os.Args[3:])
 		default:
 			fmt.Fprintf(os.Stderr, "unknown mcp subcommand: %s\n", os.Args[2])
 			os.Exit(1)
@@ -121,8 +126,10 @@ Usage:
 Environment:
   AI_ORCH_GOVERNANCE_URL    Governance Shell base URL (default: http://127.0.0.1:18080)
   AI_ORCH_ORCHESTRATOR_URL  Orchestrator base URL (default: http://127.0.0.1:8081)
+  AI_ORCH_MODEL_GATEWAY_URL Runtime model gateway base URL (default: http://127.0.0.1:18082)
   AI_ORCH_DEV_TOKEN         Bearer token for local dev auth
-  AI_ORCH_ADMIN_TOKEN       Bearer token for admin routes such as killswitch`)
+  AI_ORCH_ADMIN_TOKEN       Bearer token for admin routes such as killswitch
+  AI_ORCH_RUNTIME_TOKEN     Bearer token for runtime model gateway calls`)
 }
 
 func handleSession(ctx context.Context, cfg Config, args []string) {

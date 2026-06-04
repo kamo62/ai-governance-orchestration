@@ -111,6 +111,41 @@ func TestCreateSessionRejectsInvalidDevTokenBeforeReadingRawPrompt(t *testing.T)
 	}
 }
 
+func TestCreateSessionPersistsGatewayEnforcedTrustLevel(t *testing.T) {
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(auditPath),
+		NewID: fixedIDs(
+			"sess_gateway_enforced_1",
+			"evt_session_created_1",
+		),
+	})
+	handler := NewSessionHandler(service)
+
+	body := []byte(`{"agent":"test-generation","classification":"internal","prompt":"write tests"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer local-test-token")
+	req.Header.Set("X-AI-Orch-Trust-Level", "gateway_enforced")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	events, err := audit.NewFileStore(auditPath).EventsBySession(context.Background(), "sess_gateway_enforced_1")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one event, got %d", len(events))
+	}
+	if events[0].TrustLevel != "gateway_enforced" {
+		t.Fatalf("expected gateway_enforced trust level, got %q", events[0].TrustLevel)
+	}
+}
+
 func TestCreateSessionFailsClosedWhenDevTokenEmpty(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	service := NewSessionService(SessionConfig{

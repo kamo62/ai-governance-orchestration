@@ -36,7 +36,10 @@ func (c *GatewayConfig) client() *http.Client {
 
 func (c *GatewayConfig) authHeaders(extra map[string]string) map[string]string {
 	h := map[string]string{
-		"Authorization": "Bearer " + c.DevToken,
+		"Authorization":              "Bearer " + c.DevToken,
+		"X-AI-Orch-Client":           "ai-orch-mcp",
+		"X-AI-Orch-Trust-Level":      "gateway_enforced",
+		"X-AI-Orch-Enforcement-Mode": "gateway",
 	}
 	for k, v := range extra {
 		h[k] = v

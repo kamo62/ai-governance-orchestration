@@ -85,13 +85,14 @@ Governance Shell (http://127.0.0.1:18080)
     |
     |-- Audit and Evidence
     |-- Patch Buffer
-    |-- Model Proxy (OpenRouter)
+    |-- Model Backend (Bifrost by default, native OpenRouter fallback)
     |-- Policy Engine
 ```
 
 ## Trust Levels
 
 - `gateway_enforced`: Work routed through the MCP Gateway and evaluated by the Governance Shell.
+- `managed_client`: Work coming from a managed client path where ai-orch can trust client configuration more strongly than a self-report, but still distinguish it from gateway-enforced calls.
 - `self_reported`: Work reported natively by the agent but not routed through the gateway.
 
 Always prefer `gateway_enforced` paths for file-changing, model-calling, and tool-calling work.

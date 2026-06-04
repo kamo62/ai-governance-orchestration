@@ -43,6 +43,12 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.ToolLoopMax != 15 {
 		t.Fatalf("expected default tool loop max 15, got %d", cfg.ToolLoopMax)
 	}
+	if cfg.ModelBackend != "native-openrouter" {
+		t.Fatalf("expected default model backend native-openrouter, got %q", cfg.ModelBackend)
+	}
+	if cfg.BifrostBaseURL != "" {
+		t.Fatalf("expected empty default Bifrost base URL, got %q", cfg.BifrostBaseURL)
+	}
 }
 
 func TestLoadUsesEnvAndFlags(t *testing.T) {
@@ -57,8 +63,11 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	t.Setenv("AI_ORCH_SESSION_COST_CAP_USD", "0.50")
 	t.Setenv("AI_ORCH_POLICY_ENGINE", "agt")
 	t.Setenv("AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX", "7")
+	t.Setenv("AI_ORCH_MODEL_BACKEND", "bifrost")
+	t.Setenv("AI_ORCH_BIFROST_BASE_URL", "http://bifrost:8080")
+	t.Setenv("AI_ORCH_BIFROST_API_KEY", "env-bifrost-token")
 
-	cfg, err := Load([]string{"-addr", ":7777", "-audit-path", "/tmp/flag-audit.jsonl", "-dev-token", "flag-token", "-service-token", "flag-service-token", "-classification-max", "restricted", "-kill-switch=false", "-cost-cap-enabled=false", "-session-cost-cap-usd", "0.75", "-policy-engine", "native", "-consecutive-tool-call-max", "11"})
+	cfg, err := Load([]string{"-addr", ":7777", "-audit-path", "/tmp/flag-audit.jsonl", "-dev-token", "flag-token", "-service-token", "flag-service-token", "-classification-max", "restricted", "-kill-switch=false", "-cost-cap-enabled=false", "-session-cost-cap-usd", "0.75", "-policy-engine", "native", "-consecutive-tool-call-max", "11", "-model-backend", "native-openrouter", "-bifrost-base-url", "http://flag-bifrost:8080", "-bifrost-api-key", "flag-bifrost-token"})
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -94,5 +103,14 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	}
 	if cfg.ToolLoopMax != 11 {
 		t.Fatalf("expected flag tool loop max to win, got %d", cfg.ToolLoopMax)
+	}
+	if cfg.ModelBackend != "native-openrouter" {
+		t.Fatalf("expected flag model backend to win, got %q", cfg.ModelBackend)
+	}
+	if cfg.BifrostBaseURL != "http://flag-bifrost:8080" {
+		t.Fatalf("expected flag Bifrost base URL to win, got %q", cfg.BifrostBaseURL)
+	}
+	if cfg.BifrostAPIKey != "flag-bifrost-token" {
+		t.Fatalf("expected flag Bifrost API key to win, got %q", cfg.BifrostAPIKey)
 	}
 }

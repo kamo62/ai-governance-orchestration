@@ -9,11 +9,13 @@ import (
 	"net/http"
 
 	"ai-agent-orch/internal/audit"
+	"ai-agent-orch/internal/modelbackend"
 	"ai-agent-orch/internal/openrouter"
 )
 
 type ModelProxyConfig struct {
 	ServiceToken string
+	Backend      modelbackend.Backend
 	OpenRouter   openrouter.ChatClient
 	Audit        audit.Store
 	NewID        func(prefix string) string
@@ -21,7 +23,7 @@ type ModelProxyConfig struct {
 
 type ModelProxyHandler struct {
 	serviceToken string
-	openRouter   openrouter.ChatClient
+	backend      modelbackend.Backend
 	audit        audit.Store
 	newID        func(prefix string) string
 }
@@ -31,9 +33,13 @@ func NewModelProxyHandler(cfg ModelProxyConfig) http.Handler {
 	if newID == nil {
 		newID = randomID
 	}
+	backend := cfg.Backend
+	if backend == nil && cfg.OpenRouter != nil {
+		backend = modelbackend.NewOpenRouterBackend(cfg.OpenRouter)
+	}
 	return &ModelProxyHandler{
 		serviceToken: cfg.ServiceToken,
-		openRouter:   cfg.OpenRouter,
+		backend:      backend,
 		audit:        cfg.Audit,
 		newID:        newID,
 	}
@@ -52,7 +58,7 @@ func (h *ModelProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
-	if h.openRouter == nil {
+	if h.backend == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "model proxy unavailable"})
 		return
 	}
@@ -72,8 +78,11 @@ func (h *ModelProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
+	if provider := r.Header.Get("X-AI-Orch-Provider"); provider != "" {
+		req.Provider = provider
+	}
 
-	resp, err := h.openRouter.ChatCompletion(r.Context(), req)
+	resp, err := h.backend.ChatCompletion(r.Context(), req)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 		return
@@ -90,16 +99,18 @@ func (h *ModelProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			SessionID: sessionID,
 			EventType: "model.proxy_call",
 			Actor:     "runtime",
-			Provider:  "openrouter",
+			Provider:  req.Provider,
 			// ModelAlias is passed through from the orchestrator for audit correlation.
 			// Alias-to-model enforcement is currently delegated to the orchestrator;
 			// the proxy trusts req.Model as the resolved value.
 			ModelAlias:         r.Header.Get("X-AI-Orch-Model-Alias"),
-			ModelResolved:      req.Model,
+			ModelResolved:      h.backend.ResolvedModel(req.Provider, req.Model),
 			ProxyCallID:        h.newID("proxy"),
 			RequestSHA256:      sha256Hex(body),
 			ResponseSHA256:     sha256Hex(respBody),
 			TokenUsage:         tokenUsage(resp.Usage),
+			GatewayBackend:     h.backend.Name(),
+			TrustLevel:         "gateway_enforced",
 			RawPromptStored:    false,
 			RawResponseStored:  false,
 			CorrelationSubject: "governance-shell",

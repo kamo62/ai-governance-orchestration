@@ -16,6 +16,7 @@ import (
 	"ai-agent-orch/internal/composition"
 	"ai-agent-orch/internal/governance"
 	"ai-agent-orch/internal/httpauth"
+	"ai-agent-orch/internal/modelbackend"
 	"ai-agent-orch/internal/modelgateway"
 	"ai-agent-orch/internal/oauth"
 	"ai-agent-orch/internal/openrouter"
@@ -112,6 +113,30 @@ func main() {
 		orchestratorURL = "http://127.0.0.1:8081"
 	}
 	orchClient := governance.NewOrchestratorHTTPClient(orchestratorURL, cfg.ServiceToken)
+	openRouterClient := openrouter.NewClient(openrouter.Config{
+		APIKey:   os.Getenv("OPENROUTER_API_KEY"),
+		BaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
+		Referer:  os.Getenv("OPENROUTER_HTTP_REFERER"),
+		AppTitle: envOrDefault("OPENROUTER_APP_TITLE", "ai-agent-orch-local"),
+	})
+	modelBackend, err := modelbackend.New(modelbackend.BackendConfig{
+		Name:             cfg.ModelBackend,
+		OpenRouterClient: openRouterClient,
+		BifrostBaseURL:   cfg.BifrostBaseURL,
+		BifrostAPIKey:    cfg.BifrostAPIKey,
+	})
+	if err != nil {
+		log.Fatalf("model backend init failed: %v", err)
+	}
+	if bifrost, ok := modelBackend.(*modelbackend.BifrostBackend); ok {
+		healthCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := bifrost.Health(healthCtx); err != nil {
+			cancel()
+			log.Fatalf("model backend health failed: %v", err)
+		}
+		cancel()
+	}
+	log.Printf("model backend selected: %s", modelBackend.Name())
 
 	handler := http.NewServeMux()
 	handler.Handle("/", baseHandler)
@@ -135,13 +160,8 @@ func main() {
 	registerRegistryHandlers(handler, governance.NewRegistryHandlerWithMetrics(registryStore, sessionService, metricsHandler))
 	handler.Handle("/internal/v1/model/", governance.NewModelProxyHandler(governance.ModelProxyConfig{
 		ServiceToken: cfg.ServiceToken,
-		OpenRouter: openrouter.NewClient(openrouter.Config{
-			APIKey:   os.Getenv("OPENROUTER_API_KEY"),
-			BaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
-			Referer:  os.Getenv("OPENROUTER_HTTP_REFERER"),
-			AppTitle: envOrDefault("OPENROUTER_APP_TITLE", "ai-agent-orch-local"),
-		}),
-		Audit: auditStore,
+		Backend:      modelBackend,
+		Audit:        auditStore,
 	}))
 	handler.Handle("/internal/v1/mcp/", governance.NewMCPProxyHandler(governance.MCPProxyConfig{
 		ServiceToken:  cfg.ServiceToken,
@@ -187,13 +207,8 @@ func main() {
 			gateway := modelgateway.NewGateway(modelgateway.GatewayConfig{
 				RuntimeToken: cfg.RuntimeToken,
 				Router:       govRouter,
-				OpenRouter: openrouter.NewClient(openrouter.Config{
-					APIKey:   os.Getenv("OPENROUTER_API_KEY"),
-					BaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
-					Referer:  os.Getenv("OPENROUTER_HTTP_REFERER"),
-					AppTitle: envOrDefault("OPENROUTER_APP_TITLE", "ai-agent-orch-local"),
-				}),
-				Audit: auditStore,
+				Backend:      modelBackend,
+				Audit:        auditStore,
 				LookupSession: func(ctx context.Context, sessionID string) (modelgateway.SessionInfo, error) {
 					record, err := sessionService.SessionRecord(ctx, sessionID)
 					if err != nil {

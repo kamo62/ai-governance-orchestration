@@ -68,6 +68,9 @@ func (c *ProxyClient) ChatCompletion(ctx context.Context, request ChatCompletion
 	if request.ModelAlias != "" {
 		httpReq.Header.Set("X-AI-Orch-Model-Alias", request.ModelAlias)
 	}
+	if request.Provider != "" {
+		httpReq.Header.Set("X-AI-Orch-Provider", request.Provider)
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

@@ -28,17 +28,18 @@ func NewDirectRuntime(client openrouter.ChatClient, catalogRoot string) *DirectR
 }
 
 func (r *DirectRuntime) StartSession(ctx context.Context, cfg SessionConfig) (SessionHandle, error) {
-	modelID, err := catalog.ResolveOpenRouterModelID(r.catalogRoot, cfg.ModelID)
+	modelDef, err := catalog.ResolveModelDefinition(r.catalogRoot, cfg.ModelID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve model %q: %w", cfg.ModelID, err)
 	}
 
 	handle := &directHandle{
-		client:  r.client,
-		config:  cfg,
-		modelID: modelID,
-		events:  make(chan RuntimeEvent, 16),
-		done:    make(chan struct{}),
+		client:   r.client,
+		config:   cfg,
+		provider: modelDef.Provider,
+		modelID:  modelDef.ModelID,
+		events:   make(chan RuntimeEvent, 16),
+		done:     make(chan struct{}),
 	}
 
 	go handle.run(ctx)
@@ -46,12 +47,13 @@ func (r *DirectRuntime) StartSession(ctx context.Context, cfg SessionConfig) (Se
 }
 
 type directHandle struct {
-	client  openrouter.ChatClient
-	config  SessionConfig
-	modelID string
-	events  chan RuntimeEvent
-	done    chan struct{}
-	err     error
+	client   openrouter.ChatClient
+	config   SessionConfig
+	provider string
+	modelID  string
+	events   chan RuntimeEvent
+	done     chan struct{}
+	err      error
 }
 
 func (h *directHandle) run(ctx context.Context) {
@@ -79,6 +81,7 @@ func (h *directHandle) run(ctx context.Context) {
 	req := openrouter.ChatCompletionRequest{
 		SessionID:  h.config.SessionID,
 		ModelAlias: h.config.ModelID,
+		Provider:   h.provider,
 		Model:      h.modelID,
 		Messages: []openrouter.Message{
 			{Role: "system", Content: systemPrompt},

@@ -21,6 +21,25 @@ x-runtime-volumes: &runtime-volumes
   - audit-data:/app/var/audit
 
 services:
+  bifrost:
+    image: maximhq/bifrost:v1.5.7
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8080
+      BIFROST_ENCRYPTION_KEY: ${BIFROST_ENCRYPTION_KEY:-local-bifrost-enc-key-32-bytes!!}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    volumes:
+      - bifrost-data:/app/data
+      - ./bifrost/config.json:/app/data/config.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   governance-shell:
     build:
       context: .
@@ -39,10 +58,15 @@ services:
       AI_ORCH_POLICY_ENGINE: ${AI_ORCH_POLICY_ENGINE:-native}
       AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX: ${AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX:-15}
       AI_ORCH_ORCHESTRATOR_URL: http://orchestrator:8080
+      AI_ORCH_MODEL_BACKEND: ${AI_ORCH_MODEL_BACKEND:-bifrost}
+      AI_ORCH_BIFROST_BASE_URL: ${AI_ORCH_BIFROST_BASE_URL:-http://bifrost:8080}
+      AI_ORCH_BIFROST_API_KEY: ${AI_ORCH_BIFROST_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
       OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-ai-agent-orch-local}
     depends_on:
+      bifrost:
+        condition: service_healthy
       orchestrator:
         condition: service_healthy
     ports:
@@ -216,4 +240,5 @@ services:
         condition: service_healthy
 
 volumes:
+  bifrost-data:
   audit-data:

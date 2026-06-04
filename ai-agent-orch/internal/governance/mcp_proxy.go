@@ -163,6 +163,7 @@ func (h *MCPProxyHandler) auditMCP(ctx context.Context, sessionID string, server
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
+		TrustLevel:         "gateway_enforced",
 	})
 }
 
