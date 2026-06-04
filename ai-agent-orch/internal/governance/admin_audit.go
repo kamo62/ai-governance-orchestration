@@ -27,11 +27,9 @@ func (h *AdminAuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return
 	}
-	authReq, ok := h.service.RequireAuthorizedRequest(w, r)
-	if !ok {
+	if !h.service.RequireAdminRequest(w, r) {
 		return
 	}
-	r = authReq
 
 	switch r.Method {
 	case http.MethodPost:

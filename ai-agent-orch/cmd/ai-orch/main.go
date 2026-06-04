@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -17,7 +18,7 @@ import (
 )
 
 const (
-	defaultGovernanceURL   = "http://127.0.0.1:8080"
+	defaultGovernanceURL   = "http://127.0.0.1:18080"
 	defaultOrchestratorURL = "http://127.0.0.1:8081"
 )
 
@@ -25,6 +26,7 @@ type Config struct {
 	GovernanceURL   string
 	OrchestratorURL string
 	Token           string
+	AdminToken      string
 }
 
 type eventStreamResult struct {
@@ -43,6 +45,7 @@ func loadConfig() Config {
 		GovernanceURL:   envOrDefault("AI_ORCH_GOVERNANCE_URL", defaultGovernanceURL),
 		OrchestratorURL: envOrDefault("AI_ORCH_ORCHESTRATOR_URL", defaultOrchestratorURL),
 		Token:           envOrDefault("AI_ORCH_DEV_TOKEN", ""),
+		AdminToken:      envOrDefault("AI_ORCH_ADMIN_TOKEN", ""),
 	}
 }
 
@@ -74,6 +77,22 @@ func main() {
 		handleAgents(ctx, cfg, os.Args[2:])
 	case "negative":
 		handleNegative(ctx, cfg, os.Args[2:])
+	case "mcp":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: ai-orch mcp start|install|doctor ...")
+			os.Exit(1)
+		}
+		switch os.Args[2] {
+		case "start":
+			handleMCPStart(ctx, cfg, os.Args[3:])
+		case "install":
+			handleMCPInstall(cfg, os.Args[3:])
+		case "doctor":
+			handleMCPDoctor(cfg, os.Args[3:])
+		default:
+			fmt.Fprintf(os.Stderr, "unknown mcp subcommand: %s\n", os.Args[2])
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -95,11 +114,15 @@ Usage:
   ai-orch smoke [--prompt <text>]
   ai-orch agents list
   ai-orch negative secret|classification|killswitch|cost
+  ai-orch mcp start [--transport http|stdio] [--host 127.0.0.1] [--port 18081]
+  ai-orch mcp install --client <vscode|cline|claude-code|codex> [--force]
+  ai-orch mcp doctor
 
 Environment:
-  AI_ORCH_GOVERNANCE_URL    Governance Shell base URL (default: http://127.0.0.1:8080)
+  AI_ORCH_GOVERNANCE_URL    Governance Shell base URL (default: http://127.0.0.1:18080)
   AI_ORCH_ORCHESTRATOR_URL  Orchestrator base URL (default: http://127.0.0.1:8081)
-  AI_ORCH_DEV_TOKEN         Bearer token for local dev auth`)
+  AI_ORCH_DEV_TOKEN         Bearer token for local dev auth
+  AI_ORCH_ADMIN_TOKEN       Bearer token for admin routes such as killswitch`)
 }
 
 func handleSession(ctx context.Context, cfg Config, args []string) {
@@ -687,12 +710,7 @@ func doRequest(ctx context.Context, cfg Config, method, url string, body []byte)
 	if err != nil {
 		return "", err
 	}
-	// Always send a bearer token. The local CLI default matches Docker Compose.
-	token := cfg.Token
-	if token == "" {
-		token = "local-dev"
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+cfg.bearerTokenForURL(url))
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -709,6 +727,28 @@ func doRequest(ctx context.Context, cfg Config, method, url string, body []byte)
 		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 	return string(respBody), nil
+}
+
+func (cfg Config) bearerTokenForURL(rawURL string) string {
+	if isAdminRoute(rawURL) {
+		if cfg.AdminToken != "" {
+			return cfg.AdminToken
+		}
+		return "local-admin"
+	}
+	if cfg.Token != "" {
+		return cfg.Token
+	}
+	return "local-dev"
+}
+
+func isAdminRoute(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err == nil {
+		path := parsed.EscapedPath()
+		return path == "/v1/admin" || strings.Contains(path, "/v1/admin/")
+	}
+	return strings.Contains(rawURL, "/v1/admin/")
 }
 
 func prettyPrintJSON(s string) {

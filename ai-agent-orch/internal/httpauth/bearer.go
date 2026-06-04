@@ -1,6 +1,7 @@
 package httpauth
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"strings"
 )
@@ -28,5 +29,5 @@ func AuthorizedBearer(header string, token string) bool {
 	if token == "" || !strings.HasPrefix(header, prefix) {
 		return false
 	}
-	return strings.TrimPrefix(header, prefix) == token
+	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(header, prefix)), []byte(token)) == 1
 }

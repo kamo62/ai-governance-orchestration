@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ai-agent-orch/internal/appversion"
 )
 
 // ACPRuntime implements Runtime using OpenCode ACP JSON-RPC over stdio.
@@ -134,7 +136,7 @@ func (h *acpHandle) runSession() {
 			},
 			"clientInfo": map[string]string{
 				"name":    "ai-agent-orch",
-				"version": "v0.5.0-alpha",
+				"version": appversion.Version,
 			},
 		},
 	}
@@ -148,13 +150,19 @@ func (h *acpHandle) runSession() {
 		return
 	}
 
+	workspace, err := h.workspacePath()
+	if err != nil {
+		h.emitError(err.Error())
+		return
+	}
+
 	// 2. Create session
 	newSessionReq := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      h.allocID(),
 		"method":  "session/new",
 		"params": map[string]any{
-			"cwd":        h.workspacePath(),
+			"cwd":        workspace,
 			"mcpServers": acpMCPServers(h.config.MCPEndpoints, os.Getenv("AI_ORCH_SERVICE_TOKEN"), h.config.SessionID),
 		},
 	}
@@ -446,9 +454,29 @@ func (h *acpHandle) emitEvent(event RuntimeEvent) {
 	if h.closed {
 		return
 	}
+	if isCriticalRuntimeEvent(event.Type) {
+		var done <-chan struct{}
+		if h.ctx != nil {
+			done = h.ctx.Done()
+		}
+		select {
+		case h.events <- event:
+		case <-done:
+		}
+		return
+	}
 	select {
 	case h.events <- event:
 	default:
+	}
+}
+
+func isCriticalRuntimeEvent(eventType string) bool {
+	switch eventType {
+	case "patch", "done", "error":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -538,14 +566,11 @@ func containsPatchKey(s string) bool {
 		strings.Contains(s, "\"patch_id\"")
 }
 
-func (h *acpHandle) workspacePath() string {
+func (h *acpHandle) workspacePath() (string, error) {
 	if h != nil && h.config.WorkspacePath != "" {
-		return h.config.WorkspacePath
+		return h.config.WorkspacePath, nil
 	}
-	if cwd, err := os.Getwd(); err == nil {
-		return cwd
-	}
-	return "."
+	return "", fmt.Errorf("ACP workspace path is required")
 }
 
 func acpMCPServers(endpoints map[string]string, serviceToken string, sessionID string) []map[string]any {

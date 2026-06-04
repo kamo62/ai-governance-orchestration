@@ -14,6 +14,7 @@ import (
 	"time"
 
 	patchproto "ai-agent-orch/internal/patch"
+	"ai-agent-orch/internal/policyengine"
 )
 
 // defaultPatchBufferTTL is the TTL for buffered patch entries.
@@ -69,11 +70,8 @@ func (b *PatchBuffer) Store(ctx context.Context, sessionID string, payload strin
 		if err := validatePatchPath(file.Path); err != nil {
 			return "", err
 		}
-		if findings := detectSecrets(file.NewContent); len(findings) > 0 {
+		if findings := policyengine.DetectSecrets(file.NewContent); len(findings) > 0 {
 			return "", fmt.Errorf("secret detected in patch content: %s", strings.Join(findings, ","))
-		}
-		if findings := detectSecrets(file.OriginalContent); len(findings) > 0 {
-			return "", fmt.Errorf("secret detected in original patch content: %s", strings.Join(findings, ","))
 		}
 		if file.NewContent != "" {
 			file.ProposedContentHash = sha256Hex([]byte(file.NewContent))

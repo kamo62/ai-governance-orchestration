@@ -3,6 +3,7 @@ package openrouter
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -134,5 +135,59 @@ func TestChatCompletionReportsOpenRouterErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "429") || !strings.Contains(err.Error(), "quota exceeded") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestChatCompletionStreamSendsStreamTrue(t *testing.T) {
+	var gotStream bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") != "text/event-stream" {
+			t.Fatalf("expected event-stream accept header, got %q", r.Header.Get("Accept"))
+		}
+		var body ChatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		gotStream = body.Stream
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	client := NewClient(Config{
+		APIKey:     "test-key",
+		BaseURL:    srv.URL,
+		HTTPClient: srv.Client(),
+	})
+
+	reader, err := client.ChatCompletionStream(context.Background(), ChatCompletionRequest{
+		Model:    "test-model-id",
+		Messages: []Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletionStream returned error: %v", err)
+	}
+	defer reader.Close()
+	_, _ = io.ReadAll(reader)
+
+	if !gotStream {
+		t.Fatal("expected stream=true in upstream request")
+	}
+}
+
+func TestDecodeStreamChunkAcceptsDataPrefixWithoutSpace(t *testing.T) {
+	chunk, err := DecodeStreamChunk(`data:{"id":"chunk1","choices":[{"index":0,"delta":{"content":"Hi"}}]}`)
+	if err != nil {
+		t.Fatalf("DecodeStreamChunk returned error: %v", err)
+	}
+	if chunk.ID != "chunk1" || chunk.Choices[0].Delta.Content != "Hi" {
+		t.Fatalf("unexpected chunk: %#v", chunk)
+	}
+
+	_, err = DecodeStreamChunk("data:[DONE]")
+	if err != io.EOF {
+		t.Fatalf("expected EOF for DONE without space, got %v", err)
 	}
 }

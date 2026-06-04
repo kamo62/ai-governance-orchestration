@@ -75,3 +75,58 @@ func TestKillSwitchToggleRequestUsesPostToEnableAndDeleteToDisable(t *testing.T)
 		t.Fatalf("unexpected disable url %q", url)
 	}
 }
+
+func TestDoRequestUsesAdminTokenForAdminRoutes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/admin/killswitch" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer local-admin-token" {
+			t.Fatalf("expected admin auth header, got %q", got)
+		}
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer server.Close()
+
+	cfg := Config{
+		GovernanceURL: server.URL,
+		Token:         "local-dev-token",
+		AdminToken:    "local-admin-token",
+	}
+
+	if _, err := doGet(context.Background(), cfg, server.URL+"/v1/admin/killswitch"); err != nil {
+		t.Fatalf("admin request failed: %v", err)
+	}
+}
+
+func TestIsAdminRouteHandlesBasePathProxies(t *testing.T) {
+	if !isAdminRoute("https://example.test/governance/v1/admin/killswitch") {
+		t.Fatal("expected base-path admin route to be detected")
+	}
+	if isAdminRoute("https://example.test/governance/v1/agents") {
+		t.Fatal("did not expect user route to be treated as admin")
+	}
+}
+
+func TestDoRequestUsesDeveloperTokenForUserRoutes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/agents" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer local-dev-token" {
+			t.Fatalf("expected developer auth header, got %q", got)
+		}
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer server.Close()
+
+	cfg := Config{
+		GovernanceURL: server.URL,
+		Token:         "local-dev-token",
+		AdminToken:    "local-admin-token",
+	}
+
+	if _, err := doGet(context.Background(), cfg, server.URL+"/v1/agents"); err != nil {
+		t.Fatalf("developer request failed: %v", err)
+	}
+}

@@ -22,7 +22,7 @@ func TestAdminAuditHandler_RetentionNotSupportedForFileStore(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]any{"max_age_hours": 24})
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/audit/retention", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Authorization", "Bearer admin-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -82,7 +82,7 @@ func TestAdminAuditHandler_RetentionPreservesLiveSessionChains(t *testing.T) {
 	handler := NewAdminAuditHandler(chain, adminAuditService(chain))
 	body, _ := json.Marshal(map[string]any{"max_age_hours": 24})
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/audit/retention", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Authorization", "Bearer admin-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -105,7 +105,8 @@ func TestAdminAuditHandler_RetentionPreservesLiveSessionChains(t *testing.T) {
 
 func adminAuditService(store audit.Store) *SessionService {
 	return NewSessionService(SessionConfig{
-		DevToken: "test-token",
-		Audit:    store,
+		DevToken:   "test-token",
+		AdminToken: "admin-token",
+		Audit:      store,
 	})
 }

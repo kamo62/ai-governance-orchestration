@@ -86,11 +86,14 @@ func (h *ModelProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if h.audit != nil {
 		if _, err := h.audit.Append(r.Context(), audit.Event{
-			EventID:            h.newID("evt"),
-			SessionID:          sessionID,
-			EventType:          "model.proxy_call",
-			Actor:              "runtime",
-			Provider:           "openrouter",
+			EventID:   h.newID("evt"),
+			SessionID: sessionID,
+			EventType: "model.proxy_call",
+			Actor:     "runtime",
+			Provider:  "openrouter",
+			// ModelAlias is passed through from the orchestrator for audit correlation.
+			// Alias-to-model enforcement is currently delegated to the orchestrator;
+			// the proxy trusts req.Model as the resolved value.
 			ModelAlias:         r.Header.Get("X-AI-Orch-Model-Alias"),
 			ModelResolved:      req.Model,
 			ProxyCallID:        h.newID("proxy"),

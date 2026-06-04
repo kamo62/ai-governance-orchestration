@@ -36,12 +36,17 @@ type OIDCTokenValidator struct {
 	jwks    map[string]any // kid -> JWK
 	jwksExp time.Time      // TTL cache expiry
 
-	refreshMu sync.Mutex
-	refreshCh chan struct{} // singleflight channel
+	refreshMu   sync.Mutex
+	refreshCh   chan struct{} // singleflight channel
+	lastRefresh time.Time     // rate-limit JWKS fetches
 }
 
 // Default JWKS cache TTL.
-const jwksTTL = 15 * time.Minute
+const (
+	jwksTTL         = 15 * time.Minute
+	jwksMinRefresh  = 1 * time.Minute // minimum interval between JWKS fetches to prevent amplification
+	clockSkewLeeway = 60 * time.Second
+)
 
 // HTTP client with timeout for OIDC discovery/JWKS requests.
 var oidcHTTPClient = &http.Client{
@@ -107,8 +112,12 @@ func (v *OIDCTokenValidator) validateJWT(ctx context.Context, token string) (str
 
 	v.mu.RLock()
 	jwk, ok := v.jwks[kid]
+	canRefresh := time.Since(v.lastRefresh) > jwksMinRefresh
 	v.mu.RUnlock()
 	if !ok {
+		if !canRefresh {
+			return "", errors.New("unknown jwt signing key (refresh rate limited)")
+		}
 		// Key rotation may have happened; retry once with fresh fetch.
 		if err := v.refreshKeysSingleflight(ctx); err != nil {
 			return "", fmt.Errorf("jwks refresh after key miss: %w", err)
@@ -282,7 +291,7 @@ func checkExp(claims map[string]any) error {
 	if err != nil {
 		return err
 	}
-	if time.Now().UTC().After(time.Unix(exp, 0).UTC()) {
+	if time.Now().UTC().Add(-clockSkewLeeway).After(time.Unix(exp, 0).UTC()) {
 		return errors.New("token expired")
 	}
 	return nil
@@ -297,7 +306,7 @@ func checkNBF(claims map[string]any) error {
 	if err != nil {
 		return err
 	}
-	if time.Now().UTC().Before(time.Unix(nbf, 0).UTC()) {
+	if time.Now().UTC().Add(clockSkewLeeway).Before(time.Unix(nbf, 0).UTC()) {
 		return errors.New("token not yet valid (nbf)")
 	}
 	return nil
@@ -360,6 +369,11 @@ func (v *OIDCTokenValidator) refreshKeysSingleflight(ctx context.Context) error 
 	v.refreshMu.Unlock()
 
 	err := v.refreshKeys(ctx)
+	if err == nil {
+		v.mu.Lock()
+		v.lastRefresh = time.Now().UTC()
+		v.mu.Unlock()
+	}
 
 	v.refreshMu.Lock()
 	close(v.refreshCh)

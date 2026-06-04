@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 )
 
 type ModelRegistry struct {
@@ -11,10 +12,26 @@ type ModelRegistry struct {
 }
 
 type ModelDefinition struct {
-	Alias         string  `yaml:"alias"`
-	Provider      string  `yaml:"provider"`
-	ModelID       string  `yaml:"model_id"`
-	FallbackAlias *string `yaml:"fallback_alias"`
+	Alias                  string   `yaml:"alias"`
+	Provider               string   `yaml:"provider"`
+	ModelID                string   `yaml:"model_id"`
+	Purpose                string   `yaml:"purpose"`
+	AllowedClassifications []string `yaml:"allowed_classifications"`
+	FallbackAlias          *string  `yaml:"fallback_alias"`
+}
+
+// AllowsClassification reports whether the model accepts the given classification.
+func (m ModelDefinition) AllowsClassification(classification string) bool {
+	if len(m.AllowedClassifications) == 0 {
+		return true
+	}
+	classification = strings.ToLower(strings.TrimSpace(classification))
+	for _, c := range m.AllowedClassifications {
+		if strings.ToLower(strings.TrimSpace(c)) == classification {
+			return true
+		}
+	}
+	return false
 }
 
 func LoadModelRegistry(root string) (ModelRegistry, error) {

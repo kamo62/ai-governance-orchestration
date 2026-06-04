@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -193,4 +194,8 @@ type fakeChatClient struct {
 
 func (c fakeChatClient) ChatCompletion(context.Context, openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
 	return c.response, c.err
+}
+
+func (c fakeChatClient) ChatCompletionStream(context.Context, openrouter.ChatCompletionRequest) (io.ReadCloser, error) {
+	return nil, c.err
 }

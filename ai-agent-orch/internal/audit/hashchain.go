@@ -15,6 +15,12 @@ import (
 // hash chain. It automatically sets PrevEventHash and EventHash on every appended
 // event without requiring callers to manage chain state.
 //
+// Limitation: the chain is tamper-evident within the store, not tamper-proof.
+// An attacker with store access can rewrite the entire chain consistently.
+// Production deployments should add an external anchor (e.g., HMAC key held
+// offline, signed checkpoint published to immutable storage, or WORM backup)
+// to detect wholesale replacement.
+//
 // ChainAppender implements the full audit.Store interface and can be used
 // anywhere audit.Store is required, including in the Governance Shell,
 // Orchestrator, model proxy and MCP proxy.

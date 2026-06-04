@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"ai-agent-orch/internal/catalog"
@@ -16,7 +17,8 @@ func main() {
 	modelAlias := flag.String("model-alias", envOrDefault("OPENROUTER_MODEL_ALIAS", "smoke-deepseek-v4-flash"), "model registry alias to smoke test")
 	modelID := flag.String("model-id", envOrDefault("OPENROUTER_MODEL", ""), "explicit OpenRouter model ID; overrides model alias")
 	prompt := flag.String("prompt", "Reply with exactly: smoke-ok", "smoke-test prompt")
-	maxTokens := flag.Int("max-tokens", 32, "maximum response tokens")
+	expected := flag.String("expect", "smoke-ok", "expected assistant response; set empty to skip content assertion")
+	maxTokens := flag.Int("max-tokens", 64, "maximum response tokens")
 	baseURL := flag.String("base-url", envOrDefault("OPENROUTER_BASE_URL", openrouter.DefaultBaseURL), "OpenRouter API base URL")
 	flag.Parse()
 
@@ -47,17 +49,38 @@ func main() {
 		},
 		Temperature: 0,
 		MaxTokens:   *maxTokens,
+		Reasoning: &openrouter.ReasoningConfig{
+			Exclude: true,
+		},
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "openrouter smoke failed: %v\n", err)
 		os.Exit(1)
 	}
 
+	content := response.FirstContent()
+	if err := validateSmokeResponse(content, *expected); err != nil {
+		fmt.Fprintf(os.Stderr, "openrouter smoke failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	fmt.Printf("model: %s\n", resolvedModel)
-	fmt.Printf("response: %s\n", response.FirstContent())
+	fmt.Printf("response: %s\n", content)
 	if response.Usage.TotalTokens > 0 {
 		fmt.Printf("usage: prompt=%d completion=%d total=%d\n", response.Usage.PromptTokens, response.Usage.CompletionTokens, response.Usage.TotalTokens)
 	}
+}
+
+func validateSmokeResponse(content string, expected string) error {
+	actual := strings.TrimSpace(content)
+	want := strings.TrimSpace(expected)
+	if actual == "" {
+		return fmt.Errorf("assistant response content was empty")
+	}
+	if want != "" && actual != want {
+		return fmt.Errorf("assistant response mismatch: expected %q, got %q", want, actual)
+	}
+	return nil
 }
 
 func envOrDefault(key string, fallback string) string {
