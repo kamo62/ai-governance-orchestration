@@ -39,13 +39,13 @@ func TestAgentListHandlerReturnsCatalogAgents(t *testing.T) {
 	}
 	found := false
 	for _, a := range result.Agents {
-		if a.Name == "test-generation" {
+		if a.Name == "unit-tests" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected test-generation in agent list")
+		t.Fatalf("expected unit-tests in agent list")
 	}
 }
 
@@ -74,7 +74,7 @@ func TestMessagesHandlerRoutesAndWritesAudit(t *testing.T) {
 		Audit:    audit.NewFileStore(auditPath),
 		NewID:    fixedIDs("evt_route_1"),
 	})
-	orch := &fakeOrchestrator{specialist: "test-generation", reason: "testing keyword match"}
+	orch := &fakeOrchestrator{specialist: "unit-tests", reason: "testing keyword match"}
 	handler := NewMessagesHandler(service, orch)
 
 	body := []byte(`{"prompt":"write tests for login"}`)
@@ -91,8 +91,8 @@ func TestMessagesHandlerRoutesAndWritesAudit(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if result["specialist"] != "test-generation" {
-		t.Fatalf("expected test-generation, got %v", result["specialist"])
+	if result["specialist"] != "unit-tests" {
+		t.Fatalf("expected unit-tests, got %v", result["specialist"])
 	}
 
 	auditText := readAuditText(t, auditPath)
@@ -110,7 +110,7 @@ func TestMessagesHandlerAdvancesSessionToAwaitingConfirmation(t *testing.T) {
 	if err := store.Create(context.Background(), SessionRecord{
 		SessionID:      "sess_route_once",
 		ActorSubject:   "local-dev",
-		Agent:          "test-generation",
+		Agent:          "unit-tests",
 		Classification: "internal",
 		PromptSHA256:   "abc123",
 		Status:         "created",
@@ -125,7 +125,7 @@ func TestMessagesHandlerAdvancesSessionToAwaitingConfirmation(t *testing.T) {
 		Sessions: store,
 		NewID:    fixedIDs("evt_route_state_1"),
 	})
-	handler := NewMessagesHandler(service, &fakeOrchestrator{specialist: "test-generation", reason: "testing keyword match"})
+	handler := NewMessagesHandler(service, &fakeOrchestrator{specialist: "unit-tests", reason: "testing keyword match"})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_route_once/messages", strings.NewReader(`{"prompt":"write tests"}`))
 	req.Header.Set("Authorization", "Bearer local-test-token")
@@ -225,7 +225,7 @@ func TestConfirmHandlerBlocksWhenKillSwitchEnabled(t *testing.T) {
 	orch := &fakeOrchestrator{}
 	handler := NewConfirmHandler(service, orch)
 
-	body := []byte(`{"agent":"test-generation"}`)
+	body := []byte(`{"agent":"unit-tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_123/confirm", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	rec := httptest.NewRecorder()
@@ -246,7 +246,7 @@ func TestConfirmHandlerAcceptsAndWritesAudit(t *testing.T) {
 	orch := &fakeOrchestrator{}
 	handler := NewConfirmHandler(service, orch)
 
-	body := []byte(`{"agent":"test-generation"}`)
+	body := []byte(`{"agent":"unit-tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_123/confirm", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	rec := httptest.NewRecorder()
@@ -271,7 +271,7 @@ func TestConfirmHandlerRequiresAwaitingConfirmationState(t *testing.T) {
 	if err := store.Create(context.Background(), SessionRecord{
 		SessionID:      "sess_not_routed",
 		ActorSubject:   "local-dev",
-		Agent:          "test-generation",
+		Agent:          "unit-tests",
 		Classification: "internal",
 		PromptSHA256:   "abc123",
 		Status:         "created",
@@ -287,7 +287,7 @@ func TestConfirmHandlerRequiresAwaitingConfirmationState(t *testing.T) {
 	})
 	handler := NewConfirmHandler(service, &fakeOrchestrator{})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_not_routed/confirm", strings.NewReader(`{"agent":"test-generation"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_not_routed/confirm", strings.NewReader(`{"agent":"unit-tests"}`))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -305,7 +305,7 @@ func TestConfirmHandlerConfirmsRoutedSession(t *testing.T) {
 	if err := store.Create(context.Background(), SessionRecord{
 		SessionID:      "sess_routed",
 		ActorSubject:   "local-dev",
-		Agent:          "test-generation",
+		Agent:          "unit-tests",
 		Classification: "internal",
 		PromptSHA256:   "abc123",
 		Status:         "awaiting_confirmation",
@@ -322,7 +322,7 @@ func TestConfirmHandlerConfirmsRoutedSession(t *testing.T) {
 	})
 	handler := NewConfirmHandler(service, &fakeOrchestrator{})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_routed/confirm", strings.NewReader(`{"agent":"test-generation"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_routed/confirm", strings.NewReader(`{"agent":"unit-tests"}`))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -346,7 +346,7 @@ func TestConfirmHandlerWithEventsRequiresCachedPrompt(t *testing.T) {
 	orch := &fakeOrchestrator{}
 	handler := NewConfirmHandlerWithEvents(service, orch, NewEventStore())
 
-	body := []byte(`{"agent":"test-generation"}`)
+	body := []byte(`{"agent":"unit-tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_missing_prompt/confirm", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	req.Header.Set("Content-Type", "application/json")
@@ -370,7 +370,7 @@ func TestConfirmHandlerDoesNotAdvanceStateWhenPromptMissing(t *testing.T) {
 	if err := store.Create(context.Background(), SessionRecord{
 		SessionID:      "sess_missing_prompt",
 		ActorSubject:   "local-dev",
-		Agent:          "test-generation",
+		Agent:          "unit-tests",
 		Classification: "internal",
 		PromptSHA256:   "abc123",
 		Status:         "awaiting_confirmation",
@@ -385,7 +385,7 @@ func TestConfirmHandlerDoesNotAdvanceStateWhenPromptMissing(t *testing.T) {
 	})
 	handler := NewConfirmHandlerWithEvents(service, &fakeOrchestrator{}, NewEventStore())
 
-	body := []byte(`{"agent":"test-generation"}`)
+	body := []byte(`{"agent":"unit-tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_missing_prompt/confirm", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	req.Header.Set("Content-Type", "application/json")
@@ -417,7 +417,7 @@ func TestConfirmHandlerDispatchSurvivesRequestContextCancellation(t *testing.T) 
 	handler := NewConfirmHandlerWithEvents(service, orch, events)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	body := []byte(`{"agent":"test-generation"}`)
+	body := []byte(`{"agent":"unit-tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_ctx/confirm", bytes.NewReader(body)).WithContext(ctx)
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	req.Header.Set("Content-Type", "application/json")
@@ -519,7 +519,7 @@ func TestPatchDecisionHandlerRejectsInvalidDecision(t *testing.T) {
 
 func TestAdminKillSwitchList(t *testing.T) {
 	store := NewMemoryKillSwitch()
-	store.Block("agent", "test-generation")
+	store.Block("agent", "unit-tests")
 	service := NewSessionService(SessionConfig{DevToken: "local-test-token", AdminToken: "admin-token"})
 	handler := NewAdminHandler(store, service)
 
@@ -564,33 +564,33 @@ func TestAdminKillSwitchBlockAndUnblock(t *testing.T) {
 	handler := NewAdminHandler(store, service)
 
 	// Block
-	req := httptest.NewRequest(http.MethodPost, "/v1/admin/killswitch/agent/test-generation", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/killswitch/agent/unit-tests", nil)
 	req.Header.Set("Authorization", "Bearer admin-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 on block, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if !store.IsBlocked("agent", "test-generation") {
+	if !store.IsBlocked("agent", "unit-tests") {
 		t.Fatalf("expected agent to be blocked")
 	}
 
 	// Unblock
-	req = httptest.NewRequest(http.MethodDelete, "/v1/admin/killswitch/agent/test-generation", nil)
+	req = httptest.NewRequest(http.MethodDelete, "/v1/admin/killswitch/agent/unit-tests", nil)
 	req.Header.Set("Authorization", "Bearer admin-token")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 on unblock, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if store.IsBlocked("agent", "test-generation") {
+	if store.IsBlocked("agent", "unit-tests") {
 		t.Fatalf("expected agent to be unblocked")
 	}
 }
 
 func TestAgentKillSwitchBlocksSessionCreation(t *testing.T) {
 	store := NewMemoryKillSwitch()
-	if err := store.Block("agent", "test-generation"); err != nil {
+	if err := store.Block("agent", "unit-tests"); err != nil {
 		t.Fatalf("block agent: %v", err)
 	}
 	service := NewSessionService(SessionConfig{
@@ -600,7 +600,7 @@ func TestAgentKillSwitchBlocksSessionCreation(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	body := []byte(`{"agent":"test-generation","classification":"internal","prompt":"write tests"}`)
+	body := []byte(`{"agent":"unit-tests","classification":"internal","prompt":"write tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	req.Header.Set("Content-Type", "application/json")
@@ -614,7 +614,7 @@ func TestAgentKillSwitchBlocksSessionCreation(t *testing.T) {
 
 func TestAgentKillSwitchBlocksConfirmation(t *testing.T) {
 	store := NewMemoryKillSwitch()
-	if err := store.Block("agent", "test-generation"); err != nil {
+	if err := store.Block("agent", "unit-tests"); err != nil {
 		t.Fatalf("block agent: %v", err)
 	}
 	service := NewSessionService(SessionConfig{
@@ -625,7 +625,7 @@ func TestAgentKillSwitchBlocksConfirmation(t *testing.T) {
 	orch := &fakeOrchestrator{}
 	handler := NewConfirmHandler(service, orch)
 
-	body := []byte(`{"agent":"test-generation"}`)
+	body := []byte(`{"agent":"unit-tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_123/confirm", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	rec := httptest.NewRecorder()
@@ -672,7 +672,7 @@ func TestSessionServiceRecordsRealMetrics(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	body := []byte(`{"agent":"test-generation","classification":"internal","prompt":"write tests"}`)
+	body := []byte(`{"agent":"unit-tests","classification":"internal","prompt":"write tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	rec := httptest.NewRecorder()
@@ -681,7 +681,7 @@ func TestSessionServiceRecordsRealMetrics(t *testing.T) {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	body = []byte(`{"agent":"test-generation","classification":"restricted","prompt":"write tests"}`)
+	body = []byte(`{"agent":"unit-tests","classification":"restricted","prompt":"write tests"}`)
 	req = httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	rec = httptest.NewRecorder()
@@ -740,7 +740,7 @@ type fakeOrchestrator struct {
 	dispatchPrompt string
 }
 
-func (f *fakeOrchestrator) Route(ctx context.Context, sessionID string, prompt string) (RouteDecision, error) {
+func (f *fakeOrchestrator) Route(ctx context.Context, sessionID string, prompt string, context SessionContext) (RouteDecision, error) {
 	if f.err != nil {
 		return RouteDecision{}, f.err
 	}
@@ -778,8 +778,8 @@ type contextProbeOrchestrator struct {
 	dispatched chan error
 }
 
-func (o *contextProbeOrchestrator) Route(ctx context.Context, sessionID string, prompt string) (RouteDecision, error) {
-	return RouteDecision{Specialist: "test-generation", Reason: "test"}, nil
+func (o *contextProbeOrchestrator) Route(ctx context.Context, sessionID string, prompt string, context SessionContext) (RouteDecision, error) {
+	return RouteDecision{Specialist: "unit-tests", Reason: "test"}, nil
 }
 
 func (o *contextProbeOrchestrator) AcceptSession(ctx context.Context, sessionID string, agent string) error {

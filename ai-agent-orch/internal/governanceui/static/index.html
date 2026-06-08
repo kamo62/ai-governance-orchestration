@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AI Orch Governance</title>
+    <link rel="stylesheet" href="/ui/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="top-band">
+        <div>
+          <p class="eyebrow">AI Orch Governance</p>
+          <h1>Control Plane</h1>
+        </div>
+        <div class="status-line" id="statusLine">
+          <span class="status-dot"></span>
+          <span>Waiting</span>
+        </div>
+      </section>
+
+      <section class="token-panel" aria-label="Connection">
+        <label>
+          Governance URL
+          <input id="baseUrl" type="url" value="" autocomplete="off">
+        </label>
+        <label>
+          Developer token / OIDC
+          <input id="devToken" type="password" autocomplete="off">
+        </label>
+        <label>
+          Admin token
+          <input id="adminToken" type="password" autocomplete="off">
+        </label>
+        <button id="saveConnection" type="button">Save</button>
+        <button id="refresh" type="button">Refresh</button>
+        <p class="token-note">Developer/OIDC auth is for UI, CLI, IDE and MCP clients. Runtime model calls use the separate runtime token outside this screen.</p>
+      </section>
+
+      <section class="summary-grid" aria-label="Summary">
+        <article class="metric-tile">
+          <span>Backend</span>
+          <strong id="modelBackend">-</strong>
+        </article>
+        <article class="metric-tile">
+          <span>Agents</span>
+          <strong id="agentCount">-</strong>
+        </article>
+        <article class="metric-tile">
+          <span>Sessions</span>
+          <strong id="sessionCount">-</strong>
+        </article>
+        <article class="metric-tile">
+          <span>Evidence</span>
+          <strong id="evidenceCount">-</strong>
+        </article>
+        <article class="metric-tile">
+          <span>Cache hit rate</span>
+          <strong id="cacheRate">-</strong>
+        </article>
+        <article class="metric-tile">
+          <span>Patch decisions</span>
+          <strong id="patchCount">-</strong>
+        </article>
+      </section>
+
+      <section class="readiness-strip" aria-label="CIO demo readiness">
+        <div class="readiness-title">
+          <div class="panel-head compact">
+            <h2>CIO Demo Readiness</h2>
+            <span id="readinessBadge" class="badge">Pending</span>
+          </div>
+          <p id="readinessSummary">Waiting for service checks</p>
+        </div>
+        <div id="readinessList" class="readiness-list"></div>
+      </section>
+
+      <section class="main-grid">
+        <section class="panel wide">
+          <div class="panel-head">
+            <h2>Gateway Posture</h2>
+            <span id="versionBadge" class="badge">-</span>
+          </div>
+          <div id="gatewayList" class="gateway-list"></div>
+        </section>
+
+        <section class="panel session-panel">
+          <div class="panel-head">
+            <h2>Recent Sessions</h2>
+            <span id="sessionBadge" class="badge">0</span>
+          </div>
+          <div id="sessionList" class="list session-list"></div>
+        </section>
+
+        <section class="panel audit-panel">
+          <div class="panel-head">
+            <h2 id="auditSessionTitle">Session Audit Trail</h2>
+            <span id="auditEventBadge" class="badge">0</span>
+          </div>
+          <p id="auditSummary" class="audit-summary">Select a session to inspect its governed events.</p>
+          <div id="auditList" class="list audit-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Register Use Case</h2>
+          </div>
+          <form id="useCaseForm" class="stack-form">
+            <input name="id" placeholder="use-case-id" required>
+            <input name="owner" placeholder="owner" required>
+            <input name="domain" placeholder="domain" required>
+            <input name="expected_benefit" placeholder="expected benefit" required>
+            <div class="two-col">
+              <select name="classification" required>
+                <option value="internal">internal</option>
+                <option value="public">public</option>
+                <option value="confidential">confidential</option>
+              </select>
+              <select name="risk_level" required>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
+            </div>
+            <button type="submit">Register</button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Register Workflow</h2>
+          </div>
+          <form id="workflowForm" class="stack-form">
+            <input name="id" placeholder="workflow-id" required>
+            <input name="name" placeholder="name" required>
+            <input name="description" placeholder="description" required>
+            <input name="stages" placeholder="stages, comma separated">
+            <button type="submit">Register</button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Agents</h2>
+            <span class="badge" id="agentBadge">0</span>
+          </div>
+          <div id="agentList" class="list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Maturity Export</h2>
+            <span class="badge" id="maturityBadge">0</span>
+          </div>
+          <div id="maturityList" class="list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Evidence</h2>
+            <span class="badge" id="evidenceBadge">0</span>
+          </div>
+          <div id="evidenceList" class="list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Audit Lookup</h2>
+          </div>
+          <form id="auditForm" class="stack-form">
+            <input name="session_id" placeholder="session_id" required>
+            <button type="submit">Load Audit</button>
+          </form>
+          <p class="field-note">Manual lookup keeps older or copied session IDs reachable.</p>
+        </section>
+      </section>
+
+      <section class="activity-log" aria-label="Activity log">
+        <div class="panel-head">
+          <h2>Activity</h2>
+          <button id="clearLog" type="button">Clear</button>
+        </div>
+        <ol id="activityLog"></ol>
+      </section>
+    </main>
+    <script src="/ui/app.js"></script>
+  </body>
+</html>

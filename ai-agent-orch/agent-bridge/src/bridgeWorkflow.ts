@@ -64,7 +64,10 @@ export function authHeadersForBridge(settings: BridgeAuthSettings, extra: Record
     }
     return {
         Authorization: `Bearer ${token}`,
+        'X-AI-Orch-Client': 'ai-agent-bridge',
         'X-AI-Orch-Local-Identity': settings.identity,
+        'X-AI-Orch-Trust-Level': 'managed_client',
+        'X-AI-Orch-Enforcement-Mode': 'managed',
         ...extra,
     };
 }

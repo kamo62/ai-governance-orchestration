@@ -25,7 +25,7 @@ func TestSQLiteSessionStoreLifecycle(t *testing.T) {
 	rec := SessionRecord{
 		SessionID:      "sess_test",
 		ActorSubject:   "user-1",
-		Agent:          "test-generation",
+		Agent:          "unit-tests",
 		Classification: "internal",
 		PromptSHA256:   "abc123",
 		Status:         "created",
@@ -64,6 +64,50 @@ func TestSQLiteSessionStoreLifecycle(t *testing.T) {
 	}
 }
 
+func TestSQLiteSessionStoreListRecentFiltersActorAndOrdersNewestFirst(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := NewSQLiteSessionStore(path)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	base := time.Date(2026, 6, 8, 7, 0, 0, 0, time.UTC)
+	records := []SessionRecord{
+		{SessionID: "sess_old", ActorSubject: "local-dev", Agent: "unit-tests", Classification: "internal", PromptSHA256: "old", Status: "done", CreatedAt: base},
+		{SessionID: "sess_other", ActorSubject: "other-dev", Agent: "code-review", Classification: "internal", PromptSHA256: "other", Status: "done", CreatedAt: base.Add(1 * time.Minute)},
+		{SessionID: "sess_new", ActorSubject: "local-dev", Agent: "code-review", Classification: "internal", PromptSHA256: "new", Status: "running", CreatedAt: base.Add(2 * time.Minute), RunID: "run_new", PermissionMode: "reviewed", ApprovalMode: "manual"},
+	}
+	for _, record := range records {
+		if err := store.Create(ctx, record); err != nil {
+			t.Fatalf("create %s: %v", record.SessionID, err)
+		}
+	}
+
+	got, err := store.ListRecent(ctx, "local-dev", 10)
+	if err != nil {
+		t.Fatalf("list recent: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected two local-dev sessions, got %d: %#v", len(got), got)
+	}
+	if got[0].SessionID != "sess_new" || got[1].SessionID != "sess_old" {
+		t.Fatalf("expected newest local sessions first, got %#v", got)
+	}
+	if got[0].PromptSHA256 != "new" || got[0].RunID != "run_new" {
+		t.Fatalf("expected stored fields on newest session, got %#v", got[0])
+	}
+
+	limited, err := store.ListRecent(ctx, "local-dev", 1)
+	if err != nil {
+		t.Fatalf("limited list: %v", err)
+	}
+	if len(limited) != 1 || limited[0].SessionID != "sess_new" {
+		t.Fatalf("expected newest session only, got %#v", limited)
+	}
+}
+
 func TestSQLiteSessionStoreNotFound(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/sessions.db"
@@ -99,7 +143,7 @@ func TestSQLiteSessionStoreReadsLegacyRowsAfterMigration(t *testing.T) {
 		INSERT INTO sessions (
 			session_id, actor_subject, agent, classification, prompt_sha256, status, created_at
 		) VALUES (
-			'sess_legacy', 'local-dev', 'test-generation', 'internal', 'abc123', 'created', ?
+			'sess_legacy', 'local-dev', 'unit-tests', 'internal', 'abc123', 'created', ?
 		);
 	`, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {

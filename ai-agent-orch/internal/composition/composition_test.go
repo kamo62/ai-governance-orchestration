@@ -6,7 +6,7 @@ import (
 
 func TestCompositionFlow(t *testing.T) {
 	stages := []Stage{
-		{Name: "investigate", Agent: "test-generation"},
+		{Name: "investigate", Agent: "unit-tests"},
 		{Name: "plan", Agent: "architecture-review"},
 	}
 	c := NewComposition("sess_123", stages)

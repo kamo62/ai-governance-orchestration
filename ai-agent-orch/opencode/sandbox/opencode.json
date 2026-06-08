@@ -1,0 +1,33 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "enabled_providers": ["ai-orch"],
+  "model": "ai-orch/coding-balanced",
+  "small_model": "ai-orch/coding-fast",
+  "provider": {
+    "ai-orch": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "AI Orch Governed Router",
+      "options": {
+        "baseURL": "http://governance-shell:18082/v1",
+        "apiKey": "{env:AI_ORCH_RUNTIME_TOKEN}",
+        "headers": {
+          "X-AI-Orch-Session-ID": "{env:AI_ORCH_SESSION_ID}"
+        }
+      },
+      "models": {
+        "coding-primary": {
+          "name": "Governed Coding Primary"
+        },
+        "coding-balanced": {
+          "name": "Governed Coding Balanced"
+        },
+        "coding-fast": {
+          "name": "Governed Coding Fast"
+        },
+        "coding-economy": {
+          "name": "Governed Coding Economy"
+        }
+      }
+    }
+  }
+}

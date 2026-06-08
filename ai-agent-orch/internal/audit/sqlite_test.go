@@ -26,7 +26,7 @@ func TestSQLiteStoreAppendAndRetrieve(t *testing.T) {
 		SessionID:       "sess_123",
 		EventType:       "session.created",
 		Actor:           "test",
-		Agent:           "test-generation",
+		Agent:           "unit-tests",
 		Classification:  "internal",
 		RawPromptStored: false,
 		RecordedAt:      time.Now().UTC(),
@@ -47,8 +47,8 @@ func TestSQLiteStoreAppendAndRetrieve(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].Agent != "test-generation" {
-		t.Fatalf("expected agent test-generation, got %s", events[0].Agent)
+	if events[0].Agent != "unit-tests" {
+		t.Fatalf("expected agent unit-tests, got %s", events[0].Agent)
 	}
 }
 

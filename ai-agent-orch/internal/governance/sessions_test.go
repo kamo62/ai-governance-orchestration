@@ -12,8 +12,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-agent-orch/internal/audit"
 )
@@ -31,7 +33,7 @@ func TestCreateSessionAcceptsDevTokenAndWritesAuditWithoutRawPrompt(t *testing.T
 	handler := NewSessionHandler(service)
 
 	body := []byte(`{
-		"agent": "test-generation",
+		"agent": "unit-tests",
 		"classification": "internal",
 		"prompt": "write regression tests for the payment edge case"
 	}`)
@@ -77,6 +79,120 @@ func TestCreateSessionAcceptsDevTokenAndWritesAuditWithoutRawPrompt(t *testing.T
 	}
 }
 
+func TestListSessionsReturnsRecentSummariesForCurrentActor(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	if _, err := auditStore.Append(context.Background(), audit.Event{
+		EventID:       "evt_usage_new",
+		SessionID:     "sess_new",
+		EventType:     "model.gateway_stream.completed",
+		Provider:      "openrouter",
+		ModelAlias:    "coding-fast",
+		ModelResolved: "openrouter/x-ai/grok-build-0.1",
+		TokenUsage: map[string]any{
+			"prompt_tokens":     12,
+			"completion_tokens": 4,
+			"total_tokens":      16,
+		},
+		GatewayBackend: "bifrost",
+	}); err != nil {
+		t.Fatalf("append usage audit event: %v", err)
+	}
+	store := &recordingSessionStore{created: []SessionRecord{
+		{
+			SessionID:      "sess_other_actor",
+			ActorSubject:   "other-dev",
+			Agent:          "unit-tests",
+			Classification: "internal",
+			PromptSHA256:   "other-hash",
+			Status:         "done",
+			CreatedAt:      time.Date(2026, 6, 8, 7, 0, 0, 0, time.UTC),
+		},
+		{
+			SessionID:      "sess_old",
+			ActorSubject:   "local-dev",
+			Agent:          "unit-tests",
+			Classification: "internal",
+			PromptSHA256:   "old-hash",
+			Status:         "done",
+			CreatedAt:      time.Date(2026, 6, 8, 7, 1, 0, 0, time.UTC),
+		},
+		{
+			SessionID:      "sess_new",
+			RunID:          "run_new",
+			ActorSubject:   "local-dev",
+			Agent:          "code-review",
+			Classification: "internal",
+			PromptSHA256:   "new-hash",
+			Status:         "running",
+			CreatedAt:      time.Date(2026, 6, 8, 7, 2, 0, 0, time.UTC),
+			PermissionMode: "reviewed",
+			ApprovalMode:   "manual",
+			WorkspaceMode:  "local",
+		},
+	}}
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    auditStore,
+		Sessions: store,
+		ModelPricing: fakeModelPricingStore{record: ModelPricingRecord{
+			Provider:               "openrouter",
+			ModelID:                "x-ai/grok-build-0.1",
+			PromptCostPerToken:     0.000001,
+			CompletionCostPerToken: 0.000002,
+		}},
+	})
+	handler := NewSessionHandler(service)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions?limit=1", nil)
+	req.Header.Set("Authorization", "Bearer local-test-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response ListSessionsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Sessions) != 1 {
+		t.Fatalf("expected one session due limit, got %#v", response.Sessions)
+	}
+	got := response.Sessions[0]
+	if got.SessionID != "sess_new" || got.RunID != "run_new" || got.Agent != "code-review" || got.Status != "running" {
+		t.Fatalf("unexpected session summary: %#v", got)
+	}
+	if got.UsageSummary.ModelAlias != "coding-fast" || got.UsageSummary.ModelResolved != "openrouter/x-ai/grok-build-0.1" {
+		t.Fatalf("expected model attribution in session summary, got %#v", got.UsageSummary)
+	}
+	if got.UsageSummary.PromptTokens != 12 || got.UsageSummary.CompletionTokens != 4 || got.UsageSummary.TotalTokens != 16 {
+		t.Fatalf("expected token usage in session summary, got %#v", got.UsageSummary)
+	}
+	if got.UsageSummary.CostSource != "pricing_table" || got.UsageSummary.EstimatedCostUSD <= 0 {
+		t.Fatalf("expected pricing-table cost in session summary, got %#v", got.UsageSummary)
+	}
+	if strings.Contains(rec.Body.String(), "new-hash") || strings.Contains(rec.Body.String(), "old-hash") {
+		t.Fatalf("session list must not expose prompt hashes: %s", rec.Body.String())
+	}
+}
+
+func TestListSessionsRequiresDevToken(t *testing.T) {
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+		Sessions: &recordingSessionStore{},
+	})
+	handler := NewSessionHandler(service)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCreateSessionRejectsInvalidDevTokenBeforeReadingRawPrompt(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	service := NewSessionService(SessionConfig{
@@ -88,7 +204,7 @@ func TestCreateSessionRejectsInvalidDevTokenBeforeReadingRawPrompt(t *testing.T)
 	})
 	handler := NewSessionHandler(service)
 
-	body := []byte(`{"agent":"test-generation","classification":"internal","prompt":"raw secret prompt must not be read"}`)
+	body := []byte(`{"agent":"unit-tests","classification":"internal","prompt":"raw secret prompt must not be read"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer wrong-token")
 	rec := httptest.NewRecorder()
@@ -123,9 +239,10 @@ func TestCreateSessionPersistsGatewayEnforcedTrustLevel(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	body := []byte(`{"agent":"test-generation","classification":"internal","prompt":"write tests"}`)
+	body := []byte(`{"agent":"unit-tests","classification":"internal","prompt":"write tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
+	req.Header.Set("X-AI-Orch-Client", "ai-orch-mcp")
 	req.Header.Set("X-AI-Orch-Trust-Level", "gateway_enforced")
 	rec := httptest.NewRecorder()
 
@@ -144,6 +261,237 @@ func TestCreateSessionPersistsGatewayEnforcedTrustLevel(t *testing.T) {
 	if events[0].TrustLevel != "gateway_enforced" {
 		t.Fatalf("expected gateway_enforced trust level, got %q", events[0].TrustLevel)
 	}
+	if events[0].EnforcementMode != "gateway" {
+		t.Fatalf("expected gateway enforcement mode, got %q", events[0].EnforcementMode)
+	}
+}
+
+// TestTrustedClientTokenGatesPrivilegedTrust verifies that when a trusted-client
+// token is configured, a caller cannot forge a privileged trust level by merely
+// claiming the ai-orch-mcp client identity: the matching shared secret is required.
+func TestTrustedClientTokenGatesPrivilegedTrust(t *testing.T) {
+	cases := []struct {
+		name            string
+		presentToken    string
+		wantTrustLevel  string
+		wantEnforcement string
+	}{
+		{name: "missing token forges nothing", presentToken: "", wantTrustLevel: "self_reported", wantEnforcement: "advisory"},
+		{name: "wrong token forges nothing", presentToken: "not-the-secret", wantTrustLevel: "self_reported", wantEnforcement: "advisory"},
+		{name: "correct token is honored", presentToken: "trusted-secret", wantTrustLevel: "gateway_enforced", wantEnforcement: "gateway"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+			service := NewSessionService(SessionConfig{
+				DevToken:           "local-test-token",
+				TrustedClientToken: "trusted-secret",
+				Audit:              audit.NewFileStore(auditPath),
+				NewID:              fixedIDs("sess_strict_1", "evt_strict_1"),
+			})
+			handler := NewSessionHandler(service)
+
+			body := []byte(`{"agent":"unit-tests","classification":"internal","prompt":"write tests"}`)
+			req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer local-test-token")
+			req.Header.Set("X-AI-Orch-Client", "ai-orch-mcp")
+			if tc.presentToken != "" {
+				req.Header.Set("X-AI-Orch-Trusted-Client-Token", tc.presentToken)
+			}
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+			}
+			events, err := audit.NewFileStore(auditPath).EventsBySession(context.Background(), "sess_strict_1")
+			if err != nil {
+				t.Fatalf("audit lookup: %v", err)
+			}
+			if len(events) != 1 {
+				t.Fatalf("expected one event, got %d", len(events))
+			}
+			if events[0].TrustLevel != tc.wantTrustLevel || events[0].EnforcementMode != tc.wantEnforcement {
+				t.Fatalf("trust=%q enforcement=%q, want trust=%q enforcement=%q",
+					events[0].TrustLevel, events[0].EnforcementMode, tc.wantTrustLevel, tc.wantEnforcement)
+			}
+		})
+	}
+}
+
+func TestCreateSessionAuditsResolvedContextBeforeCreatedEvent(t *testing.T) {
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	store := &recordingSessionStore{}
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(auditPath),
+		Sessions: store,
+		NewID: fixedIDs(
+			"sess_context_1",
+			"evt_context_1",
+		),
+		ContextResolver: staticContextResolver{context: SessionContext{
+			RepoURL:      "https://example.test/team/app.git",
+			Branch:       "frontend/ABC-123-login-flow",
+			CommitSHA:    "0123456789abcdef0123456789abcdef01234567",
+			WorkItemID:   "ABC-123",
+			WorkItemType: "frontend",
+			ActorHint:    "Local Developer <dev@example.test>",
+			SourceSystem: "jira",
+		}},
+	})
+	handler := NewSessionHandler(service)
+
+	req := authorizedSessionRequest(`{
+		"agent": "unit-tests",
+		"classification": "internal",
+		"prompt": "write regression tests",
+		"run_id": "run_context_1",
+		"permission_mode": "full_access"
+	}`)
+	req.Header.Set("X-AI-Orch-Client", "ai-agent-bridge")
+	req.Header.Set("X-AI-Orch-Trust-Level", "managed_client")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	events, err := audit.NewFileStore(auditPath).EventsBySession(context.Background(), "sess_context_1")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one event, got %d", len(events))
+	}
+	event := events[0]
+	if event.RunID != "run_context_1" {
+		t.Fatalf("expected run_id in audit, got %q", event.RunID)
+	}
+	if event.WorkItemID != "ABC-123" || event.WorkItemType != "frontend" {
+		t.Fatalf("expected resolved work item in audit, got %q/%q", event.WorkItemID, event.WorkItemType)
+	}
+	if event.CommitSHA != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("expected resolved commit in audit, got %q", event.CommitSHA)
+	}
+	if event.ActorHint != "Local Developer <dev@example.test>" || event.SourceSystem != "jira" {
+		t.Fatalf("expected resolved actor/source in audit, got %q/%q", event.ActorHint, event.SourceSystem)
+	}
+	if event.PermissionMode != "full_access" || event.ApprovalMode != "yolo" {
+		t.Fatalf("expected full_access/yolo audit modes, got %q/%q", event.PermissionMode, event.ApprovalMode)
+	}
+	if event.TrustLevel != "managed_client" {
+		t.Fatalf("expected managed_client trust level, got %q", event.TrustLevel)
+	}
+	if event.EnforcementMode != "managed" {
+		t.Fatalf("expected managed enforcement mode, got %q", event.EnforcementMode)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("expected one stored session, got %d", len(store.created))
+	}
+	rec0 := store.created[0]
+	if rec0.RunID != "run_context_1" || rec0.PermissionMode != "full_access" || rec0.ApprovalMode != "yolo" {
+		t.Fatalf("expected stored run and modes, got %#v", rec0)
+	}
+	if rec0.RepoURL != "https://example.test/team/app.git" || rec0.Branch != "frontend/ABC-123-login-flow" {
+		t.Fatalf("expected stored resolved repo/branch, got %#v", rec0)
+	}
+}
+
+func TestCreateSessionDoesNotTrustBareTrustHeader(t *testing.T) {
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(auditPath),
+		NewID: fixedIDs(
+			"sess_spoofed_trust_1",
+			"evt_session_created_1",
+		),
+	})
+	handler := NewSessionHandler(service)
+
+	body := []byte(`{"agent":"unit-tests","classification":"internal","prompt":"write tests"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer local-test-token")
+	req.Header.Set("X-AI-Orch-Trust-Level", "managed_client")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	events, err := audit.NewFileStore(auditPath).EventsBySession(context.Background(), "sess_spoofed_trust_1")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one event, got %d", len(events))
+	}
+	if events[0].TrustLevel != "self_reported" || events[0].EnforcementMode != "advisory" {
+		t.Fatalf("bare trust header must not upgrade audit label, got %#v", events[0])
+	}
+}
+
+func TestCreateSessionDefaultsReviewedManualModes(t *testing.T) {
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	store := &recordingSessionStore{}
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(auditPath),
+		Sessions: store,
+		NewID: fixedIDs(
+			"sess_modes_default",
+			"evt_modes_default",
+		),
+	})
+	handler := NewSessionHandler(service)
+
+	req := authorizedSessionRequest(`{"agent":"unit-tests","classification":"internal","prompt":"write tests"}`)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	events, err := audit.NewFileStore(auditPath).EventsBySession(context.Background(), "sess_modes_default")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if events[0].PermissionMode != "reviewed" || events[0].ApprovalMode != "manual" {
+		t.Fatalf("expected reviewed/manual default, got %q/%q", events[0].PermissionMode, events[0].ApprovalMode)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("expected one stored session, got %d", len(store.created))
+	}
+	if store.created[0].PermissionMode != "reviewed" || store.created[0].ApprovalMode != "manual" {
+		t.Fatalf("expected stored reviewed/manual default, got %#v", store.created[0])
+	}
+}
+
+func TestCreateSessionRejectsInvalidPermissionAndApprovalModes(t *testing.T) {
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+	})
+	handler := NewSessionHandler(service)
+
+	req := authorizedSessionRequest(`{
+		"agent": "unit-tests",
+		"classification": "internal",
+		"prompt": "write tests",
+		"permission_mode": "root",
+		"approval_mode": "whatever"
+	}`)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "permission_mode") {
+		t.Fatalf("expected permission_mode validation message, got %s", rec.Body.String())
+	}
 }
 
 func TestCreateSessionFailsClosedWhenDevTokenEmpty(t *testing.T) {
@@ -156,7 +504,7 @@ func TestCreateSessionFailsClosedWhenDevTokenEmpty(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	body := []byte(`{"agent":"test-generation","classification":"internal","prompt":"hello world"}`)
+	body := []byte(`{"agent":"unit-tests","classification":"internal","prompt":"hello world"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer any-token")
 	rec := httptest.NewRecorder()
@@ -187,7 +535,7 @@ func TestCreateSessionKillSwitchBlocksBeforeReadingRawPrompt(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	req := authorizedSessionRequest(`{"agent":"test-generation","classification":"internal","prompt":"kill switch raw prompt must not be read"}`)
+	req := authorizedSessionRequest(`{"agent":"unit-tests","classification":"internal","prompt":"kill switch raw prompt must not be read"}`)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -216,7 +564,7 @@ func TestCreateSessionRejectsClassificationAboveConfiguredMaximum(t *testing.T) 
 	})
 	handler := NewSessionHandler(service)
 
-	req := authorizedSessionRequest(`{"agent":"test-generation","classification":"restricted","prompt":"restricted repo details must not dispatch"}`)
+	req := authorizedSessionRequest(`{"agent":"unit-tests","classification":"restricted","prompt":"restricted repo details must not dispatch"}`)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -245,7 +593,7 @@ func TestCreateSessionRejectsPromptWithSecretBeforeDispatch(t *testing.T) {
 	handler := NewSessionHandler(service)
 
 	fakeToken := "sk-or-v1-" + "test1234567890"
-	req := authorizedSessionRequest(fmt.Sprintf(`{"agent":"test-generation","classification":"internal","prompt":"use OPENROUTER_API_KEY=%s for this run"}`, fakeToken))
+	req := authorizedSessionRequest(fmt.Sprintf(`{"agent":"unit-tests","classification":"internal","prompt":"use OPENROUTER_API_KEY=%s for this run"}`, fakeToken))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -275,7 +623,7 @@ func TestCreateSessionRejectsEstimatedCostAboveCap(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	req := authorizedSessionRequest(`{"agent":"test-generation","classification":"internal","prompt":"ordinary prompt","estimated_cost_usd":0.30}`)
+	req := authorizedSessionRequest(`{"agent":"unit-tests","classification":"internal","prompt":"ordinary prompt","estimated_cost_usd":0.30}`)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -304,7 +652,7 @@ func TestCreateSessionRecordsEstimatedCostWithoutEnforcingCapByDefault(t *testin
 	})
 	handler := NewSessionHandler(service)
 
-	req := authorizedSessionRequest(`{"agent":"test-generation","classification":"internal","prompt":"ordinary prompt","estimated_cost_usd":1.25}`)
+	req := authorizedSessionRequest(`{"agent":"unit-tests","classification":"internal","prompt":"ordinary prompt","estimated_cost_usd":1.25}`)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -337,7 +685,7 @@ func TestCreateSessionLocalIdentityHeaderOverridesDevTokenActorOnly(t *testing.T
 	})
 	handler := NewSessionHandler(service)
 
-	req := authorizedSessionRequest(`{"agent":"test-generation","classification":"internal","prompt":"ordinary prompt"}`)
+	req := authorizedSessionRequest(`{"agent":"unit-tests","classification":"internal","prompt":"ordinary prompt"}`)
 	req.Header.Set("X-AI-Orch-Local-Identity", "developer:local")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -366,7 +714,7 @@ func TestCreateSessionRequestedByCannotOverrideOIDCSubject(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	body := []byte(`{"agent":"test-generation","classification":"internal","prompt":"ordinary prompt","requested_by":"spoofed-user"}`)
+	body := []byte(`{"agent":"unit-tests","classification":"internal","prompt":"ordinary prompt","requested_by":"spoofed-user"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer oidc-token")
 	req.Header.Set("Content-Type", "application/json")
@@ -391,7 +739,7 @@ func TestCreateSessionRejectsInvalidLocalIdentityHeader(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	req := authorizedSessionRequest(`{"agent":"test-generation","classification":"internal","prompt":"ordinary prompt"}`)
+	req := authorizedSessionRequest(`{"agent":"unit-tests","classification":"internal","prompt":"ordinary prompt"}`)
 	req.Header.Set("X-AI-Orch-Local-Identity", "bad actor")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -408,7 +756,7 @@ func TestCreateSessionRejectsInvalidRequestedBy(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	req := authorizedSessionRequest("{\"agent\":\"test-generation\",\"classification\":\"internal\",\"prompt\":\"ordinary prompt\",\"requested_by\":\"bad actor\"}")
+	req := authorizedSessionRequest("{\"agent\":\"unit-tests\",\"classification\":\"internal\",\"prompt\":\"ordinary prompt\",\"requested_by\":\"bad actor\"}")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -428,7 +776,7 @@ func TestCreateSessionFailsClosedWhenAuditWriteFails(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	req := authorizedSessionRequest(`{"agent":"test-generation","classification":"internal","prompt":"normal prompt"}`)
+	req := authorizedSessionRequest(`{"agent":"unit-tests","classification":"internal","prompt":"normal prompt"}`)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -454,7 +802,7 @@ func TestCreateSessionDoesNotPersistWhenAuditWriteFails(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	req := authorizedSessionRequest(`{"agent":"test-generation","classification":"internal","prompt":"normal prompt"}`)
+	req := authorizedSessionRequest(`{"agent":"unit-tests","classification":"internal","prompt":"normal prompt"}`)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -513,11 +861,44 @@ func (s *recordingSessionStore) Create(_ context.Context, rec SessionRecord) err
 	return nil
 }
 
-func (s *recordingSessionStore) Get(context.Context, string) (SessionRecord, error) {
+func (s *recordingSessionStore) Get(_ context.Context, sessionID string) (SessionRecord, error) {
+	for _, rec := range s.created {
+		if rec.SessionID == sessionID {
+			return rec, nil
+		}
+	}
 	return SessionRecord{}, errors.New("session not found")
 }
 
-func (s *recordingSessionStore) UpdateStatus(context.Context, string, string) error {
+func (s *recordingSessionStore) ListRecent(_ context.Context, actorSubject string, limit int) ([]SessionRecord, error) {
+	var records []SessionRecord
+	for _, rec := range s.created {
+		if rec.ActorSubject == actorSubject {
+			records = append(records, rec)
+		}
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].CreatedAt.After(records[j].CreatedAt)
+	})
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if len(records) > limit {
+		records = records[:limit]
+	}
+	return records, nil
+}
+
+func (s *recordingSessionStore) UpdateStatus(_ context.Context, sessionID string, status string) error {
+	for i := range s.created {
+		if s.created[i].SessionID == sessionID {
+			s.created[i].Status = status
+			return nil
+		}
+	}
 	return nil
 }
 
@@ -531,4 +912,12 @@ type fixedAuthorizer struct {
 
 func (f fixedAuthorizer) Validate(context.Context, string) (string, bool) {
 	return f.subject, f.subject != ""
+}
+
+type staticContextResolver struct {
+	context SessionContext
+}
+
+func (r staticContextResolver) Resolve() SessionContext {
+	return r.context
 }

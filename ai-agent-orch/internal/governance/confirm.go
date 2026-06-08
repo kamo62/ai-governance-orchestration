@@ -1,7 +1,6 @@
 package governance
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -113,6 +112,7 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Record confirmation audit event, linked to the router event.
 	eventID := h.newID("evt")
+	trust := h.service.trustMetadataFromRequest(r)
 	_, err := h.service.audit.Append(r.Context(), audit.Event{
 		EventID:            eventID,
 		ParentEventID:      h.service.parentEventID(sessionID),
@@ -123,7 +123,8 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
-		TrustLevel:         trustLevelFromRequest(r),
+		TrustLevel:         trust.TrustLevel,
+		EnforcementMode:    trust.EnforcementMode,
 	})
 	if err != nil {
 		h.service.setSessionStatus(r.Context(), sessionID, "awaiting_confirmation")
@@ -148,107 +149,10 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// If event store is wired, trigger execution in the background and stream events.
 	if h.events != nil {
 		h.service.forgetPrompt(sessionID)
-		h.service.setSessionStatus(context.Background(), sessionID, "running")
-		execCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		h.service.registerCancel(sessionID, cancel)
-		go func() {
-			defer cancel()
-			defer h.service.cancelExecution(sessionID)
-			h.triggerExecution(execCtx, sessionID, req.Agent, prompt)
-		}()
+		executor := NewSessionExecutor(h.service, h.orch, h.events)
+		executor.newID = h.newID
+		executor.RunAsync(sessionID, req.Agent, prompt)
 	}
-}
-
-func (h *ConfirmHandler) triggerExecution(ctx context.Context, sessionID, agent string, prompt string) {
-	h.events.Publish(sessionID, SessionEvent{
-		Type:      "stream",
-		Payload:   fmt.Sprintf("Starting execution for agent %s...", agent),
-		Timestamp: timeNow(),
-	})
-
-	// Call Orchestrator dispatch to get actual runtime events.
-	result, err := h.orch.Dispatch(ctx, sessionID, agent, prompt)
-	if err != nil {
-		h.service.setSessionStatus(context.Background(), sessionID, "failed")
-		h.events.Publish(sessionID, SessionEvent{
-			Type:      "error",
-			Payload:   fmt.Sprintf("dispatch failed: %v", err),
-			Timestamp: timeNow(),
-		})
-		h.events.Close(sessionID)
-		return
-	}
-
-	// Publish runtime events from the Orchestrator response.
-	toolLoop := NewToolLoopCounter(h.service.toolLoopMax)
-	for _, event := range result.Events {
-		if toolLoop.Observe(event.Type) {
-			reason := fmt.Sprintf("consecutive tool call cap exceeded (%d)", h.service.toolLoopMax)
-			_, _ = h.service.audit.Append(ctx, audit.Event{
-				EventID:            h.newID("evt"),
-				SessionID:          sessionID,
-				EventType:          "runtime.denied",
-				Actor:              "runtime",
-				Agent:              agent,
-				Reason:             reason,
-				RawPromptStored:    false,
-				RawResponseStored:  false,
-				CorrelationSubject: "governance-shell",
-			})
-			h.service.setSessionStatus(context.Background(), sessionID, "failed")
-			h.events.Publish(sessionID, SessionEvent{
-				Type:      "error",
-				Payload:   reason,
-				Timestamp: timeNow(),
-			})
-			h.events.Close(sessionID)
-			return
-		}
-		if event.Type == "patch" {
-			sanitized, err := h.service.patchBuffer.Store(ctx, sessionID, event.Payload)
-			if err != nil {
-				reason := fmt.Sprintf("patch rejected: %v", err)
-				_, _ = h.service.audit.Append(ctx, audit.Event{
-					EventID:            h.newID("evt"),
-					SessionID:          sessionID,
-					EventType:          "patch.rejected",
-					Actor:              "runtime",
-					Agent:              agent,
-					Reason:             reason,
-					RawPromptStored:    false,
-					RawResponseStored:  false,
-					CorrelationSubject: "governance-shell",
-				})
-				h.service.setSessionStatus(context.Background(), sessionID, "failed")
-				h.events.Publish(sessionID, SessionEvent{
-					Type:      "error",
-					Payload:   reason,
-					Timestamp: timeNow(),
-				})
-				h.events.Close(sessionID)
-				return
-			}
-			event.Payload = sanitized
-			h.service.rememberPatch(sessionID, extractPatchID(event.Payload))
-		}
-		if event.Type == "stream" {
-			event.Payload = sanitizeRuntimeStreamPayload(event.Payload)
-		}
-		h.events.Publish(sessionID, SessionEvent{
-			Type:      event.Type,
-			Payload:   event.Payload,
-			Timestamp: timeNow(),
-		})
-	}
-
-	h.events.Publish(sessionID, SessionEvent{
-		Type:      "done",
-		Payload:   fmt.Sprintf("execution finished for %s", result.Agent),
-		Timestamp: timeNow(),
-	})
-
-	h.events.Close(sessionID)
-	h.service.setSessionStatus(context.Background(), sessionID, "done")
 }
 
 func sanitizeRuntimeStreamPayload(payload string) string {

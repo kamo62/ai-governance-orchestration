@@ -4,13 +4,15 @@ This repository is a personal-time proof of concept for a governance platform fo
 
 The bet is simple: teams will use different agents, IDEs, CLIs, model providers, and workflow tools. Trying to replace all of that with one new agent runtime is the wrong move. The useful layer is a small, strict control plane that can sit in front of those runtimes and make agent work governable.
 
-The part I am still working through is the correct abstraction layer. Is the first-class surface a VS Code extension, an MCP gateway, a runtime adapter, a CLI, or some combination of those? My current read is that the Governance Shell is the product-shaped boundary, MCP is probably the best interoperability layer, and the VS Code Bridge is useful as a first-party experience but should not become the whole strategy.
+The part I am still working through is the correct abstraction layer. Is the first-class surface a VS Code extension, an MCP gateway, a runtime adapter, a CLI, a provider endpoint, or some combination of those? My current read is that the Governance Shell is the product-shaped boundary, the model gateway is the enforceable model path, MCP is the best interoperability layer for tools, and the VS Code Bridge is useful as a first-party experience but should not become the whole strategy.
 
 The newer wrinkle is that the developer integration surface may not be one thing at all. MCP feels like the agent-tool boundary. GitHub feels like the delivery boundary. A local workbench or VS Code Bridge might be the ergonomic layer. I am trying not to confuse those three.
 
 The current practical priority is simpler than the long-term architecture: get the Governance Shell and MCP plumbing right first. The workbench, GitHub/Azure DevOps app layer and Kubernetes runtime pool can wait until the policy, audit, routing and tool-gateway contracts are boring enough to trust.
 
-There is one more piece of plumbing in that first bucket: a model compatibility gateway. OpenCode and similar runtimes need OpenAI-compatible model endpoints. They should call an `ai-orch` endpoint, not OpenRouter, Bifrost, Bedrock, Anthropic or provider APIs directly, so model routing, streaming, cost and audit still cross the Governance Shell.
+There is one more piece of plumbing in that first bucket: a model compatibility gateway. OpenCode, Cline and similar runtimes need configurable model endpoints. They should call an `ai-orch` endpoint, not OpenRouter, Bifrost, Bedrock, Anthropic or provider APIs directly, so model routing, streaming, cost and audit still cross the Governance Shell.
+
+The latest design correction is important: ai-orch does not need access to every developer's repository. The developer's chosen tool should keep repo access and local editing. The organisation can instead point OpenCode, Cline, VS Code/Copilot, Claude Code, Codex or a workbench at the Governance Shell as the model endpoint and MCP/tool gateway. That is the cleaner scale path for many developers: centralise governance and model access, not source-code access.
 
 This README is also a working view of the current thinking. The operational runbook lives in [deployment.md](deployment.md); this file is meant to explain what is being investigated, what is influencing the design, and what the POC is deliberately avoiding.
 
@@ -50,48 +52,112 @@ This repo is an attempt to answer those questions without rebuilding the whole d
 
 ## Current State
 
-Current version: `v0.7.0-alpha`.
+Current version: `v0.15.0-beta`.
 
-This is an early local POC. It is not production-ready.
+This is a **local beta** for the Governance Shell vertical slice. It is suitable for team-local evaluation, not production deployment.
 
 What exists today:
 
 - Go Governance Shell and Orchestrator services.
 - Agent catalogue using `agent.md` plus `agent.config.yaml`.
-- Selectable model backend owned by the Governance Shell: Bifrost OSS by default in Compose, native OpenRouter as fallback.
+- Selectable model backend owned by the Governance Shell: Bifrost OSS by default in Compose, native OpenRouter as fallback, and AgentGateway as an additional candidate gateway.
 - Model compatibility gateway MVP for OpenAI-compatible `/v1/models`, `/v1/chat/completions`, `/v1/responses`, and streaming calls.
 - Bifrost OSS sidecar for provider plumbing across OpenRouter, OpenAI, Anthropic and direct DeepSeek today, with optional Bedrock, Vertex, Azure, Ollama or vLLM-style routes later.
+- AgentGateway backend adapter for testing AgentGateway as an LLM/MCP/security plumbing layer while keeping ai-orch as the session, routing, audit, patch and evidence authority.
 - Separate developer, admin, service and runtime-token boundaries for local testing.
 - Local CLI smoke path.
 - VS Code Bridge scaffold with first-run setup, connection checks, bounded workspace-context packaging, and tested workflow helpers. This is useful, but optional.
-- Session creation, ownership checks, routing, confirmation, SSE events, and patch decisions.
+- Session creation, first-class governed run creation, ownership checks, routing, confirmation, SSE events, and patch decisions.
 - Staged patch buffer so raw patch content is fetched through a governed endpoint.
 - Audit events with local tamper-evident hash chaining.
-- SQLite-backed local audit, session, and registry storage.
+- Explicit run permission labels: `read_only`, `reviewed`, `auto_apply`, and `full_access`, with approval labels such as `manual` and `yolo` recorded for reporting.
+- SQLite-backed local audit, session, registry, and model-pricing storage.
+- Scheduled OpenRouter model-pricing refresh into a durable `model_pricing` table, used to estimate session cost when provider-reported cost is absent but token counts are present.
 - Use-case, workflow, context-manifest, cache-outcome, evidence, and maturity-export APIs.
-- MCP proxy scaffolding with `oauth-user` fail-closed behaviour.
-- Local MCP gateway CLI scaffold with stdio client config generation and fail-closed local HTTP transport.
+- Simple Governance UI served by the Governance Shell at `/ui/`, covering service posture, gateway selection, metrics, agents, evidence, maturity exports, audit lookup, and basic use-case/workflow registration.
+- Recent-session and audit-trail UI backed by `GET /v1/sessions` plus `/v1/audit/sessions/{id}`, including readable runtime mode labels, model attribution, token counts and cost source, so a demo can show governed activity without pasting session IDs by hand.
+- MCP proxy with session-bound tool authorisation, policy-filtered tool catalogues, credential-safe forwarding, and `oauth-user` fail-closed behaviour.
+- Local MCP gateway CLI scaffold with stdio client config generation, fail-closed local HTTP transport, and `start_governed_run` for MCP clients.
 - Audit trust labels for gateway-enforced, managed-client and self-reported activity.
 - Command allow-list and tool-loop cap enforcement.
 - Docker Compose local runner, Bifrost sidecar and direct OpenRouter smoke tooling.
+- OpenCode config install tooling and local E2E smoke for testing the governed provider endpoint without putting provider keys in OpenCode.
+- AgentGateway Compose override and OpenRouter config for testing AgentGateway as an alternative provider gateway without starting Bifrost for that run.
+- Beta verification path: `scripts/beta-verify.sh`, CIO demo verification path `scripts/cio-demo-verify.sh`, Compose profile `beta`, offline router golden-case tests, and frozen API contract in `docs/api-contract-v1.md`.
+- Governed-run Compose smoke without provider API keys (`AI_ORCH_BETA_SMOKE` uses EchoRuntime for CI and local beta checks).
 
-Still pending:
+### Beta quick start
 
-- real OpenCode patch-producing flow;
+From `ai-agent-orch/`:
+
+```sh
+./scripts/beta-verify.sh
+```
+
+For a CIO walkthrough, run the demo verifier instead. It performs the same local governed vertical-slice proof and leaves the UI running:
+
+```sh
+./scripts/cio-demo-verify.sh
+```
+
+Or with Docker only:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta up -d bifrost orchestrator governance-shell
+docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta run --rm beta-smoke
+```
+
+Default Compose already uses SQLite (`audit.db`) for audit, sessions, registry and model-pricing data when `AI_ORCH_AUDIT_PATH` ends with `.db`.
+
+Provider-backed beta (optional, requires `OPENROUTER_API_KEY`):
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.provider.yml --profile provider run --rm provider-gateway-smoke
+```
+
+Nightly CI runs gateway + governed-run provider smoke when the repository secret is configured.
+
+Team-local OIDC: use `docker-compose.team-beta.yml` with `OIDC_ISSUER_URL` and `OIDC_CLIENT_ID`.
+
+OpenCode local install path:
+
+```sh
+cd ai-agent-orch
+./scripts/install-opencode-ai-orch.sh --scope global
+mkdir -p /tmp/ai-orch-opencode-e2e
+AI_ORCH_GOVERNANCE_URL=http://127.0.0.1:18081 \
+AI_ORCH_MODEL_GATEWAY_URL=http://127.0.0.1:18083 \
+AI_ORCH_DEV_TOKEN=local-dev \
+AI_ORCH_RUNTIME_TOKEN=local-runtime-token \
+go run ./cmd/opencode-smoke e2e --dir /tmp/ai-orch-opencode-e2e
+```
+
+Windows PowerShell:
+
+```powershell
+cd ai-agent-orch
+.\scripts\install-opencode-ai-orch.ps1 -Scope global
+```
+
+Still pending for V1:
+
+- live AgentGateway backend smoke through the Compose override and OpenCode E2E evidence for both supported gateway paths;
 - durable multi-instance audit-chain state;
 - dedicated team registry storage or Postgres option;
 - real user OAuth acquisition for user-scoped MCPs;
 - broader CLI coverage for admin and CI workflows;
-- richer governed MCP gateway coverage for CLine, Copilot, Claude Code, Codex, Cursor and similar clients;
+- richer governed MCP gateway ergonomics and client-specific setup for CLine, Copilot, Claude Code, Codex, Cursor and similar clients;
 - fuller model compatibility behaviour beyond the current MVP, especially provider-specific streaming and responses compatibility gaps;
 - live Bedrock checks through Bifrost once credentials are deliberately configured;
 - stronger skills/config factory support that makes those clients route meaningful work through the governed path by default without overwriting existing project files unexpectedly;
 - a Governance Router that selects model tier by task, risk, workflow, cost and evidence needs;
 - a GitHub App spike that attaches governed sessions to issues, PRs, checks and review evidence;
-- a local OpenCode sandbox adapter only after the governance and MCP contracts are stable enough to supervise it;
+- broader local OpenCode rollout hardening across managed global config, project config, MCP tools, and patch/diff evidence;
 - richer VS Code Bridge chat/tool-loop ergonomics beyond the current active-file or selection context;
 - a CLine-style IDE agent experience or adapter path behind the Governance Shell;
-- a governance UI, if the POC proves the control-plane shape.
+- a fuller governance UI with team reporting, workflow review queues, and operational controls.
+
+One design point I want to keep explicit: trust labels are reporting labels, not permission knobs. `gateway_enforced`, `managed_client` and `self_reported` should describe how the work actually ran. They should not become an allow-list that tells a developer which client they are allowed to use.
 
 ## What This Is Not
 
@@ -99,8 +165,9 @@ This repo is not trying to become:
 
 - a Claude Code, OpenCode, Cursor, Aider, or IDE-agent replacement;
 - a new autonomous agent product;
+- a central source-code access service that can browse every developer repository;
 - a Backstage, Jira, ServiceNow, or documentation portal clone;
-- a model gateway competing with Bifrost, OpenRouter, LiteLLM, or provider-native gateways;
+- a model gateway competing with Bifrost, agentgateway, OpenRouter, LiteLLM, or provider-native gateways;
 - an enterprise identity, secrets, or device-management system;
 - a production deployment template.
 
@@ -117,7 +184,7 @@ There are a few plausible surfaces:
 - a CLI, because smoke tests, CI hooks and admin operations should not require an IDE;
 - a GitHub App, because issues, PRs, checks and reviews are where software delivery becomes visible;
 - runtime adapters, because existing coding agents already have better chat, file, terminal and tool-loop ergonomics than this POC should try to rebuild;
-- a governance UI later, because reporting, evidence, use cases and maturity outputs should not live inside an IDE.
+- a governance UI, because reporting, evidence, use cases and maturity outputs should not live only inside an IDE.
 
 The current answer is not to choose one surface too early. The current answer is to keep the Governance Shell strict and build thin adapters around it.
 
@@ -125,7 +192,7 @@ The first build priority is therefore not the workbench. It is the plumbing that
 
 - session identity and ownership;
 - policy decisions that fail closed;
-- model calls through the Governance Shell, with Bifrost used as provider plumbing when selected;
+- model calls through the Governance Shell, with Bifrost, AgentGateway, or native OpenRouter used as provider plumbing when selected;
 - OpenAI-compatible runtime model calls through a model compatibility gateway;
 - MCP tool calls through a gateway;
 - patch content through the staged buffer;
@@ -165,11 +232,21 @@ That separation is the important part. It keeps governance strict while allowing
 
 The current direction is to build the governance/control plane first, and keep the agent plane deliberately thin. The system can run agents, but it should not become another general-purpose coding-agent product.
 
-The VS Code Bridge is therefore not meant to be a CLine clone in its current form, and it should not be required for the governance story to work. It should work from any VS Code project folder, but the current context model is deliberately bounded: workspace name, git branch and remote where available, active file metadata, and either the current selection or a capped active-file excerpt. CLine-style behaviour belongs either in a richer Bridge agent-plane experience or in an adapter to an existing IDE-native runtime, with this Governance Shell still owning policy, audit, model proxying, patch buffering, and approvals.
+The VS Code Bridge is therefore not meant to be a CLine clone in its current form, and it should not be required for the governance story to work. It should work from any VS Code project folder, but the current context model is deliberately bounded: workspace name, git branch and remote where available, parsed branch work-item hints, active file metadata, and either the current selection or a capped active-file excerpt. CLine-style behaviour belongs either in a richer Bridge agent-plane experience or in an adapter to an existing IDE-native runtime, with this Governance Shell still owning policy, audit, model proxying, patch buffering, and approvals.
+
+The patch story is still deliberately split:
+
+- CLI smoke `applied` means a patch decision was recorded. It does not mutate the workspace.
+- VS Code Bridge `Apply` means the Bridge fetched the buffered patch and changed the local workspace.
+- OpenCode-style patching, where OpenCode edits locally and ai-orch receives governed model traffic plus patch/diff evidence, is still pending.
+
+That distinction matters. The POC should not claim CLine/OpenCode-like editing until the runtime adapter can prove it end to end.
 
 The newer thought is that the next serious adapter should probably be `ai-orch-mcp`: a governed MCP gateway plus a small skills/config factory. The gateway would expose governed tools and delegation into CLine, Copilot, Claude Code, Codex, Cursor and similar clients. The skills factory would generate the client-specific instructions and MCP config that nudge those clients to start a governed session, attach a use case, delegate substantial work, submit patches through the buffer and record evidence.
 
 The OpenCode runtime problem adds a second gateway shape: model compatibility. Tool calls should go through `ai-orch-mcp`; model calls should go through an OpenAI-compatible `ai-orch` model endpoint. That endpoint can look boring from the runtime side, but internally it must resolve aliases, apply the Governance Router, select the model backend, stream responses where needed and audit the decision.
+
+This is why the provider endpoint lane now feels more important than a hosted runtime lane. If a managed organisation can set OpenCode, Cline or a workbench to use `https://ai-orch.example/v1` as its provider endpoint, ai-orch can govern model choice, usage, cost and audit without needing to touch the repo. MCP and local evidence reporting then add tool and patch evidence where the client supports it.
 
 That still does not make the system a CLine clone. The local client can keep doing lightweight navigation and conversation. When the work becomes meaningful, expensive, risky or evidence-worthy, it should cross the Governance Shell boundary.
 
@@ -193,7 +270,9 @@ There is also a useful cost-control shape here: let developer-side agents use sm
 
 Factory Router is interesting because it validates that model routing is becoming its own layer. I do not want to build a generic model gateway, but I do want this POC to route by governance context: task type, risk level, workflow stage, classification, cost sensitivity, latency sensitivity, evidence needs and provider health. That is more useful than a developer manually choosing an expensive model for every task.
 
-Bifrost is useful in a different way. It is good open-source provider plumbing: OpenAI-compatible routing, provider translation, streaming, retries and multiple backend families. The important thing is not to confuse that with the governance plane. In this POC, Bifrost sits behind ai-orch. Runtimes do not call Bifrost directly, Bifrost does not own session authority, Bifrost content logging is disabled locally, and Bifrost governance or enterprise features are not the thing being proved here. The current local smoke setup proves OpenRouter, direct OpenAI, direct Anthropic and direct DeepSeek routes through the Governance Shell; OpenCode still needs a runtime adapter or custom endpoint configuration before it becomes the worker.
+Bifrost is useful in a different way. It is good open-source provider plumbing: OpenAI-compatible routing, provider translation, streaming, retries and multiple backend families. The important thing is not to confuse that with the governance plane. In this POC, Bifrost sits behind ai-orch. Runtimes do not call Bifrost directly, Bifrost does not own session authority, Bifrost content logging is disabled locally, and Bifrost governance or enterprise features are not the thing being proved here. The current local smoke setup proves OpenRouter, direct OpenAI, direct Anthropic and direct DeepSeek routes through the Governance Shell.
+
+AgentGateway now looks like another strong candidate for that plumbing layer because it covers LLM gateway, MCP gateway, A2A, auth, RBAC, rate limiting, guardrails and telemetry in one open-source proxy. The right test is not "replace ai-orch with AgentGateway". The right test is "can Bifrost and AgentGateway both sit underneath ai-orch as selectable gateway plumbing while ai-orch remains the governance authority?" This branch now has an `agentgateway` model-backend adapter and an opt-in Compose override so that question can be tested with real traffic without starting Bifrost for the AgentGateway run. Bifrost remains supported as the default local Compose gateway.
 
 ## External Work I Am Watching
 
@@ -216,6 +295,8 @@ The Microsoft write-up on [securing MCP with a control plane](https://developer.
 
 [Bifrost](https://github.com/maximhq/bifrost) is interesting for the provider-plumbing question. It already does the OpenAI-compatible gateway work across provider families. That makes it a good sidecar candidate behind the Governance Shell, as long as this repo keeps policy, session identity, audit, patch buffering, evidence, and model-routing decisions in ai-orch.
 
+[AgentGateway](https://github.com/agentgateway/agentgateway) is now a gateway-plumbing candidate to test before beta alongside Bifrost. It overlaps with the generic LLM and MCP gateway work, so ai-orch should not keep growing that generic layer blindly. The useful split is gateway tooling for protocol/provider/tool security plumbing, and ai-orch for engineering-work governance, evidence and decisions.
+
 The [GitHub Copilot app preview](https://github.com/features/preview/github-app) is interesting for the delivery-surface question. It points at an issue-to-merge workbench rather than just an IDE extension. That matters because governance has to show up where code is reviewed and merged, not only where prompts are typed.
 
 [t3code](https://github.com/pingdotgg/t3code) is interesting as a workbench UX reference, especially because it already has source-control provider ideas around GitHub, GitLab, Bitbucket and Azure DevOps. That makes it a stronger reference than a plain chat UI. Still, I do not want this repo to become a fork or clone of that shape. The lesson is ergonomics and source-control workflow, not governance architecture.
@@ -231,8 +312,8 @@ The takeaway from these references is not "adopt this whole stack". The takeaway
 - What is the minimum OpenAI-compatible model surface needed for OpenCode: chat completions first, Responses API first, or both behind one gateway?
 - How far can generated skills, prompts and MCP config take adoption before managed IDE or endpoint policy is required?
 - How should the audit model label gateway-enforced activity versus self-reported native tool activity?
-- What is the minimum local OpenCode sandbox shape needed to prove supervision without prematurely building the EKS/AKS runtime plane?
-- Where is the right local isolation line: simple subprocess/CLI execution, container-per-session, or both depending on workflow risk?
+- Can a managed provider endpoint plus MCP config give enough governance coverage for OpenCode, Cline and workbench-style clients before we build any hosted runtime plane?
+- Where is the right local isolation line: direct workspace, disposable worktree, container-per-session, or all three depending on workflow risk?
 - What belongs in the governance/control plane UI, and what should stay in the IDE or CLI?
 - How much context should be cached per session before the cache becomes a hidden memory product?
 - Which maturity outputs are essential enough to be first-class API records, and which should remain derived reporting views?
@@ -266,6 +347,7 @@ The IDE and CLI should send lightweight IDs and intent. The Governance Shell sho
 - [Local state lifecycle](ai-agent-orch/docs/local-state-lifecycle.md): what is durable, what is process-local, and what must be promoted later.
 - [Governance insight and memory direction](ai-agent-orch/docs/governance-insight-and-memory.md): SQLite-first reporting, FTS5 before vectors, and memory as a governed projection.
 - [Governed IDE agent plane plan](ai-agent-orch/docs/governed-ide-agent-plane-plan.md): how the VS Code Bridge can move closer to CLine-style ergonomics without replacing the Governance Shell boundary.
+- [Runtime client integration strategy](ai-agent-orch/docs/runtime-client-integration.md): how OpenCode, Cline, Copilot, Claude Code, Codex and workbench-style clients can point at ai-orch without centralising repo access.
 - [changelog.md](changelog.md): versioned change history.
 
 ## Guiding Principle

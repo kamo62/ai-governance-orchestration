@@ -1,4 +1,4 @@
-# Test Generation Agent
+# Unit Tests Agent
 
 Config: `./agent.config.yaml`
 

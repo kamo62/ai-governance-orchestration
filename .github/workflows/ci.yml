@@ -46,6 +46,26 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
           govulncheck ./...
 
+      - name: Catalog validation
+        run: go run ./cmd/catalog-validator -catalog-root .
+
+  beta-smoke:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./ai-agent-orch
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Compose beta smoke
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta up -d bifrost orchestrator governance-shell
+          docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta run --rm beta-catalog
+          docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta run --rm --no-deps beta-smoke
+          docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta down --remove-orphans
+
   bridge:
     runs-on: ubuntu-latest
     defaults:

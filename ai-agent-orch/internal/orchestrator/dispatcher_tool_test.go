@@ -20,7 +20,7 @@ func mustToolBroker(t *testing.T) *dispatch.ToolBroker {
 
 func TestDispatcher_ToolBrokerFailClosedWhenUnavailable(t *testing.T) {
 	d := &Dispatcher{}
-	err := d.validateAllowedTools("test-generation", []string{"read_file"}, nil)
+	err := d.validateAllowedTools("unit-tests", []string{"read_file"}, nil)
 	if err == nil {
 		t.Fatal("expected missing broker to fail closed")
 	}
@@ -31,7 +31,7 @@ func TestDispatcher_ToolBrokerFailClosedWhenUnavailable(t *testing.T) {
 
 func TestDispatcher_ToolBrokerAllowsWriteWhenWorkspaceWriteAllowed(t *testing.T) {
 	d := &Dispatcher{broker: mustToolBroker(t)}
-	err := d.validateAllowedTools("test-generation", []string{"write_file"}, map[string]string{"workspace_write": "allow"})
+	err := d.validateAllowedTools("unit-tests", []string{"write_file"}, map[string]string{"workspace_write": "allow"})
 	if err != nil {
 		t.Fatalf("expected write_file to validate with workspace_write allow: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestDispatcher_ToolBrokerBlocksBadTool(t *testing.T) {
 	root := realCatalogRoot()
 	d := NewDispatcher(root)
 
-	// test-generation is allowed run_command:playwright but not curl.
+	// unit-tests is allowed run_command:playwright but not curl.
 	// We simulate a tampered catalog that includes a disallowed tool.
 	// Since the real catalog is valid, we test the broker path by
 	// calling the broker directly.
@@ -50,8 +50,8 @@ func TestDispatcher_ToolBrokerBlocksBadTool(t *testing.T) {
 		t.Fatal("tool broker should load from the real policy file")
 	}
 
-	// Direct broker check: curl should be denied for test-generation.
-	if err := d.broker.Validate("run_command", "curl", "test-generation"); err == nil {
+	// Direct broker check: curl should be denied for unit-tests.
+	if err := d.broker.Validate("run_command", "curl", "unit-tests"); err == nil {
 		t.Fatal("expected broker to deny run_command:curl")
 	}
 

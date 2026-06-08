@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,7 +52,9 @@ type SessionConfig struct {
 	AdminToken        string // Separate admin token for /v1/admin/* endpoints.
 	Authorizer        RequestAuthorizer
 	Audit             AuditAppender
+	AuditReader       AuditReader
 	Sessions          SessionStore
+	ModelPricing      ModelPricingStore
 	ClassificationMax string
 	KillSwitch        bool
 	KillSwitchStore   KillSwitchStore
@@ -63,6 +66,30 @@ type SessionConfig struct {
 	Metrics           *MetricsHandler
 	NewID             func(prefix string) string
 	LocalStateTTL     time.Duration
+	// ContextResolver auto-resolves git/repo/branch metadata when not provided explicitly.
+	ContextResolver ContextResolver
+	// TrustedClientToken, when set, gates the privileged trust levels
+	// (gateway_enforced, managed_client). A caller may only raise the recorded
+	// trust level above self_reported by proving possession of this shared
+	// secret via the X-AI-Orch-Trusted-Client-Token header. When empty (local
+	// dev), the X-AI-Orch-Client identity header is honored on its own.
+	TrustedClientToken string
+}
+
+// ContextResolver extracts session context from the local environment.
+type ContextResolver interface {
+	Resolve() SessionContext
+}
+
+// SessionContext holds non-authoritative metadata resolved from the local environment.
+type SessionContext struct {
+	RepoURL      string `json:"repo_url,omitempty"`
+	Branch       string `json:"branch,omitempty"`
+	CommitSHA    string `json:"commit_sha,omitempty"`
+	WorkItemID   string `json:"work_item_id,omitempty"`
+	WorkItemType string `json:"work_item_type,omitempty"`
+	ActorHint    string `json:"actor_hint,omitempty"`
+	SourceSystem string `json:"source_system,omitempty"`
 }
 
 // defaultLocalStateTTL is the time-to-live for abandoned in-process state
@@ -70,30 +97,34 @@ type SessionConfig struct {
 const defaultLocalStateTTL = 30 * time.Minute
 
 type SessionService struct {
-	devToken          string
-	adminToken        string // Separate token for admin endpoints; empty means admin is disabled.
-	authorizer        RequestAuthorizer
-	audit             AuditAppender
-	sessions          SessionStore
-	classificationMax string
-	killSwitch        bool
-	killSwitchStore   KillSwitchStore
-	costCapEnabled    bool
-	sessionCostCapUSD float64
-	policyEngine      policyengine.Engine
-	toolLoopMax       int
-	patchBuffer       *PatchBuffer
-	metrics           *MetricsHandler
-	newID             func(prefix string) string
-	promptMu          sync.Mutex
-	prompts           map[string]string
-	promptTimes       map[string]time.Time
-	patchMu           sync.Mutex
-	patches           map[string]map[string]struct{}
-	patchTimes        map[string]map[string]time.Time
-	cancelMu          sync.Mutex
-	cancels           map[string]context.CancelFunc
-	cancelTimes       map[string]time.Time
+	devToken           string
+	adminToken         string // Separate token for admin endpoints; empty means admin is disabled.
+	authorizer         RequestAuthorizer
+	audit              AuditAppender
+	auditReader        AuditReader
+	sessions           SessionStore
+	modelPricing       ModelPricingStore
+	classificationMax  string
+	killSwitch         bool
+	killSwitchStore    KillSwitchStore
+	costCapEnabled     bool
+	sessionCostCapUSD  float64
+	policyEngine       policyengine.Engine
+	toolLoopMax        int
+	patchBuffer        *PatchBuffer
+	metrics            *MetricsHandler
+	newID              func(prefix string) string
+	contextResolver    ContextResolver
+	trustedClientToken string
+	promptMu           sync.Mutex
+	prompts            map[string]string
+	promptTimes        map[string]time.Time
+	patchMu            sync.Mutex
+	patches            map[string]map[string]struct{}
+	patchTimes         map[string]map[string]time.Time
+	cancelMu           sync.Mutex
+	cancels            map[string]context.CancelFunc
+	cancelTimes        map[string]time.Time
 	// lastEventID tracks the most recent audit event ID per session for chain linking.
 	lastEventMu sync.Mutex
 	lastEventID map[string]string
@@ -199,15 +230,23 @@ type CreateSessionRequest struct {
 	Classification   string  `json:"classification"`
 	Prompt           string  `json:"prompt"`
 	EstimatedCostUSD float64 `json:"estimated_cost_usd,omitempty"`
+	RunID            string  `json:"run_id,omitempty"`
+	PermissionMode   string  `json:"permission_mode,omitempty"`
+	ApprovalMode     string  `json:"approval_mode,omitempty"`
+	WorkspaceMode    string  `json:"workspace_mode,omitempty"`
 	// Deprecated local identity hint. Authoritative actor identity comes from auth context.
 	RequestedBy string `json:"requested_by,omitempty"`
 	// Phase 1F control-plane bindings.
-	UseCaseID  string `json:"use_case_id,omitempty"`
-	WorkflowID string `json:"workflow_id,omitempty"`
-	WorkItemID string `json:"work_item_id,omitempty"`
-	RepoURL    string `json:"repo_url,omitempty"`
-	Branch     string `json:"branch,omitempty"`
-	Intent     string `json:"intent,omitempty"`
+	UseCaseID    string `json:"use_case_id,omitempty"`
+	WorkflowID   string `json:"workflow_id,omitempty"`
+	WorkItemID   string `json:"work_item_id,omitempty"`
+	WorkItemType string `json:"work_item_type,omitempty"`
+	RepoURL      string `json:"repo_url,omitempty"`
+	Branch       string `json:"branch,omitempty"`
+	CommitSHA    string `json:"commit_sha,omitempty"`
+	Intent       string `json:"intent,omitempty"`
+	ActorHint    string `json:"actor_hint,omitempty"`
+	SourceSystem string `json:"source_system,omitempty"`
 	// Phase 1F cost/value sizing.
 	StoryPoints         int     `json:"story_points,omitempty"`
 	EstimatedDevDays    float64 `json:"estimated_dev_days,omitempty"`
@@ -222,10 +261,51 @@ type CreateSessionRequest struct {
 }
 
 type CreateSessionResponse struct {
-	SessionID    string `json:"session_id"`
-	Status       string `json:"status"`
-	Agent        string `json:"agent"`
-	AuditEventID string `json:"audit_event_id"`
+	SessionID      string `json:"session_id"`
+	RunID          string `json:"run_id,omitempty"`
+	Status         string `json:"status"`
+	Agent          string `json:"agent"`
+	PermissionMode string `json:"permission_mode,omitempty"`
+	ApprovalMode   string `json:"approval_mode,omitempty"`
+	AuditEventID   string `json:"audit_event_id"`
+}
+
+type SessionSummary struct {
+	SessionID           string              `json:"session_id"`
+	RunID               string              `json:"run_id,omitempty"`
+	ActorSubject        string              `json:"actor_subject"`
+	Agent               string              `json:"agent"`
+	Classification      string              `json:"classification"`
+	Status              string              `json:"status"`
+	CreatedAt           time.Time           `json:"created_at"`
+	PermissionMode      string              `json:"permission_mode,omitempty"`
+	ApprovalMode        string              `json:"approval_mode,omitempty"`
+	WorkspaceMode       string              `json:"workspace_mode,omitempty"`
+	UseCaseID           string              `json:"use_case_id,omitempty"`
+	WorkflowID          string              `json:"workflow_id,omitempty"`
+	WorkItemID          string              `json:"work_item_id,omitempty"`
+	WorkItemType        string              `json:"work_item_type,omitempty"`
+	RepoURL             string              `json:"repo_url,omitempty"`
+	Branch              string              `json:"branch,omitempty"`
+	CommitSHA           string              `json:"commit_sha,omitempty"`
+	Intent              string              `json:"intent,omitempty"`
+	ActorHint           string              `json:"actor_hint,omitempty"`
+	SourceSystem        string              `json:"source_system,omitempty"`
+	StoryPoints         int                 `json:"story_points,omitempty"`
+	EstimatedDevDays    float64             `json:"estimated_dev_days,omitempty"`
+	BlendedDayRateUSD   float64             `json:"blended_day_rate_usd,omitempty"`
+	BaselineCostUSD     float64             `json:"baseline_cost_usd,omitempty"`
+	ModelCostUSD        float64             `json:"model_cost_usd,omitempty"`
+	ToolCostUSD         float64             `json:"tool_cost_usd,omitempty"`
+	PlatformCostUSD     float64             `json:"platform_cost_usd,omitempty"`
+	ReviewCostUSD       float64             `json:"review_cost_usd,omitempty"`
+	VerificationCostUSD float64             `json:"verification_cost_usd,omitempty"`
+	RetryCount          int                 `json:"retry_count,omitempty"`
+	UsageSummary        SessionUsageSummary `json:"usage_summary"`
+}
+
+type ListSessionsResponse struct {
+	Sessions []SessionSummary `json:"sessions"`
 }
 
 func NewSessionService(cfg SessionConfig) *SessionService {
@@ -249,43 +329,140 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 	if ttl <= 0 {
 		ttl = defaultLocalStateTTL
 	}
+	auditReader := cfg.AuditReader
+	if auditReader == nil {
+		if reader, ok := cfg.Audit.(AuditReader); ok {
+			auditReader = reader
+		}
+	}
 	return &SessionService{
-		devToken:          cfg.DevToken,
-		adminToken:        cfg.AdminToken,
-		authorizer:        cfg.Authorizer,
-		audit:             cfg.Audit,
-		sessions:          cfg.Sessions,
-		classificationMax: defaultString(cfg.ClassificationMax, "internal"),
-		killSwitch:        cfg.KillSwitch,
-		killSwitchStore:   cfg.KillSwitchStore,
-		costCapEnabled:    cfg.CostCapEnabled,
-		sessionCostCapUSD: cfg.SessionCostCapUSD,
-		policyEngine:      engine,
-		toolLoopMax:       toolLoopMax,
-		patchBuffer:       patchBuffer,
-		metrics:           cfg.Metrics,
-		newID:             newID,
-		prompts:           make(map[string]string),
-		promptTimes:       make(map[string]time.Time),
-		patches:           make(map[string]map[string]struct{}),
-		patchTimes:        make(map[string]map[string]time.Time),
-		cancels:           make(map[string]context.CancelFunc),
-		cancelTimes:       make(map[string]time.Time),
-		localStateTTL:     ttl,
+		devToken:           cfg.DevToken,
+		adminToken:         cfg.AdminToken,
+		authorizer:         cfg.Authorizer,
+		audit:              cfg.Audit,
+		auditReader:        auditReader,
+		sessions:           cfg.Sessions,
+		modelPricing:       cfg.ModelPricing,
+		classificationMax:  defaultString(cfg.ClassificationMax, "internal"),
+		killSwitch:         cfg.KillSwitch,
+		killSwitchStore:    cfg.KillSwitchStore,
+		costCapEnabled:     cfg.CostCapEnabled,
+		sessionCostCapUSD:  cfg.SessionCostCapUSD,
+		policyEngine:       engine,
+		toolLoopMax:        toolLoopMax,
+		patchBuffer:        patchBuffer,
+		metrics:            cfg.Metrics,
+		newID:              newID,
+		contextResolver:    cfg.ContextResolver,
+		trustedClientToken: cfg.TrustedClientToken,
+		prompts:            make(map[string]string),
+		promptTimes:        make(map[string]time.Time),
+		patches:            make(map[string]map[string]struct{}),
+		patchTimes:         make(map[string]map[string]time.Time),
+		cancels:            make(map[string]context.CancelFunc),
+		cancelTimes:        make(map[string]time.Time),
+		localStateTTL:      ttl,
 	}
 }
 
 func NewSessionHandler(service *SessionService) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/sessions", service.createSession)
+	mux.HandleFunc("/v1/sessions", service.sessionsCollection)
 	return mux
 }
 
-func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+func (s *SessionService) sessionsCollection(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		s.createSession(w, r)
+	case http.MethodGet:
+		s.listSessions(w, r)
+	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+	}
+}
+
+func (s *SessionService) listSessions(w http.ResponseWriter, r *http.Request) {
+	if s == nil || s.sessions == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session store unavailable"})
 		return
 	}
+	authReq, ok := s.RequireAuthorizedRequest(w, r)
+	if !ok {
+		return
+	}
+	limit := parseSessionListLimit(authReq.URL.Query().Get("limit"))
+	records, err := s.sessions.ListRecent(authReq.Context(), actorFromContext(authReq.Context()), limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "session list failed"})
+		return
+	}
+	summaries := make([]SessionSummary, 0, len(records))
+	for _, record := range records {
+		summary := sessionSummaryFromRecord(record)
+		if s.auditReader != nil {
+			events, err := s.auditReader.EventsBySession(authReq.Context(), record.SessionID)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "session usage lookup failed"})
+				return
+			}
+			summary.UsageSummary = SummarizeSessionUsageWithPricing(authReq.Context(), events, s.modelPricing)
+		}
+		summaries = append(summaries, summary)
+	}
+	writeJSON(w, http.StatusOK, ListSessionsResponse{Sessions: summaries})
+}
+
+func parseSessionListLimit(value string) int {
+	if value == "" {
+		return 20
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit <= 0 {
+		return 20
+	}
+	if limit > 100 {
+		return 100
+	}
+	return limit
+}
+
+func sessionSummaryFromRecord(record SessionRecord) SessionSummary {
+	return SessionSummary{
+		SessionID:           record.SessionID,
+		RunID:               record.RunID,
+		ActorSubject:        record.ActorSubject,
+		Agent:               record.Agent,
+		Classification:      record.Classification,
+		Status:              record.Status,
+		CreatedAt:           record.CreatedAt,
+		PermissionMode:      record.PermissionMode,
+		ApprovalMode:        record.ApprovalMode,
+		WorkspaceMode:       record.WorkspaceMode,
+		UseCaseID:           record.UseCaseID,
+		WorkflowID:          record.WorkflowID,
+		WorkItemID:          record.WorkItemID,
+		WorkItemType:        record.WorkItemType,
+		RepoURL:             record.RepoURL,
+		Branch:              record.Branch,
+		CommitSHA:           record.CommitSHA,
+		Intent:              record.Intent,
+		ActorHint:           record.ActorHint,
+		SourceSystem:        record.SourceSystem,
+		StoryPoints:         record.StoryPoints,
+		EstimatedDevDays:    record.EstimatedDevDays,
+		BlendedDayRateUSD:   record.BlendedDayRateUSD,
+		BaselineCostUSD:     record.BaselineCostUSD,
+		ModelCostUSD:        record.ModelCostUSD,
+		ToolCostUSD:         record.ToolCostUSD,
+		PlatformCostUSD:     record.PlatformCostUSD,
+		ReviewCostUSD:       record.ReviewCostUSD,
+		VerificationCostUSD: record.VerificationCostUSD,
+		RetryCount:          record.RetryCount,
+	}
+}
+
+func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 	if s == nil || s.audit == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return
@@ -309,10 +486,12 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
+	request.normalizeRuntimeModes()
 	if err := request.validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	s.resolveSessionContext(&request)
 	if blocked, reason := s.blockedByKillSwitch(request.Agent); blocked {
 		if err := s.appendDenied(r.Context(), reason, nil, request.Classification); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
@@ -378,6 +557,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 	promptHash := sha256.Sum256([]byte(request.Prompt))
 
 	actor := actorFromContext(r.Context())
+	trust := s.trustMetadataFromRequest(r)
 
 	event, err := s.audit.Append(r.Context(), audit.Event{
 		EventID:            eventID,
@@ -386,13 +566,23 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		Actor:              actor,
 		Agent:              request.Agent,
 		Classification:     request.Classification,
+		RunID:              request.RunID,
+		PermissionMode:     request.PermissionMode,
+		ApprovalMode:       request.ApprovalMode,
+		WorkspaceMode:      request.WorkspaceMode,
+		WorkItemID:         request.WorkItemID,
+		WorkItemType:       request.WorkItemType,
+		CommitSHA:          request.CommitSHA,
+		ActorHint:          request.ActorHint,
+		SourceSystem:       request.SourceSystem,
 		PromptSHA256:       hex.EncodeToString(promptHash[:]),
 		EstimatedCostUSD:   request.EstimatedCostUSD,
 		CostCapUSD:         activeCostCap(s.costCapEnabled, s.sessionCostCapUSD),
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
-		TrustLevel:         trustLevelFromRequest(r),
+		TrustLevel:         trust.TrustLevel,
+		EnforcementMode:    trust.EnforcementMode,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
@@ -403,18 +593,26 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 	if s.sessions != nil {
 		if err := s.sessions.Create(r.Context(), SessionRecord{
 			SessionID:           sessionID,
+			RunID:               request.RunID,
 			ActorSubject:        actor,
 			Agent:               request.Agent,
 			Classification:      request.Classification,
 			PromptSHA256:        hex.EncodeToString(promptHash[:]),
 			Status:              "created",
 			CreatedAt:           time.Now().UTC(),
+			PermissionMode:      request.PermissionMode,
+			ApprovalMode:        request.ApprovalMode,
+			WorkspaceMode:       request.WorkspaceMode,
 			UseCaseID:           request.UseCaseID,
 			WorkflowID:          request.WorkflowID,
 			WorkItemID:          request.WorkItemID,
+			WorkItemType:        request.WorkItemType,
 			RepoURL:             request.RepoURL,
 			Branch:              request.Branch,
+			CommitSHA:           request.CommitSHA,
 			Intent:              request.Intent,
+			ActorHint:           request.ActorHint,
+			SourceSystem:        request.SourceSystem,
 			StoryPoints:         request.StoryPoints,
 			EstimatedDevDays:    request.EstimatedDevDays,
 			BlendedDayRateUSD:   request.BlendedDayRateUSD,
@@ -435,11 +633,47 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 	s.rememberEventID(sessionID, event.EventID)
 
 	writeJSON(w, http.StatusCreated, CreateSessionResponse{
-		SessionID:    sessionID,
-		Status:       "created",
-		Agent:        request.Agent,
-		AuditEventID: event.EventID,
+		SessionID:      sessionID,
+		RunID:          request.RunID,
+		Status:         "created",
+		Agent:          request.Agent,
+		PermissionMode: request.PermissionMode,
+		ApprovalMode:   request.ApprovalMode,
+		AuditEventID:   event.EventID,
 	})
+}
+
+func (s *SessionService) resolveSessionContext(request *CreateSessionRequest) {
+	if s == nil || s.contextResolver == nil || request == nil {
+		return
+	}
+	if request.RepoURL != "" && request.Branch != "" && request.CommitSHA != "" &&
+		request.WorkItemID != "" && request.WorkItemType != "" &&
+		request.ActorHint != "" && request.SourceSystem != "" {
+		return
+	}
+	resolved := s.contextResolver.Resolve()
+	if request.RepoURL == "" {
+		request.RepoURL = resolved.RepoURL
+	}
+	if request.Branch == "" {
+		request.Branch = resolved.Branch
+	}
+	if request.CommitSHA == "" {
+		request.CommitSHA = resolved.CommitSHA
+	}
+	if request.WorkItemID == "" {
+		request.WorkItemID = resolved.WorkItemID
+	}
+	if request.WorkItemType == "" {
+		request.WorkItemType = resolved.WorkItemType
+	}
+	if request.ActorHint == "" {
+		request.ActorHint = resolved.ActorHint
+	}
+	if request.SourceSystem == "" {
+		request.SourceSystem = resolved.SourceSystem
+	}
 }
 
 // actorFromContext extracts the authenticated subject from the context, falling back to "local-dev".
@@ -450,20 +684,39 @@ func actorFromContext(ctx context.Context) string {
 	return "local-dev"
 }
 
-func trustLevelFromRequest(r *http.Request) string {
+type requestTrustMetadata struct {
+	TrustLevel      string
+	EnforcementMode string
+}
+
+// trustMetadataFromRequest derives the trust level recorded on an audit event.
+// Trust is server-authoritative: the X-AI-Orch-Client header is a non-authoritative
+// claim of client identity, and a self-declared X-AI-Orch-Trust-Level header is never
+// honored. When a trusted-client token is configured, the privileged levels
+// (gateway_enforced, managed_client) are only granted to callers that prove
+// possession of that shared secret, so an ordinary token holder cannot forge a
+// stronger trust label on the audit trail. When no token is configured (local dev),
+// the client identity header is honored on its own for backward compatibility.
+func (s *SessionService) trustMetadataFromRequest(r *http.Request) requestTrustMetadata {
+	selfReported := requestTrustMetadata{TrustLevel: "self_reported", EnforcementMode: "advisory"}
 	if r == nil {
-		return ""
+		return selfReported
 	}
-	switch strings.ToLower(strings.TrimSpace(r.Header.Get("X-AI-Orch-Trust-Level"))) {
-	case "gateway_enforced":
-		return "gateway_enforced"
-	case "managed_client":
-		return "managed_client"
-	case "self_reported":
-		return "self_reported"
-	default:
-		return ""
+	if s != nil && s.trustedClientToken != "" {
+		presented := r.Header.Get("X-AI-Orch-Trusted-Client-Token")
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(s.trustedClientToken)) != 1 {
+			return selfReported
+		}
 	}
+	client := strings.ToLower(strings.TrimSpace(r.Header.Get("X-AI-Orch-Client")))
+	switch client {
+	case "ai-orch-mcp":
+		return requestTrustMetadata{TrustLevel: "gateway_enforced", EnforcementMode: "gateway"}
+	case "ai-agent-bridge", "vscode-bridge", "ai-orch-bridge":
+		return requestTrustMetadata{TrustLevel: "managed_client", EnforcementMode: "managed"}
+	}
+	// Unknown clients may report evidence, but they cannot upgrade its strength.
+	return selfReported
 }
 
 func (s *SessionService) appendDeniedWithCost(ctx context.Context, reason string, classification string, estimatedCostUSD float64, costCapUSD float64) error {
@@ -786,7 +1039,50 @@ func (r CreateSessionRequest) validate() error {
 	if r.RequestedBy != "" && !validActorLabel(r.RequestedBy) {
 		return errors.New("requested_by may only contain letters, numbers, '.', '_', '@', ':' and '-'")
 	}
+	if !validPermissionMode(r.PermissionMode) {
+		return errors.New("permission_mode must be one of read_only, reviewed, auto_apply or full_access")
+	}
+	if !validApprovalMode(r.ApprovalMode) {
+		return errors.New("approval_mode must be one of manual, auto_approved, yolo or self_reported")
+	}
 	return nil
+}
+
+func (r *CreateSessionRequest) normalizeRuntimeModes() {
+	if r == nil {
+		return
+	}
+	r.PermissionMode = strings.ToLower(strings.TrimSpace(r.PermissionMode))
+	r.ApprovalMode = strings.ToLower(strings.TrimSpace(r.ApprovalMode))
+	r.WorkspaceMode = strings.ToLower(strings.TrimSpace(r.WorkspaceMode))
+	if r.PermissionMode == "" {
+		r.PermissionMode = "reviewed"
+	}
+	if r.ApprovalMode == "" {
+		if r.PermissionMode == "full_access" {
+			r.ApprovalMode = "yolo"
+		} else {
+			r.ApprovalMode = "manual"
+		}
+	}
+}
+
+func validPermissionMode(value string) bool {
+	switch value {
+	case "read_only", "reviewed", "auto_apply", "full_access":
+		return true
+	default:
+		return false
+	}
+}
+
+func validApprovalMode(value string) bool {
+	switch value {
+	case "manual", "auto_approved", "yolo", "self_reported":
+		return true
+	default:
+		return false
+	}
 }
 
 func validActorLabel(value string) bool {

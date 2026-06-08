@@ -1,8 +1,8 @@
 {
   "name": "ai-agent-bridge",
   "displayName": "AI Agent Bridge",
-  "description": "Local AI agent orchestration bridge for VS Code",
-  "version": "0.7.0-alpha",
+  "description": "Governed AI agent panel for VS Code — chat, streaming, context attachments, and patch review via the Governance Shell",
+  "version": "0.15.0-beta",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -14,17 +14,46 @@
   },
   "categories": [
     "Machine Learning",
-    "Debuggers"
+    "Other"
   ],
   "activationEvents": [
+    "onView:aiAgentBridge.agentPanel",
     "onCommand:aiAgentBridge.invokeAgent",
     "onCommand:aiAgentBridge.onboard",
     "onCommand:aiAgentBridge.checkConnection",
-    "onCommand:aiAgentBridge.showAudit"
+    "onCommand:aiAgentBridge.showAudit",
+    "onCommand:aiAgentBridge.focusPanel",
+    "onCommand:aiAgentBridge.attachSelection",
+    "onCommand:aiAgentBridge.attachActiveFile"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiAgentBridge",
+          "title": "AI Agent",
+          "icon": "$(hubot)"
+        }
+      ]
+    },
+    "views": {
+      "aiAgentBridge": [
+        {
+          "type": "webview",
+          "id": "aiAgentBridge.agentPanel",
+          "name": "Bridge",
+          "icon": "$(hubot)"
+        }
+      ]
+    },
     "commands": [
+      {
+        "command": "aiAgentBridge.focusPanel",
+        "title": "Open AI Agent Panel",
+        "category": "AI Agent",
+        "icon": "$(hubot)"
+      },
       {
         "command": "aiAgentBridge.invokeAgent",
         "title": "Invoke AI Agent",
@@ -42,20 +71,45 @@
       },
       {
         "command": "aiAgentBridge.showAudit",
-        "title": "Show Audit Link",
+        "title": "Show Session Audit",
+        "category": "AI Agent"
+      },
+      {
+        "command": "aiAgentBridge.attachSelection",
+        "title": "Attach Selection to Agent Context",
+        "category": "AI Agent"
+      },
+      {
+        "command": "aiAgentBridge.attachActiveFile",
+        "title": "Attach Active File to Agent Context",
         "category": "AI Agent"
       }
     ],
     "keybindings": [
       {
-        "command": "aiAgentBridge.invokeAgent",
+        "command": "aiAgentBridge.focusPanel",
         "key": "cmd+shift+i",
         "mac": "cmd+shift+i",
         "when": "editorTextFocus"
       }
     ],
     "menus": {
+      "view/title": [
+        {
+          "command": "aiAgentBridge.checkConnection",
+          "when": "view == aiAgentBridge.agentPanel",
+          "group": "navigation@1"
+        },
+        {
+          "command": "aiAgentBridge.onboard",
+          "when": "view == aiAgentBridge.agentPanel",
+          "group": "navigation@2"
+        }
+      ],
       "commandPalette": [
+        {
+          "command": "aiAgentBridge.focusPanel"
+        },
         {
           "command": "aiAgentBridge.invokeAgent"
         },
@@ -67,6 +121,23 @@
         },
         {
           "command": "aiAgentBridge.showAudit"
+        },
+        {
+          "command": "aiAgentBridge.attachSelection"
+        },
+        {
+          "command": "aiAgentBridge.attachActiveFile"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "aiAgentBridge.attachSelection",
+          "when": "editorHasSelection",
+          "group": "aiAgent@1"
+        },
+        {
+          "command": "aiAgentBridge.attachActiveFile",
+          "group": "aiAgent@2"
         }
       ]
     },
@@ -90,6 +161,11 @@
           "default": "developer",
           "scope": "machine",
           "description": "Identity label for audit and session attribution (e.g., developer, ci-bot, review-assistant)."
+        },
+        "aiAgentBridge.autoConfirmSpecialist": {
+          "type": "boolean",
+          "default": false,
+          "description": "Skip the specialist confirmation step and start execution immediately after routing."
         }
       }
     }

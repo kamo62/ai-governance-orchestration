@@ -1,0 +1,29 @@
+name: ai-agent-orch
+
+services:
+  bifrost:
+    profiles: ["bifrost"]
+
+  agentgateway:
+    image: cr.agentgateway.dev/agentgateway:${AGENTGATEWAY_IMAGE_TAG:-v1.2.1}
+    command: ["-f", "/config/openrouter.yaml"]
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENROUTER_API_KEY:-}
+    ports:
+      - "127.0.0.1:${AGENTGATEWAY_PORT:-13000}:3000"
+      - "127.0.0.1:${AGENTGATEWAY_READINESS_PORT:-15021}:15021"
+    volumes:
+      - ./agentgateway/openrouter.yaml:/config/openrouter.yaml:ro
+
+  governance-shell:
+    environment:
+      AI_ORCH_MODEL_BACKEND: agentgateway
+      AI_ORCH_AGENTGATEWAY_BASE_URL: http://agentgateway:3000
+      AI_ORCH_AGENTGATEWAY_READINESS_URL: http://agentgateway:15021/healthz/ready
+      AI_ORCH_BIFROST_BASE_URL: ""
+    depends_on:
+      agentgateway:
+        condition: service_started
+      orchestrator:
+        condition: service_healthy

@@ -2,12 +2,12 @@
 
 ## Summary
 
-OpenCode can be the worker runtime, but it still needs a model API to call. If the runtime calls Bifrost, OpenRouter, OpenAI, Anthropic, Bedrock, Azure OpenAI, LiteLLM or another provider directly, the governance boundary is weakened.
+OpenCode, Cline and similar developer tools can keep local repository access, but they still need a model API to call. If the runtime calls Bifrost, OpenRouter, OpenAI, Anthropic, Bedrock, Azure OpenAI, LiteLLM or another provider directly, the governance boundary is weakened.
 
 The missing piece is a small model compatibility gateway owned by this system:
 
 ```text
-OpenCode runtime model calls
+Developer runtime model calls
   -> ai-orch Model Compatibility Gateway
   -> Governance Shell
   -> Governance Router
@@ -18,7 +18,7 @@ OpenCode runtime model calls
 This is separate from the MCP gateway:
 
 ```text
-OpenCode runtime tool calls
+Developer runtime tool calls
   -> ai-orch MCP Gateway
   -> Governance Shell
   -> approved tools and upstream MCP servers
@@ -28,21 +28,23 @@ The two gateways solve different problems:
 
 | Gateway | Purpose | Governance question |
 | --- | --- | --- |
-| Model Compatibility Gateway | Expose OpenAI-compatible model endpoints for runtimes such as OpenCode | Which model is allowed for this work, and how should usage be audited? |
+| Model Compatibility Gateway | Expose provider-compatible model endpoints for runtimes such as OpenCode and Cline | Which model is allowed for this work, and how should usage be audited? |
 | MCP Gateway | Expose governed tools, prompts and resources | Which tools can this agent use, with which arguments, and under which approval path? |
 
 Both must report to the Governance Shell. Neither should become the source of authority.
 
 ## Why This Exists
 
-OpenCode and similar runtimes need a model provider surface. The practical provider surface is usually OpenAI-compatible:
+OpenCode, Cline and similar runtimes need a model provider surface. The practical provider surface is often OpenAI-compatible:
 
 - `/v1/models`;
 - `/v1/chat/completions`;
 - `/v1/responses`;
 - streaming through `text/event-stream`.
 
-OpenCode supports custom providers with a `baseURL`, including OpenAI-compatible provider packages. That means the runtime can point at `ai-orch` as if it were a model provider, while `ai-orch` still owns the routing, policy, secrets and audit trail.
+OpenCode and Cline both have documented paths for custom/OpenAI-compatible model providers. That means the runtime can point at `ai-orch` as if it were a model provider, while `ai-orch` still owns the routing, policy, secrets and audit trail.
+
+Claude Code is a related but different path. It can use MCP for tools now, and it can route Claude API traffic through `ANTHROPIC_BASE_URL`, but that requires an Anthropic-compatible ai-orch endpoint or adapter. Do not present Claude Code model routing as complete until that compatibility path is implemented and tested.
 
 This avoids giving the worker runtime provider keys. The runtime receives only a session-scoped token for the compatibility gateway.
 
@@ -64,7 +66,7 @@ Governance Shell
   -> cost and usage records
 ```
 
-Bifrost is the preferred OSS provider-plumbing sidecar in the current Compose path. Native OpenRouter remains a fallback backend and direct provider-health smoke path. LiteLLM can still be evaluated later as an optional backend adapter if compatibility work grows too large.
+Bifrost is the default OSS provider-plumbing sidecar in the current Compose path. AgentGateway is an additional gateway candidate with its own Compose override. Native OpenRouter remains a direct gateway/fallback path and provider-health smoke path. LiteLLM can still be evaluated later as an optional backend adapter if compatibility work grows too large.
 
 ## Minimal API Surface
 
@@ -163,7 +165,7 @@ Audit should not store raw prompts, raw provider responses or provider credentia
 
 ## OpenCode Configuration Shape
 
-The eventual OpenCode provider configuration should point at the local compatibility gateway:
+The OpenCode provider configuration should point at the local compatibility gateway:
 
 ```json
 {
@@ -174,7 +176,10 @@ The eventual OpenCode provider configuration should point at the local compatibi
       "name": "AI Orch Governed Router",
       "options": {
         "baseURL": "http://127.0.0.1:18082/v1",
-        "apiKey": "{env:AI_ORCH_RUNTIME_TOKEN}"
+        "apiKey": "{env:AI_ORCH_RUNTIME_TOKEN}",
+        "headers": {
+          "X-AI-Orch-Session-ID": "{env:AI_ORCH_SESSION_ID}"
+        }
       },
       "models": {
         "coding-balanced": {
@@ -185,7 +190,10 @@ The eventual OpenCode provider configuration should point at the local compatibi
         }
       }
     }
-  }
+  },
+  "enabled_providers": ["ai-orch"],
+  "model": "ai-orch/coding-balanced",
+  "small_model": "ai-orch/coding-fast"
 }
 ```
 
@@ -194,19 +202,39 @@ The runtime should never receive `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, AWS 
 The runtime should receive:
 
 - `AI_ORCH_RUNTIME_TOKEN`;
+- `AI_ORCH_SESSION_ID`;
 - model aliases;
 - MCP gateway URL;
 - session ID;
 - workspace path or mounted workspace;
 - policy-limited tool configuration.
 
-## Relationship To Bifrost
+The equivalent Cline shape is the OpenAI-compatible provider with:
 
-Bifrost is useful because it already handles a large part of the provider-compatibility problem as open-source plumbing.
+```text
+Base URL: http://127.0.0.1:18082/v1
+API key: AI_ORCH_RUNTIME_TOKEN
+Model ID: coding-balanced
+```
+
+The equivalent Claude Code shape is future work:
+
+```text
+ANTHROPIC_BASE_URL=<ai-orch anthropic-compatible gateway>
+ANTHROPIC_AUTH_TOKEN=<session or runtime token>
+```
+
+That endpoint is not the same as `/v1/chat/completions`, so it belongs in the roadmap until implemented.
+
+## Relationship To Provider Gateways
+
+Bifrost is useful because it already handles a large part of the provider-compatibility problem as open-source plumbing. AgentGateway is another useful candidate because it also covers MCP gateway, A2A, auth, RBAC, rate limiting, guardrails and telemetry. Native OpenRouter remains useful as the direct baseline.
 
 Possible roles:
 
-- preferred local Compose backend for OpenAI-compatible provider calls;
+- default local Compose backend for OpenAI-compatible provider calls through Bifrost;
+- optional AgentGateway backend for LLM/MCP/security plumbing behind ai-orch;
+- direct native OpenRouter backend for baseline provider smoke and fallback checks;
 - provider translation for OpenRouter, Anthropic, Bedrock, OpenAI, Vertex, Azure, Ollama/vLLM-style providers;
 - streaming and retry plumbing behind the Governance Shell;
 - replaceable backend adapter if another provider gateway fits better later.
@@ -214,9 +242,9 @@ Possible roles:
 Non-goal:
 
 - replace the Governance Shell;
-- let Bifrost own policy, audit, session identity, patch buffering, evidence, or model-routing decisions;
-- use Bifrost enterprise governance, virtual-key governance, UI governance or MCP governance as the ai-orch control plane in this phase;
-- route runtimes directly to Bifrost without the Governance Shell.
+- let Bifrost, AgentGateway, OpenRouter or another gateway own policy, audit, session identity, patch buffering, evidence, or model-routing decisions;
+- use Bifrost or AgentGateway governance/UI features as the ai-orch control plane in this phase;
+- route runtimes directly to Bifrost, AgentGateway, OpenRouter or a provider without the Governance Shell.
 
 The correct relationship is:
 
@@ -224,9 +252,11 @@ The correct relationship is:
 Runtime
   -> ai-orch Model Compatibility Gateway
   -> Governance Shell
-  -> Bifrost sidecar
+  -> Bifrost, AgentGateway or native OpenRouter
   -> approved provider
 ```
+
+AgentGateway should be tested before beta as provider and MCP plumbing, not as a Governance Shell replacement. Bifrost, AgentGateway and native OpenRouter should stay selectable until the gateway evidence is strong enough to choose defaults by environment rather than preference.
 
 ## Relationship To LiteLLM
 
@@ -250,7 +280,7 @@ The correct relationship is:
 Runtime
   -> ai-orch Model Compatibility Gateway
   -> Governance Shell
-  -> optional Bifrost, LiteLLM or native OpenRouter backend
+  -> optional Bifrost, AgentGateway, LiteLLM or native OpenRouter backend
 ```
 
 ## Security Contract
@@ -312,8 +342,8 @@ This gives reporting and maturity exports a clean record without making the audi
 
 Deliverables:
 
-- define selectable model backends: `native-openrouter` and `bifrost`;
-- define Bifrost sidecar health and fail-closed startup behaviour;
+- define selectable model backends: `native-openrouter`, `bifrost` and `agentgateway`;
+- define provider-sidecar health and fail-closed startup behaviour for selected backends;
 - define runtime-token authentication for model calls;
 - define OpenAI-compatible response shapes for `/v1/models`, `/v1/chat/completions` and `/v1/responses`;
 - define streaming subset and failure semantics;
@@ -348,15 +378,17 @@ Deliverables:
 - add response ID correlation;
 - add response usage audit records.
 
-### Phase 1M Dependency: OpenCode Sandbox
+### Phase 1M Dependency: OpenCode Managed-Provider E2E
 
-The local OpenCode sandbox should not start until the compatibility gateway can prove:
+The local OpenCode E2E should not start until the compatibility gateway can prove:
 
 - runtime token works;
 - model aliases resolve through Governance Shell;
 - provider key is absent from runtime env;
 - model calls are audited;
 - tool calls can be pointed at `ai-orch-mcp`.
+
+The first E2E should run OpenCode locally against a real repo or disposable worktree while routing model calls through ai-orch. Sandbox/worktree isolation remains a later risk-based mode, not the default proof of the provider endpoint lane.
 
 ## References
 

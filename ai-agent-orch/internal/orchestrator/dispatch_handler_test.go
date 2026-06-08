@@ -24,7 +24,7 @@ func TestDispatchHandlerFailsClosedWhenAuditWriteFails(t *testing.T) {
 	}
 	handler := NewDispatchHandler(dispatcher, failingAuditStore{})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"test-generation","prompt":"write tests"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"unit-tests","prompt":"write tests"}`)))
 	req.Header.Set("X-AI-Orch-Session-ID", "sess_dispatch_1")
 	rec := httptest.NewRecorder()
 
@@ -51,7 +51,7 @@ func TestDispatchHandlerFailsWhenRuntimeWaitFails(t *testing.T) {
 	}
 	handler := NewDispatchHandler(dispatcher, audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")))
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"test-generation","prompt":"write tests"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"unit-tests","prompt":"write tests"}`)))
 	req.Header.Set("X-AI-Orch-Session-ID", "sess_dispatch_1")
 	rec := httptest.NewRecorder()
 
@@ -77,7 +77,7 @@ func TestDispatchHandlerFailsWhenRuntimeEmitsError(t *testing.T) {
 	}
 	handler := NewDispatchHandler(dispatcher, audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")))
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"test-generation","prompt":"write tests"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"unit-tests","prompt":"write tests"}`)))
 	req.Header.Set("X-AI-Orch-Session-ID", "sess_dispatch_1")
 	rec := httptest.NewRecorder()
 
@@ -109,7 +109,7 @@ func TestDispatchHandlerRuntimeContextSurvivesCallerCancellation(t *testing.T) {
 
 	baseCtx, cancel := context.WithCancel(context.Background())
 	cancel()
-	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"test-generation","prompt":"write tests"}`))).WithContext(baseCtx)
+	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"unit-tests","prompt":"write tests"}`))).WithContext(baseCtx)
 	req.Header.Set("X-AI-Orch-Session-ID", "sess_dispatch_cancelled")
 	rec := httptest.NewRecorder()
 

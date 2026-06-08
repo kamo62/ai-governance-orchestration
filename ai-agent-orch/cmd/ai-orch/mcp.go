@@ -24,11 +24,13 @@ func handleMCPStart(ctx context.Context, cfg Config, args []string) {
 
 	mcp := mcpgateway.NewServer("ai-orch-mcp", appversion.Version)
 	gatewayCfg := &mcpgateway.GatewayConfig{
-		GovernanceURL: cfg.GovernanceURL,
-		DevToken:      cfg.Token,
+		GovernanceURL:      cfg.GovernanceURL,
+		DevToken:           cfg.Token,
+		TrustedClientToken: cfg.TrustedClientToken,
 	}
 	mcpgateway.RegisterPhase1GTools(mcp, gatewayCfg)
 	mcpgateway.RegisterPhase1ITools(mcp, gatewayCfg)
+	mcpgateway.RegisterPhase1JTools(mcp, gatewayCfg)
 
 	switch *transport {
 	case "http":

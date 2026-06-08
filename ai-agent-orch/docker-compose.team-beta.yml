@@ -1,0 +1,14 @@
+# Team-local beta profile: durable SQLite + optional OIDC for human auth.
+#
+# Usage:
+#   export OIDC_ISSUER_URL=https://login.microsoftonline.com/<tenant>/v2.0
+#   export OIDC_CLIENT_ID=<app-client-id>
+#   docker compose -f docker-compose.yml -f docker-compose.team-beta.yml up -d bifrost orchestrator governance-shell
+#
+# When OIDC is unset, the Governance Shell continues to accept AI_ORCH_DEV_TOKEN.
+
+services:
+  governance-shell:
+    environment:
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}

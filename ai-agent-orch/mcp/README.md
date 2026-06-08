@@ -15,7 +15,7 @@ server_id: repo-classification
 endpoint: http://mcp-repo-classification:8091
 auth_mode: platform          # none | local-dev-token | platform | oauth-user
 allowed_agents:              # Optional: restrict which agents can use this MCP
-  - test-generation
+  - unit-tests
   - code-review
   - refactor
 ```

@@ -218,6 +218,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream openrouter.ChatCompletionRequest, decision router.Decision, sessionID string, reqBody []byte) {
 	reqHash := sha256Hex(reqBody)
 	upstream.Stream = true
+	upstream.StreamOptions = &openrouter.StreamOptions{IncludeUsage: true}
 	streamReader, err := g.backend.ChatCompletionStream(r.Context(), upstream)
 	if err != nil {
 		g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", err.Error())
@@ -242,6 +243,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream 
 	scanner.Buffer(make([]byte, 0, 256*1024), 10*1024*1024)
 	responseHash := sha256.New()
 	done := false
+	var streamUsage *openrouter.Usage
 	for scanner.Scan() {
 		select {
 		case <-r.Context().Done():
@@ -265,7 +267,24 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream 
 			}
 			continue // skip malformed lines
 		}
+		if usageHasValues(chunk.Usage) {
+			streamUsage = chunk.Usage
+		}
 		if len(chunk.Choices) == 0 {
+			if chunk.Usage != nil {
+				openAIChunk := openAIStreamChunk{
+					ID:      chunk.ID,
+					Object:  "chat.completion.chunk",
+					Model:   decision.SelectedAlias,
+					Choices: []openAIStreamChoice{},
+					Usage:   openAIUsageFromOpenRouter(chunk.Usage),
+				}
+				data, _ := json.Marshal(openAIChunk)
+				frame := fmt.Sprintf("data: %s\n\n", data)
+				_, _ = responseHash.Write([]byte(frame))
+				fmt.Fprint(w, frame)
+				flusher.Flush()
+			}
 			continue
 		}
 
@@ -284,6 +303,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream 
 					FinishReason: chunk.Choices[0].FinishReason,
 				},
 			},
+			Usage: openAIUsageFromOpenRouter(chunk.Usage),
 		}
 
 		data, _ := json.Marshal(openAIChunk)
@@ -301,7 +321,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream 
 		return
 	}
 	respHash := "sha256:" + hex.EncodeToString(responseHash.Sum(nil))
-	g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.completed", reqHash, respHash, "")
+	g.auditModelCallHashesWithUsage(r.Context(), sessionID, decision, "model.gateway_stream.completed", reqHash, respHash, openrouterUsageMap(streamUsage), "")
 }
 
 func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
@@ -483,6 +503,7 @@ func (g *Gateway) auditModelCallHashesWithUsage(ctx context.Context, sessionID s
 		TokenUsage:         usage,
 		GatewayBackend:     g.backendName(),
 		TrustLevel:         "gateway_enforced",
+		EnforcementMode:    "gateway",
 		Reason:             reason,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
@@ -500,6 +521,28 @@ func openrouterUsageMap(usage *openrouter.Usage) map[string]any {
 		"total_tokens":      usage.TotalTokens,
 		"reasoning_tokens":  usage.CompletionTokensDetails.ReasoningTokens,
 		"cost_usd":          usage.Cost,
+	}
+}
+
+func usageHasValues(usage *openrouter.Usage) bool {
+	if usage == nil {
+		return false
+	}
+	return usage.PromptTokens > 0 ||
+		usage.CompletionTokens > 0 ||
+		usage.TotalTokens > 0 ||
+		usage.Cost > 0 ||
+		usage.CompletionTokensDetails.ReasoningTokens > 0
+}
+
+func openAIUsageFromOpenRouter(usage *openrouter.Usage) *openAIUsage {
+	if usage == nil {
+		return nil
+	}
+	return &openAIUsage{
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		TotalTokens:      usage.TotalTokens,
 	}
 }
 
@@ -630,6 +673,7 @@ type openAIStreamChunk struct {
 	Object  string               `json:"object"`
 	Model   string               `json:"model"`
 	Choices []openAIStreamChoice `json:"choices"`
+	Usage   *openAIUsage         `json:"usage,omitempty"`
 }
 
 type openAIStreamChoice struct {

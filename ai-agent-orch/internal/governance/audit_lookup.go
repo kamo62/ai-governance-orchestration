@@ -13,27 +13,31 @@ type AuditReader interface {
 }
 
 type AuditLookupConfig struct {
-	DevToken   string
-	Authorizer RequestAuthorizer
-	Audit      AuditReader
+	DevToken     string
+	Authorizer   RequestAuthorizer
+	Audit        AuditReader
+	ModelPricing ModelPricingStore
 }
 
 type AuditLookup struct {
-	devToken   string
-	authorizer RequestAuthorizer
-	audit      AuditReader
+	devToken     string
+	authorizer   RequestAuthorizer
+	audit        AuditReader
+	modelPricing ModelPricingStore
 }
 
 type AuditLookupResponse struct {
-	SessionID string        `json:"session_id"`
-	Events    []audit.Event `json:"events"`
+	SessionID    string              `json:"session_id"`
+	Events       []audit.Event       `json:"events"`
+	UsageSummary SessionUsageSummary `json:"usage_summary"`
 }
 
 func NewAuditLookupHandler(cfg AuditLookupConfig) http.Handler {
 	lookup := &AuditLookup{
-		devToken:   cfg.DevToken,
-		authorizer: cfg.Authorizer,
-		audit:      cfg.Audit,
+		devToken:     cfg.DevToken,
+		authorizer:   cfg.Authorizer,
+		audit:        cfg.Audit,
+		modelPricing: cfg.ModelPricing,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/audit/sessions/", lookup.lookupSession)
@@ -73,7 +77,8 @@ func (l *AuditLookup) lookupSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, AuditLookupResponse{
-		SessionID: sessionID,
-		Events:    events,
+		SessionID:    sessionID,
+		Events:       events,
+		UsageSummary: SummarizeSessionUsageWithPricing(r.Context(), events, l.modelPricing),
 	})
 }

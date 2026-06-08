@@ -14,8 +14,8 @@ func TestValidateCatalogAcceptsCurrentPhase0Catalog(t *testing.T) {
 		t.Fatalf("Validate returned error: %v", err)
 	}
 
-	if len(report.Agents) != 9 {
-		t.Fatalf("expected 9 agents, got %d: %#v", len(report.Agents), report.Agents)
+	if len(report.Agents) != 11 {
+		t.Fatalf("expected 11 agents, got %d: %#v", len(report.Agents), report.Agents)
 	}
 	requiredAliases := []string{
 		"coding-primary",
@@ -34,8 +34,8 @@ func TestValidateCatalogAcceptsCurrentPhase0Catalog(t *testing.T) {
 			t.Fatalf("expected model alias %q in report, got %#v", alias, report.ModelAliases)
 		}
 	}
-	if !report.HasAgent("test-generation") {
-		t.Fatalf("expected test-generation agent in report")
+	if !report.HasAgent("unit-tests") {
+		t.Fatalf("expected unit-tests agent in report")
 	}
 }
 
@@ -79,7 +79,7 @@ func TestValidateCatalogRejectsPlaywrightCommandOutsideTestGeneration(t *testing
 
 	_, err := Validate(root)
 	if err == nil {
-		t.Fatalf("expected run_command:playwright outside test-generation to fail validation")
+		t.Fatalf("expected run_command:playwright outside unit-tests to fail validation")
 	}
 }
 
@@ -143,7 +143,7 @@ func TestValidateCatalogRequiresRouterCasesForTempAgents(t *testing.T) {
 	root := t.TempDir()
 	writeMinimalCatalog(t, root)
 	writeAgent(t, root, "core/router-agent", "router-agent", "router-small", "coding-economy", "workspace_write: deny\n", []string{"read_file"}, "# Router\n\nConfig: `./agent.config.yaml`\n")
-	writeAgent(t, root, "temp/test-generation", "test-generation", "coding-balanced", "coding-fast", "workspace_write: allow\n", []string{"read_file"}, "# Test Generation\n\nConfig: `./agent.config.yaml`\n")
+	writeAgent(t, root, "temp/unit-tests", "unit-tests", "coding-balanced", "coding-fast", "workspace_write: allow\n", []string{"read_file"}, "# Test Generation\n\nConfig: `./agent.config.yaml`\n")
 
 	_, err := Validate(root)
 	if err == nil {

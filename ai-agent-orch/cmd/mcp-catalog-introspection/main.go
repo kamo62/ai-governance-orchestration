@@ -18,7 +18,7 @@ func main() {
 	mux.Handle("/listSpecialists", httpauth.RequireBearerToken(mcpToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"specialists": []string{
-				"test-generation",
+				"unit-tests",
 				"code-review",
 				"documentation",
 				"refactor",

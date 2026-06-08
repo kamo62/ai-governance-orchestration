@@ -14,7 +14,12 @@ import (
 type GatewayConfig struct {
 	GovernanceURL string
 	DevToken      string
-	HTTPClient    *http.Client
+	// TrustedClientToken proves to the Governance Shell that this process is a
+	// trusted gateway, so its requests may be recorded at the gateway_enforced
+	// trust level. When empty, the shell falls back to honoring the client
+	// identity header alone (local dev).
+	TrustedClientToken string
+	HTTPClient         *http.Client
 }
 
 // HTTPError captures non-2xx governance responses without losing status context.
@@ -35,11 +40,15 @@ func (c *GatewayConfig) client() *http.Client {
 }
 
 func (c *GatewayConfig) authHeaders(extra map[string]string) map[string]string {
+	// The trust level is decided server-side from the client identity (and, when
+	// configured, the trusted-client secret). The client does not declare its own
+	// trust level, so no X-AI-Orch-Trust-Level header is sent.
 	h := map[string]string{
-		"Authorization":              "Bearer " + c.DevToken,
-		"X-AI-Orch-Client":           "ai-orch-mcp",
-		"X-AI-Orch-Trust-Level":      "gateway_enforced",
-		"X-AI-Orch-Enforcement-Mode": "gateway",
+		"Authorization":    "Bearer " + c.DevToken,
+		"X-AI-Orch-Client": "ai-orch-mcp",
+	}
+	if c.TrustedClientToken != "" {
+		h["X-AI-Orch-Trusted-Client-Token"] = c.TrustedClientToken
 	}
 	for k, v := range extra {
 		h[k] = v
@@ -97,7 +106,7 @@ func RegisterPhase1GTools(s *Server, cfg *GatewayConfig) {
 			"properties": map[string]any{
 				"agent": map[string]any{
 					"type":        "string",
-					"description": "Agent name (e.g., test-generation, playwright-specialist)",
+					"description": "Agent name (e.g., unit-tests, code-review)",
 				},
 				"classification": map[string]any{
 					"type":        "string",
@@ -132,6 +141,77 @@ func RegisterPhase1GTools(s *Server, cfg *GatewayConfig) {
 			"required": []string{"agent", "classification", "prompt"},
 		}),
 	}, handleStartGovernedSession(cfg))
+
+	s.RegisterTool(Tool{
+		Name:        "start_governed_run",
+		Title:       "Start Governed Run",
+		Description: "Create a governed session, route the first prompt, and return the next approval gate.",
+		InputSchema: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"agent": map[string]any{
+					"type":        "string",
+					"description": "Agent name (e.g., unit-tests, code-review)",
+				},
+				"classification": map[string]any{
+					"type":        "string",
+					"description": "Data classification level (public, internal, confidential, restricted)",
+					"enum":        []string{"public", "internal", "confidential", "restricted"},
+				},
+				"prompt": map[string]any{
+					"type":        "string",
+					"description": "The user prompt or task description",
+				},
+				"use_case_id": map[string]any{
+					"type":        "string",
+					"description": "Optional use-case ID for control-plane binding",
+				},
+				"workflow_id": map[string]any{
+					"type":        "string",
+					"description": "Optional workflow ID for control-plane binding",
+				},
+				"work_item_id": map[string]any{
+					"type":        "string",
+					"description": "Optional Jira, Azure DevOps, GitHub issue, or local work item ID",
+				},
+				"work_item_type": map[string]any{
+					"type":        "string",
+					"description": "Optional work type such as frontend, backend, test, docs, refactor, security, or bugfix",
+				},
+				"repo_url": map[string]any{
+					"type":        "string",
+					"description": "Optional repository URL",
+				},
+				"branch": map[string]any{
+					"type":        "string",
+					"description": "Optional branch name",
+				},
+				"commit_sha": map[string]any{
+					"type":        "string",
+					"description": "Optional commit SHA",
+				},
+				"intent": map[string]any{
+					"type":        "string",
+					"description": "Optional intent description",
+				},
+				"permission_mode": map[string]any{
+					"type":        "string",
+					"description": "Permission mode for this run",
+					"enum":        []string{"read_only", "reviewed", "auto_apply", "full_access"},
+				},
+				"approval_mode": map[string]any{
+					"type":        "string",
+					"description": "Approval mode reported for this run",
+					"enum":        []string{"manual", "auto_approved", "yolo", "self_reported"},
+				},
+				"workspace_mode": map[string]any{
+					"type":        "string",
+					"description": "Optional workspace mode such as local, worktree, or container",
+				},
+			},
+			"required": []string{"agent", "classification", "prompt"},
+		}),
+	}, handleStartGovernedRun(cfg))
 }
 
 func handleMCPDoctor(cfg *GatewayConfig) ToolHandler {
@@ -173,6 +253,94 @@ func handleMCPDoctor(cfg *GatewayConfig) ToolHandler {
 
 		return &ToolsCallResult{
 			Content: []ContentItem{TextContent(report)},
+		}, nil
+	}
+}
+
+func handleStartGovernedRun(cfg *GatewayConfig) ToolHandler {
+	return func(ctx context.Context, args json.RawMessage) (*ToolsCallResult, error) {
+		var params struct {
+			Agent          string `json:"agent"`
+			Classification string `json:"classification"`
+			Prompt         string `json:"prompt"`
+			UseCaseID      string `json:"use_case_id,omitempty"`
+			WorkflowID     string `json:"workflow_id,omitempty"`
+			WorkItemID     string `json:"work_item_id,omitempty"`
+			WorkItemType   string `json:"work_item_type,omitempty"`
+			RepoURL        string `json:"repo_url,omitempty"`
+			Branch         string `json:"branch,omitempty"`
+			CommitSHA      string `json:"commit_sha,omitempty"`
+			Intent         string `json:"intent,omitempty"`
+			PermissionMode string `json:"permission_mode,omitempty"`
+			ApprovalMode   string `json:"approval_mode,omitempty"`
+			WorkspaceMode  string `json:"workspace_mode,omitempty"`
+		}
+		if err := json.Unmarshal(args, &params); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+
+		body := map[string]any{
+			"agent":          params.Agent,
+			"classification": params.Classification,
+			"prompt":         params.Prompt,
+		}
+		if params.UseCaseID != "" {
+			body["use_case_id"] = params.UseCaseID
+		}
+		if params.WorkflowID != "" {
+			body["workflow_id"] = params.WorkflowID
+		}
+		if params.WorkItemID != "" {
+			body["work_item_id"] = params.WorkItemID
+		}
+		if params.WorkItemType != "" {
+			body["work_item_type"] = params.WorkItemType
+		}
+		if params.RepoURL != "" {
+			body["repo_url"] = params.RepoURL
+		}
+		if params.Branch != "" {
+			body["branch"] = params.Branch
+		}
+		if params.CommitSHA != "" {
+			body["commit_sha"] = params.CommitSHA
+		}
+		if params.Intent != "" {
+			body["intent"] = params.Intent
+		}
+		if params.PermissionMode != "" {
+			body["permission_mode"] = params.PermissionMode
+		}
+		if params.ApprovalMode != "" {
+			body["approval_mode"] = params.ApprovalMode
+		}
+		if params.WorkspaceMode != "" {
+			body["workspace_mode"] = params.WorkspaceMode
+		}
+
+		respBody, err := cfg.doJSON(ctx, http.MethodPost, cfg.GovernanceURL+"/v1/runs", body,
+			cfg.authHeaders(map[string]string{"Content-Type": "application/json"}))
+		if err != nil {
+			return nil, fmt.Errorf("start governed run failed: %w", err)
+		}
+
+		var result struct {
+			RunID      string `json:"run_id"`
+			SessionID  string `json:"session_id"`
+			Status     string `json:"status"`
+			Specialist string `json:"specialist"`
+			NextGate   string `json:"next_gate"`
+			SSEURL     string `json:"sse_url"`
+		}
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return nil, fmt.Errorf("parse run response: %w", err)
+		}
+
+		msg := fmt.Sprintf("Governed run started:\n- run_id: %s\n- session_id: %s\n- status: %s\n- specialist: %s\n- next_gate: %s\n- events: %s",
+			result.RunID, result.SessionID, result.Status, result.Specialist, result.NextGate, result.SSEURL)
+
+		return &ToolsCallResult{
+			Content: []ContentItem{TextContent(msg)},
 		}, nil
 	}
 }

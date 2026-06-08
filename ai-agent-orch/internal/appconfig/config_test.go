@@ -49,6 +49,18 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.BifrostBaseURL != "" {
 		t.Fatalf("expected empty default Bifrost base URL, got %q", cfg.BifrostBaseURL)
 	}
+	if cfg.AgentGatewayBaseURL != "" {
+		t.Fatalf("expected empty default agentgateway base URL, got %q", cfg.AgentGatewayBaseURL)
+	}
+	if cfg.AgentGatewayAPIKey != "" {
+		t.Fatalf("expected empty default agentgateway API key, got %q", cfg.AgentGatewayAPIKey)
+	}
+	if cfg.AgentGatewayReadinessURL != "" {
+		t.Fatalf("expected empty default agentgateway readiness URL, got %q", cfg.AgentGatewayReadinessURL)
+	}
+	if cfg.EnableServerContextResolver {
+		t.Fatalf("expected server context resolver disabled by default")
+	}
 }
 
 func TestLoadUsesEnvAndFlags(t *testing.T) {
@@ -66,8 +78,12 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	t.Setenv("AI_ORCH_MODEL_BACKEND", "bifrost")
 	t.Setenv("AI_ORCH_BIFROST_BASE_URL", "http://bifrost:8080")
 	t.Setenv("AI_ORCH_BIFROST_API_KEY", "env-bifrost-token")
+	t.Setenv("AI_ORCH_AGENTGATEWAY_BASE_URL", "http://agentgateway:3000")
+	t.Setenv("AI_ORCH_AGENTGATEWAY_API_KEY", "env-agentgateway-token")
+	t.Setenv("AI_ORCH_AGENTGATEWAY_READINESS_URL", "http://agentgateway:15021/healthz/ready")
+	t.Setenv("AI_ORCH_ENABLE_SERVER_CONTEXT_RESOLVER", "true")
 
-	cfg, err := Load([]string{"-addr", ":7777", "-audit-path", "/tmp/flag-audit.jsonl", "-dev-token", "flag-token", "-service-token", "flag-service-token", "-classification-max", "restricted", "-kill-switch=false", "-cost-cap-enabled=false", "-session-cost-cap-usd", "0.75", "-policy-engine", "native", "-consecutive-tool-call-max", "11", "-model-backend", "native-openrouter", "-bifrost-base-url", "http://flag-bifrost:8080", "-bifrost-api-key", "flag-bifrost-token"})
+	cfg, err := Load([]string{"-addr", ":7777", "-audit-path", "/tmp/flag-audit.jsonl", "-dev-token", "flag-token", "-service-token", "flag-service-token", "-classification-max", "restricted", "-kill-switch=false", "-cost-cap-enabled=false", "-session-cost-cap-usd", "0.75", "-policy-engine", "native", "-consecutive-tool-call-max", "11", "-model-backend", "native-openrouter", "-bifrost-base-url", "http://flag-bifrost:8080", "-bifrost-api-key", "flag-bifrost-token", "-agentgateway-base-url", "http://flag-agentgateway:3000", "-agentgateway-api-key", "flag-agentgateway-token", "-agentgateway-readiness-url", "http://flag-agentgateway:15021/healthz/ready", "-enable-server-context-resolver=false"})
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -112,5 +128,17 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	}
 	if cfg.BifrostAPIKey != "flag-bifrost-token" {
 		t.Fatalf("expected flag Bifrost API key to win, got %q", cfg.BifrostAPIKey)
+	}
+	if cfg.AgentGatewayBaseURL != "http://flag-agentgateway:3000" {
+		t.Fatalf("expected flag agentgateway base URL to win, got %q", cfg.AgentGatewayBaseURL)
+	}
+	if cfg.AgentGatewayAPIKey != "flag-agentgateway-token" {
+		t.Fatalf("expected flag agentgateway API key to win, got %q", cfg.AgentGatewayAPIKey)
+	}
+	if cfg.AgentGatewayReadinessURL != "http://flag-agentgateway:15021/healthz/ready" {
+		t.Fatalf("expected flag agentgateway readiness URL to win, got %q", cfg.AgentGatewayReadinessURL)
+	}
+	if cfg.EnableServerContextResolver {
+		t.Fatalf("expected flag server context resolver setting to win")
 	}
 }

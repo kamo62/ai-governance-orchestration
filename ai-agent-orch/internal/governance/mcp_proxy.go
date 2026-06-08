@@ -9,12 +9,17 @@ import (
 	"strings"
 
 	"ai-agent-orch/internal/audit"
+	"ai-agent-orch/internal/policyengine"
 )
 
 type MCPProxyRegistration struct {
-	Endpoint      string
-	AuthMode      string
-	PlatformToken string
+	Endpoint          string
+	AuthMode          string
+	PlatformToken     string
+	AllowedAgents     []string
+	ToolAllow         []string
+	ToolDeny          []string
+	ClassificationMax string
 }
 
 type UserTokenStore interface {
@@ -29,21 +34,29 @@ func (s StaticUserTokenStore) Token(_ context.Context, userID string, serverID s
 }
 
 type MCPProxyConfig struct {
-	ServiceToken  string
-	Audit         audit.Store
-	Registrations map[string]MCPProxyRegistration
-	UserTokens    UserTokenStore
-	HTTPClient    *http.Client
-	NewID         func(prefix string) string
+	ServiceToken      string
+	DevToken          string
+	Audit             audit.Store
+	Sessions          SessionStore
+	Registrations     map[string]MCPProxyRegistration
+	UserTokens        UserTokenStore
+	PolicyEngine      policyengine.Engine
+	ClassificationMax string
+	HTTPClient        *http.Client
+	NewID             func(prefix string) string
 }
 
 type MCPProxyHandler struct {
-	serviceToken  string
-	audit         audit.Store
-	registrations map[string]MCPProxyRegistration
-	userTokens    UserTokenStore
-	httpClient    *http.Client
-	newID         func(prefix string) string
+	serviceToken      string
+	devToken          string
+	audit             audit.Store
+	sessions          SessionStore
+	registrations     map[string]MCPProxyRegistration
+	userTokens        UserTokenStore
+	policyEngine      policyengine.Engine
+	classificationMax string
+	httpClient        *http.Client
+	newID             func(prefix string) string
 }
 
 func NewMCPProxyHandler(cfg MCPProxyConfig) http.Handler {
@@ -55,23 +68,42 @@ func NewMCPProxyHandler(cfg MCPProxyConfig) http.Handler {
 	if newID == nil {
 		newID = randomID
 	}
+	engine := cfg.PolicyEngine
+	if engine == nil {
+		engine, _ = policyengine.New("native")
+	}
 	return &MCPProxyHandler{
-		serviceToken:  cfg.ServiceToken,
-		audit:         cfg.Audit,
-		registrations: cfg.Registrations,
-		userTokens:    cfg.UserTokens,
-		httpClient:    httpClient,
-		newID:         newID,
+		serviceToken:      cfg.ServiceToken,
+		devToken:          cfg.DevToken,
+		audit:             cfg.Audit,
+		sessions:          cfg.Sessions,
+		registrations:     cfg.Registrations,
+		userTokens:        cfg.UserTokens,
+		policyEngine:      engine,
+		classificationMax: defaultString(cfg.ClassificationMax, "internal"),
+		httpClient:        httpClient,
+		newID:             newID,
 	}
 }
 
 func (h *MCPProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+	if !h.authorized(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
-	if h.serviceToken == "" || !authorizedBearer(r.Header.Get("Authorization"), h.serviceToken) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+
+	// Catalog endpoint: list registered MCP servers and their tools.
+	if r.Method == http.MethodGet && isMCPCatalogPath(r.URL.Path) {
+		record, ok := h.requireSessionRecord(w, r)
+		if !ok {
+			return
+		}
+		h.handleCatalog(w, r, record)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 
@@ -86,11 +118,30 @@ func (h *MCPProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID := r.Header.Get("X-AI-Orch-Session-ID")
-	userID := r.Header.Get("X-AI-Orch-User-ID")
-	authHeader, ok := h.authHeaderFor(r.Context(), reg, userID, serverID)
+	record, ok := h.requireSessionRecord(w, r)
 	if !ok {
-		h.auditMCP(r.Context(), sessionID, serverID, toolName, reg.AuthMode, "oauth_user_token_missing")
+		return
+	}
+	decision, err := h.authorizeTool(r.Context(), record, serverID, toolName, reg)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "policy evaluation failed"})
+		return
+	}
+	if !decision.Allowed {
+		if err := h.auditMCP(r.Context(), record, serverID, toolName, reg.AuthMode, "tool_call_denied", decision.DecisionID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			return
+		}
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "tool_call_denied", "reason": decision.Reason, "decision_id": decision.DecisionID})
+		return
+	}
+
+	authHeader, ok := h.authHeaderFor(r.Context(), reg, record.ActorSubject, serverID)
+	if !ok {
+		if err := h.auditMCP(r.Context(), record, serverID, toolName, reg.AuthMode, "oauth_user_token_missing", decision.DecisionID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			return
+		}
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "oauth_user_token_missing"})
 		return
 	}
@@ -100,7 +151,7 @@ func (h *MCPProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "read request body: " + err.Error()})
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(reg.Endpoint, "/")+"/tools/"+toolName, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(reg.Endpoint, "/")+"/"+toolName, bytes.NewReader(body))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "create backend request failed"})
 		return
@@ -108,6 +159,11 @@ func (h *MCPProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
+	}
+
+	if err := h.auditMCP(r.Context(), record, serverID, toolName, reg.AuthMode, "forwarded", decision.DecisionID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+		return
 	}
 
 	resp, err := h.httpClient.Do(req)
@@ -118,16 +174,82 @@ func (h *MCPProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxRequestBodyBytes))
 
-	h.auditMCP(r.Context(), sessionID, serverID, toolName, reg.AuthMode, "forwarded")
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
 }
 
+func (h *MCPProxyHandler) handleCatalog(w http.ResponseWriter, r *http.Request, record SessionRecord) {
+	servers := make(map[string]map[string]any, len(h.registrations))
+	for id, reg := range h.registrations {
+		var allowedTools []string
+		for _, toolName := range reg.ToolAllow {
+			decision, err := h.authorizeTool(r.Context(), record, id, toolName, reg)
+			if err != nil || !decision.Allowed {
+				continue
+			}
+			allowedTools = append(allowedTools, toolName)
+		}
+		if len(allowedTools) == 0 {
+			continue
+		}
+		servers[id] = map[string]any{
+			"auth_mode": reg.AuthMode,
+			"tools":     allowedTools,
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
+}
+
+func (h *MCPProxyHandler) requireSessionRecord(w http.ResponseWriter, r *http.Request) (SessionRecord, bool) {
+	sessionID := r.Header.Get("X-AI-Orch-Session-ID")
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id is required"})
+		return SessionRecord{}, false
+	}
+	if h.sessions == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "durable session store is required for mcp proxy"})
+		return SessionRecord{}, false
+	}
+	record, err := h.sessions.Get(r.Context(), sessionID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+		return SessionRecord{}, false
+	}
+	return record, true
+}
+
+func (h *MCPProxyHandler) authorizeTool(ctx context.Context, record SessionRecord, serverID string, toolName string, reg MCPProxyRegistration) (policyengine.Decision, error) {
+	classificationMax := strings.TrimSpace(reg.ClassificationMax)
+	if classificationMax == "" {
+		classificationMax = h.classificationMax
+	}
+	return h.policyEngine.Evaluate(ctx, policyengine.Request{
+		SessionID:         record.SessionID,
+		UserID:            record.ActorSubject,
+		AgentName:         record.Agent,
+		ActionType:        "mcp.tool_call",
+		Resource:          serverID,
+		ToolName:          toolName,
+		Classification:    record.Classification,
+		ClassificationMax: classificationMax,
+		Metadata: map[string]any{
+			"allowed_agents": reg.AllowedAgents,
+			"tool_allow":     reg.ToolAllow,
+			"tool_deny":      reg.ToolDeny,
+		},
+	})
+}
+
 func (h *MCPProxyHandler) authHeaderFor(ctx context.Context, reg MCPProxyRegistration, userID string, serverID string) (string, bool) {
 	switch reg.AuthMode {
-	case "", "none", "local-dev-token":
+	case "", "none":
 		return "", true
+	case "local-dev-token":
+		if reg.PlatformToken == "" {
+			return "", false
+		}
+		return "Bearer " + reg.PlatformToken, true
 	case "platform":
 		if reg.PlatformToken == "" {
 			return "", false
@@ -147,32 +269,59 @@ func (h *MCPProxyHandler) authHeaderFor(ctx context.Context, reg MCPProxyRegistr
 	}
 }
 
-func (h *MCPProxyHandler) auditMCP(ctx context.Context, sessionID string, serverID string, toolName string, authMode string, reason string) {
+func (h *MCPProxyHandler) auditMCP(ctx context.Context, record SessionRecord, serverID string, toolName string, authMode string, reason string, policyDecisionID string) error {
 	if h == nil || h.audit == nil {
-		return
+		return nil
 	}
-	_, _ = h.audit.Append(ctx, audit.Event{
+	_, err := h.audit.Append(ctx, audit.Event{
 		EventID:            h.newID("evt"),
-		SessionID:          sessionID,
+		SessionID:          record.SessionID,
 		EventType:          "mcp.proxy_call",
 		Actor:              "runtime",
+		Agent:              record.Agent,
+		Classification:     record.Classification,
 		MCPServerID:        serverID,
 		MCPToolName:        toolName,
 		AuthMode:           authMode,
 		Reason:             reason,
+		PolicyDecisionID:   policyDecisionID,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
 		TrustLevel:         "gateway_enforced",
+		EnforcementMode:    "gateway",
 	})
+	return err
+}
+
+func (h *MCPProxyHandler) authorized(r *http.Request) bool {
+	auth := r.Header.Get("Authorization")
+	if h.serviceToken != "" && authorizedBearer(auth, h.serviceToken) {
+		return true
+	}
+	if h.devToken != "" && authorizedBearer(auth, h.devToken) {
+		return true
+	}
+	return false
+}
+
+func isMCPCatalogPath(path string) bool {
+	return path == "/internal/v1/mcp/catalog" || path == "/v1/mcp/catalog"
 }
 
 func parseMCPProxyPath(path string) (serverID string, toolName string) {
-	const prefix = "/internal/v1/mcp/"
-	if !strings.HasPrefix(path, prefix) {
+	var rest string
+	switch {
+	case strings.HasPrefix(path, "/internal/v1/mcp/"):
+		rest = strings.TrimPrefix(path, "/internal/v1/mcp/")
+	case strings.HasPrefix(path, "/v1/mcp/"):
+		rest = strings.TrimPrefix(path, "/v1/mcp/")
+	default:
 		return "", ""
 	}
-	rest := strings.TrimPrefix(path, prefix)
+	if rest == "catalog" {
+		return "", ""
+	}
 	parts := strings.Split(rest, "/tools/")
 	if len(parts) != 2 {
 		return "", ""

@@ -61,12 +61,13 @@ services:
       AI_ORCH_MODEL_BACKEND: ${AI_ORCH_MODEL_BACKEND:-bifrost}
       AI_ORCH_BIFROST_BASE_URL: ${AI_ORCH_BIFROST_BASE_URL:-http://bifrost:8080}
       AI_ORCH_BIFROST_API_KEY: ${AI_ORCH_BIFROST_API_KEY:-}
+      AI_ORCH_AGENTGATEWAY_BASE_URL: ${AI_ORCH_AGENTGATEWAY_BASE_URL:-}
+      AI_ORCH_AGENTGATEWAY_API_KEY: ${AI_ORCH_AGENTGATEWAY_API_KEY:-}
+      AI_ORCH_AGENTGATEWAY_READINESS_URL: ${AI_ORCH_AGENTGATEWAY_READINESS_URL:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
       OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-ai-agent-orch-local}
     depends_on:
-      bifrost:
-        condition: service_healthy
       orchestrator:
         condition: service_healthy
     ports:
@@ -122,6 +123,29 @@ services:
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
       OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-ai-agent-orch-local}
     volumes: *catalog-volumes
+
+  opencode-sandbox:
+    profiles: ["opencode"]
+    image: ghcr.io/anomalyco/opencode:${OPENCODE_IMAGE_TAG:-latest}
+    working_dir: /workspace
+    entrypoint: ["opencode"]
+    command:
+      - run
+      - --dir
+      - /workspace
+      - --model
+      - ${OPENCODE_MODEL:-ai-orch/coding-balanced}
+      - ${OPENCODE_PROMPT:-Review this sandbox workspace briefly without editing files.}
+    environment:
+      OPENCODE_CONFIG: /opencode/opencode.json
+      AI_ORCH_RUNTIME_TOKEN: ${AI_ORCH_RUNTIME_TOKEN:-local-runtime-token}
+      AI_ORCH_SESSION_ID: ${AI_ORCH_SESSION_ID:-}
+    depends_on:
+      governance-shell:
+        condition: service_healthy
+    volumes:
+      - ./opencode/sandbox/opencode.json:/opencode/opencode.json:ro
+      - opencode-sandbox-workspace:/workspace
 
   mcp-repo-classification:
     build:
@@ -242,3 +266,4 @@ services:
 volumes:
   bifrost-data:
   audit-data:
+  opencode-sandbox-workspace:

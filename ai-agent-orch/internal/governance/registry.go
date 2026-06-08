@@ -83,6 +83,8 @@ type EvidenceRecord struct {
 	ApprovalReceipt   string    `json:"approval_receipt,omitempty"`
 	PatchDecision     string    `json:"patch_decision,omitempty"`
 	ExternalTicket    string    `json:"external_ticket,omitempty"`
+	TrustLevel        string    `json:"trust_level,omitempty"`
+	EnforcementMode   string    `json:"enforcement_mode,omitempty"`
 	RecordedAt        time.Time `json:"recorded_at"`
 }
 
@@ -164,8 +166,10 @@ func NewRegistryStore() *RegistryStore {
 type RegistryStoreInterface interface {
 	RegisterUseCase(UseCase) error
 	GetUseCase(string) (UseCase, bool)
+	ListUseCases() ([]UseCase, error)
 	RegisterWorkflow(Workflow) error
 	GetWorkflow(string) (Workflow, bool)
+	ListWorkflows() ([]Workflow, error)
 	CreateManifest(ContextManifest) error
 	GetManifest(string) (ContextManifest, bool)
 	AppendCacheOutcome(CacheOutcome) error
@@ -210,6 +214,16 @@ func (s *RegistryStore) GetUseCase(id string) (UseCase, bool) {
 	return uc, ok
 }
 
+func (s *RegistryStore) ListUseCases() ([]UseCase, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]UseCase, 0, len(s.useCases))
+	for _, uc := range s.useCases {
+		out = append(out, uc)
+	}
+	return out, nil
+}
+
 // Workflow methods.
 
 func (s *RegistryStore) RegisterWorkflow(wf Workflow) error {
@@ -233,6 +247,16 @@ func (s *RegistryStore) GetWorkflow(id string) (Workflow, bool) {
 	defer s.mu.RUnlock()
 	wf, ok := s.workflows[id]
 	return wf, ok
+}
+
+func (s *RegistryStore) ListWorkflows() ([]Workflow, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Workflow, 0, len(s.workflows))
+	for _, wf := range s.workflows {
+		out = append(out, wf)
+	}
+	return out, nil
 }
 
 // ContextManifest methods.
@@ -357,10 +381,14 @@ func (h *RegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "/v1/use-cases" && r.Method == http.MethodPost:
 		h.createUseCase(w, r)
+	case path == "/v1/use-cases" && r.Method == http.MethodGet:
+		h.listUseCases(w, r)
 	case strings.HasPrefix(path, "/v1/use-cases/") && r.Method == http.MethodGet:
 		h.getUseCase(w, r)
 	case path == "/v1/workflows" && r.Method == http.MethodPost:
 		h.createWorkflow(w, r)
+	case path == "/v1/workflows" && r.Method == http.MethodGet:
+		h.listWorkflows(w, r)
 	case path == "/v1/context-manifests" && r.Method == http.MethodPost:
 		h.createManifest(w, r)
 	case strings.HasPrefix(path, "/v1/context-manifests/") && r.Method == http.MethodGet:
@@ -414,6 +442,24 @@ func (h *RegistryHandler) createUseCase(w http.ResponseWriter, r *http.Request) 
 		h.metrics.RecordUseCaseRegistered()
 	}
 	writeJSON(w, http.StatusCreated, uc)
+}
+
+func (h *RegistryHandler) listUseCases(w http.ResponseWriter, r *http.Request) {
+	items, err := h.store.ListUseCases()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "list use cases failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"use_cases": items})
+}
+
+func (h *RegistryHandler) listWorkflows(w http.ResponseWriter, r *http.Request) {
+	items, err := h.store.ListWorkflows()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "list workflows failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workflows": items})
 }
 
 func (h *RegistryHandler) getUseCase(w http.ResponseWriter, r *http.Request) {
@@ -717,6 +763,9 @@ func (h *RegistryHandler) createEvidence(w http.ResponseWriter, r *http.Request)
 	if e.RecordedAt.IsZero() {
 		e.RecordedAt = time.Now().UTC()
 	}
+	trust := h.evidenceTrustMetadata(e, r)
+	e.TrustLevel = trust.TrustLevel
+	e.EnforcementMode = trust.EnforcementMode
 	if err := h.store.AppendEvidence(e); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -725,6 +774,15 @@ func (h *RegistryHandler) createEvidence(w http.ResponseWriter, r *http.Request)
 		h.metrics.RecordEvidenceRecorded()
 	}
 	writeJSON(w, http.StatusCreated, e)
+}
+
+func (h *RegistryHandler) evidenceTrustMetadata(e EvidenceRecord, r *http.Request) requestTrustMetadata {
+	switch strings.ToLower(strings.TrimSpace(e.EvidenceType)) {
+	case "external_tool_call", "external_model_call":
+		return requestTrustMetadata{TrustLevel: "self_reported", EnforcementMode: "advisory"}
+	default:
+		return h.service.trustMetadataFromRequest(r)
+	}
 }
 
 func (h *RegistryHandler) listEvidence(w http.ResponseWriter, r *http.Request) {

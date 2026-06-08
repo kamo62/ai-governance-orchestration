@@ -1,0 +1,33 @@
+# Beta local profile: governed vertical slice without provider API keys.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta up -d
+#   docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta run --rm beta-smoke
+#
+# Durable SQLite audit/registry (team-local) is already the default via AI_ORCH_AUDIT_PATH=audit.db.
+
+services:
+  orchestrator:
+    environment:
+      AI_ORCH_BETA_SMOKE: "true"
+
+  beta-smoke:
+    profiles: ["beta"]
+    build:
+      context: .
+    command: ["ai-orch", "smoke"]
+    environment:
+      AI_ORCH_GOVERNANCE_URL: http://governance-shell:8080
+      AI_ORCH_ORCHESTRATOR_URL: http://orchestrator:8080
+      AI_ORCH_DEV_TOKEN: ${AI_ORCH_DEV_TOKEN:-local-dev}
+    # Services must already be healthy from `up -d`; --no-deps avoids port clashes on re-run.
+
+  beta-catalog:
+    profiles: ["beta"]
+    build:
+      context: .
+    command: ["catalog-validator", "-catalog-root", "/app"]
+    volumes:
+      - ./agents:/app/agents:ro
+      - ./models:/app/models:ro
+      - ./policies:/app/policies:ro

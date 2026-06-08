@@ -8,23 +8,28 @@ import (
 )
 
 type Config struct {
-	Addr              string
-	CatalogRoot       string
-	AuditPath         string
-	DevToken          string
-	AdminToken        string // Separate token for /v1/admin/* endpoints.
-	ServiceToken      string
-	RuntimeToken      string // Token for model compatibility gateway runtime calls.
-	ClassificationMax string
-	KillSwitch        bool
-	CostCapEnabled    bool
-	SessionCostCapUSD float64
-	PolicyEngine      string
-	ToolLoopMax       int
-	GatewayAddr       string // Listen address for the model compatibility gateway.
-	ModelBackend      string // native-openrouter or bifrost.
-	BifrostBaseURL    string // Base URL for the Bifrost sidecar when selected.
-	BifrostAPIKey     string // Optional Bifrost bearer token if sidecar auth is enabled.
+	Addr                        string
+	CatalogRoot                 string
+	AuditPath                   string
+	DevToken                    string
+	AdminToken                  string // Separate token for /v1/admin/* endpoints.
+	ServiceToken                string
+	RuntimeToken                string // Token for model compatibility gateway runtime calls.
+	ClassificationMax           string
+	KillSwitch                  bool
+	CostCapEnabled              bool
+	SessionCostCapUSD           float64
+	PolicyEngine                string
+	ToolLoopMax                 int
+	GatewayAddr                 string // Listen address for the model compatibility gateway.
+	ModelBackend                string // native-openrouter, bifrost, or agentgateway.
+	BifrostBaseURL              string // Base URL for the Bifrost sidecar when selected.
+	BifrostAPIKey               string // Optional Bifrost bearer token if sidecar auth is enabled.
+	AgentGatewayBaseURL         string // Base URL for agentgateway data-plane traffic when selected.
+	AgentGatewayAPIKey          string // Optional agentgateway bearer token if enabled.
+	AgentGatewayReadinessURL    string // Optional agentgateway readiness URL, usually on the management/readiness port.
+	EnableServerContextResolver bool   // Local-dev only git context fallback.
+	TrustedClientToken          string // Shared secret that gates privileged audit trust levels (gateway_enforced, managed_client).
 }
 
 func Load(args []string) (Config, error) {
@@ -44,24 +49,33 @@ func Load(args []string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	enableServerContextResolver, err := envBool("AI_ORCH_ENABLE_SERVER_CONTEXT_RESOLVER", false)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
-		Addr:              envOrDefault("AI_ORCH_ADDR", ":8080"),
-		CatalogRoot:       envOrDefault("AI_ORCH_CATALOG_ROOT", "."),
-		AuditPath:         envOrDefault("AI_ORCH_AUDIT_PATH", "var/audit/audit.jsonl"),
-		DevToken:          envOrDefault("AI_ORCH_DEV_TOKEN", ""),
-		AdminToken:        envOrDefault("AI_ORCH_ADMIN_TOKEN", ""),
-		ServiceToken:      envOrDefault("AI_ORCH_SERVICE_TOKEN", ""),
-		RuntimeToken:      envOrDefault("AI_ORCH_RUNTIME_TOKEN", ""),
-		ClassificationMax: envOrDefault("AI_ORCH_CLASSIFICATION_MAX", "internal"),
-		KillSwitch:        killSwitch,
-		CostCapEnabled:    costCapEnabled,
-		SessionCostCapUSD: sessionCostCapUSD,
-		PolicyEngine:      envOrDefault("AI_ORCH_POLICY_ENGINE", "native"),
-		ToolLoopMax:       toolLoopMax,
-		GatewayAddr:       envOrDefault("AI_ORCH_GATEWAY_ADDR", ":18082"),
-		ModelBackend:      envOrDefault("AI_ORCH_MODEL_BACKEND", "native-openrouter"),
-		BifrostBaseURL:    envOrDefault("AI_ORCH_BIFROST_BASE_URL", ""),
-		BifrostAPIKey:     envOrDefault("AI_ORCH_BIFROST_API_KEY", ""),
+		Addr:                        envOrDefault("AI_ORCH_ADDR", ":8080"),
+		CatalogRoot:                 envOrDefault("AI_ORCH_CATALOG_ROOT", "."),
+		AuditPath:                   envOrDefault("AI_ORCH_AUDIT_PATH", "var/audit/audit.jsonl"),
+		DevToken:                    envOrDefault("AI_ORCH_DEV_TOKEN", ""),
+		AdminToken:                  envOrDefault("AI_ORCH_ADMIN_TOKEN", ""),
+		ServiceToken:                envOrDefault("AI_ORCH_SERVICE_TOKEN", ""),
+		RuntimeToken:                envOrDefault("AI_ORCH_RUNTIME_TOKEN", ""),
+		ClassificationMax:           envOrDefault("AI_ORCH_CLASSIFICATION_MAX", "internal"),
+		KillSwitch:                  killSwitch,
+		CostCapEnabled:              costCapEnabled,
+		SessionCostCapUSD:           sessionCostCapUSD,
+		PolicyEngine:                envOrDefault("AI_ORCH_POLICY_ENGINE", "native"),
+		ToolLoopMax:                 toolLoopMax,
+		GatewayAddr:                 envOrDefault("AI_ORCH_GATEWAY_ADDR", ":18082"),
+		ModelBackend:                envOrDefault("AI_ORCH_MODEL_BACKEND", "native-openrouter"),
+		BifrostBaseURL:              envOrDefault("AI_ORCH_BIFROST_BASE_URL", ""),
+		BifrostAPIKey:               envOrDefault("AI_ORCH_BIFROST_API_KEY", ""),
+		AgentGatewayBaseURL:         envOrDefault("AI_ORCH_AGENTGATEWAY_BASE_URL", ""),
+		AgentGatewayAPIKey:          envOrDefault("AI_ORCH_AGENTGATEWAY_API_KEY", ""),
+		AgentGatewayReadinessURL:    envOrDefault("AI_ORCH_AGENTGATEWAY_READINESS_URL", ""),
+		EnableServerContextResolver: enableServerContextResolver,
+		TrustedClientToken:          envOrDefault("AI_ORCH_TRUSTED_CLIENT_TOKEN", ""),
 	}
 
 	fs := flag.NewFlagSet("ai-agent-orch", flag.ContinueOnError)
@@ -79,9 +93,14 @@ func Load(args []string) (Config, error) {
 	fs.Float64Var(&cfg.SessionCostCapUSD, "session-cost-cap-usd", cfg.SessionCostCapUSD, "maximum estimated cost per session")
 	fs.StringVar(&cfg.PolicyEngine, "policy-engine", cfg.PolicyEngine, "policy engine adapter (native; agt is reserved)")
 	fs.IntVar(&cfg.ToolLoopMax, "consecutive-tool-call-max", cfg.ToolLoopMax, "maximum consecutive tool/MCP calls before output")
-	fs.StringVar(&cfg.ModelBackend, "model-backend", cfg.ModelBackend, "model backend adapter (native-openrouter or bifrost)")
+	fs.StringVar(&cfg.ModelBackend, "model-backend", cfg.ModelBackend, "model backend adapter (native-openrouter, bifrost, or agentgateway)")
 	fs.StringVar(&cfg.BifrostBaseURL, "bifrost-base-url", cfg.BifrostBaseURL, "Bifrost sidecar base URL")
 	fs.StringVar(&cfg.BifrostAPIKey, "bifrost-api-key", cfg.BifrostAPIKey, "optional Bifrost sidecar bearer token")
+	fs.StringVar(&cfg.AgentGatewayBaseURL, "agentgateway-base-url", cfg.AgentGatewayBaseURL, "agentgateway data-plane base URL")
+	fs.StringVar(&cfg.AgentGatewayAPIKey, "agentgateway-api-key", cfg.AgentGatewayAPIKey, "optional agentgateway bearer token")
+	fs.StringVar(&cfg.AgentGatewayReadinessURL, "agentgateway-readiness-url", cfg.AgentGatewayReadinessURL, "optional agentgateway readiness URL")
+	fs.BoolVar(&cfg.EnableServerContextResolver, "enable-server-context-resolver", cfg.EnableServerContextResolver, "enable local-dev server-side git context fallback")
+	fs.StringVar(&cfg.TrustedClientToken, "trusted-client-token", cfg.TrustedClientToken, "shared secret that gates privileged audit trust levels")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}

@@ -12,7 +12,7 @@ import (
 
 // OrchestratorClient is the interface used by the Governance Shell to call the Orchestrator.
 type OrchestratorClient interface {
-	Route(ctx context.Context, sessionID string, prompt string) (RouteDecision, error)
+	Route(ctx context.Context, sessionID string, prompt string, context SessionContext) (RouteDecision, error)
 	AcceptSession(ctx context.Context, sessionID string, agent string) error
 	Dispatch(ctx context.Context, sessionID string, agent string, prompt string) (DispatchResult, error)
 }
@@ -121,8 +121,26 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Load session context for routing enrichment.
+	var routeCtx SessionContext
+	var record SessionRecord
+	if h.service.sessions != nil {
+		if rec, err := h.service.sessions.Get(r.Context(), sessionID); err == nil {
+			record = rec
+			routeCtx = SessionContext{
+				RepoURL:      rec.RepoURL,
+				Branch:       rec.Branch,
+				CommitSHA:    rec.CommitSHA,
+				WorkItemID:   rec.WorkItemID,
+				WorkItemType: rec.WorkItemType,
+				ActorHint:    rec.ActorHint,
+				SourceSystem: rec.SourceSystem,
+			}
+		}
+	}
+
 	// Call Orchestrator for routing.
-	decision, err := h.orch.Route(r.Context(), sessionID, req.Prompt)
+	decision, err := h.orch.Route(r.Context(), sessionID, req.Prompt, routeCtx)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
 		return
@@ -138,6 +156,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Record router-selection audit event, linked to session creation.
 	eventID := h.newID("evt")
+	trust := h.service.trustMetadataFromRequest(r)
 	_, err = h.service.audit.Append(r.Context(), audit.Event{
 		EventID:            eventID,
 		ParentEventID:      h.service.parentEventID(sessionID),
@@ -146,10 +165,20 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Actor:              actor,
 		Agent:              decision.Specialist,
 		Reason:             decision.Reason,
+		RunID:              record.RunID,
+		PermissionMode:     record.PermissionMode,
+		ApprovalMode:       record.ApprovalMode,
+		WorkspaceMode:      record.WorkspaceMode,
+		WorkItemID:         record.WorkItemID,
+		WorkItemType:       record.WorkItemType,
+		CommitSHA:          record.CommitSHA,
+		ActorHint:          record.ActorHint,
+		SourceSystem:       record.SourceSystem,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
-		TrustLevel:         trustLevelFromRequest(r),
+		TrustLevel:         trust.TrustLevel,
+		EnforcementMode:    trust.EnforcementMode,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})

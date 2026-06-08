@@ -1,6 +1,8 @@
 package governance
 
 import (
+	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -169,6 +171,63 @@ func TestDurableRegistryStore_Evidence(t *testing.T) {
 	}
 	if ev[0].EvidenceType != "test_result" {
 		t.Fatalf("unexpected type: %s", ev[0].EvidenceType)
+	}
+}
+
+func TestDurableRegistryStore_MigratesExistingEvidenceTrustColumns(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "registry.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE evidence_records (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			evidence_type TEXT NOT NULL,
+			description TEXT NOT NULL,
+			test_result TEXT,
+			quality_system_link TEXT,
+			security_finding TEXT,
+			approval_receipt TEXT,
+			patch_decision TEXT,
+			external_ticket TEXT,
+			recorded_at TEXT NOT NULL
+		);
+	`)
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatalf("close seed db: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("seed legacy evidence table: %v", err)
+	}
+
+	s, err := NewDurableRegistryStore(dbPath)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.AppendEvidence(EvidenceRecord{
+		ID:              "ev_migrated",
+		SessionID:       "sess_1",
+		EvidenceType:    "external_tool_call",
+		Description:     "reported native tool call",
+		TrustLevel:      "self_reported",
+		EnforcementMode: "advisory",
+		RecordedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("append migrated evidence: %v", err)
+	}
+	ev, err := s.Evidence()
+	if err != nil {
+		t.Fatalf("list migrated evidence: %v", err)
+	}
+	if len(ev) != 1 {
+		t.Fatalf("expected one evidence record, got %d", len(ev))
+	}
+	if ev[0].TrustLevel != "self_reported" || ev[0].EnforcementMode != "advisory" {
+		t.Fatalf("expected migrated trust/enforcement fields, got %#v", ev[0])
 	}
 }
 

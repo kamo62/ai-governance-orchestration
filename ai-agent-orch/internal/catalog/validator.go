@@ -186,11 +186,14 @@ func validateAgentDir(root string, dir string, aliases map[string]struct{}, mcpR
 		return AgentConfig{}, fmt.Errorf("%s: %w", rel(root, cfgPath), err)
 	}
 
-	if cfg.Permissions.WorkspaceWrite == "deny" && contains(cfg.ToolsAllowed, "write_file") {
+	// Combine legacy tools_allowed and new governance_profile.mcp_tools for validation.
+	allTools := append([]string{}, cfg.ToolsAllowed...)
+	allTools = append(allTools, cfg.GovernanceProfile.MCPTools...)
+	if cfg.Permissions.WorkspaceWrite == "deny" && contains(allTools, "write_file") {
 		return AgentConfig{}, fmt.Errorf("%s: read-only agent cannot allow write_file", rel(root, cfgPath))
 	}
-	if cfg.Name != "test-generation" && contains(cfg.ToolsAllowed, "run_command:playwright") {
-		return AgentConfig{}, fmt.Errorf("%s: only test-generation can run Playwright", rel(root, cfgPath))
+	if cfg.Name != "unit-tests" && contains(allTools, "run_command:playwright") {
+		return AgentConfig{}, fmt.Errorf("%s: only unit-tests can run Playwright", rel(root, cfgPath))
 	}
 
 	// Stricter validation for published agents.
@@ -204,11 +207,25 @@ func validateAgentDir(root string, dir string, aliases map[string]struct{}, mcpR
 }
 
 type MCPRegistration struct {
-	ServerID      string   `yaml:"server_id"`
-	AllowedAgents []string `yaml:"allowed_agents"`
+	ServerID      string        `yaml:"server_id"`
+	Endpoint      string        `yaml:"endpoint"`
+	AuthMode      string        `yaml:"auth_mode"`
+	AllowedAgents []string      `yaml:"allowed_agents"`
+	ToolPolicy    MCPToolPolicy `yaml:"tool_policy"`
+	DataResidency string        `yaml:"data_residency"`
+}
+
+type MCPToolPolicy struct {
+	DefaultApproval string   `yaml:"default_approval"`
+	Allow           []string `yaml:"allow"`
+	Deny            []string `yaml:"deny"`
 }
 
 func loadMCPRegistrations(root string) (map[string]MCPRegistration, error) {
+	return LoadMCPRegistrations(root)
+}
+
+func LoadMCPRegistrations(root string) (map[string]MCPRegistration, error) {
 	registrationDir := filepath.Join(root, "mcp", "registrations")
 	matches, err := filepath.Glob(filepath.Join(registrationDir, "*.yaml"))
 	if err != nil {
@@ -358,6 +375,7 @@ func contains(items []string, want string) bool {
 }
 
 // AgentConfig is the exported agent configuration loaded from agent.config.yaml.
+// It describes a governance profile, not a native tool allow-list.
 type AgentConfig struct {
 	Name         string   `yaml:"name"`
 	Version      string   `yaml:"version"`
@@ -366,7 +384,7 @@ type AgentConfig struct {
 	Runtime      string   `yaml:"runtime"`
 	Model        modelRef `yaml:"model"`
 	MCPServers   []string `yaml:"mcp_servers"`
-	ToolsAllowed []string `yaml:"tools_allowed"`
+	ToolsAllowed []string `yaml:"tools_allowed"` // Deprecated: use GovernanceProfile.MCPTools
 	Permissions  struct {
 		Network               string `yaml:"network"`
 		WorkspaceWrite        string `yaml:"workspace_write"`
@@ -383,6 +401,13 @@ type AgentConfig struct {
 		Path              string `yaml:"path"`
 		RequiredForPhase0 bool   `yaml:"required_for_phase0"`
 	} `yaml:"evals"`
+	GovernanceProfile struct {
+		RoutingHints          []string `yaml:"routing_hints"`
+		ModelPolicy           string   `yaml:"model_policy"`
+		EvidenceExpectations  []string `yaml:"evidence_expectations"`
+		MCPTools              []string `yaml:"mcp_tools"`
+		ReportingRequirements []string `yaml:"reporting_requirements"`
+	} `yaml:"governance_profile"`
 }
 
 type modelRef struct {
@@ -410,9 +435,6 @@ func (cfg AgentConfig) validate(aliases map[string]struct{}) error {
 	}
 	if len(cfg.MCPServers) == 0 {
 		return errors.New("missing mcp_servers")
-	}
-	if len(cfg.ToolsAllowed) == 0 {
-		return errors.New("missing tools_allowed")
 	}
 	if cfg.Cost.PerInvocationCapUSD <= 0 {
 		return errors.New("cost.per_invocation_cap_usd must be positive")

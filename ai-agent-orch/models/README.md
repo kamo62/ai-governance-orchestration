@@ -59,11 +59,11 @@ The registry also contains smoke-test aliases such as `smoke-openai-gpt4o-mini`,
 
 ## Provider Strategy
 
-**Phase 1 (Current):** The Governance Shell owns the model-backend decision. Compose defaults to Bifrost OSS as the provider-plumbing sidecar, with native OpenRouter kept as a fallback and direct provider-health smoke path.
+**Phase 1 (Current):** The Governance Shell owns the model-backend decision. Compose defaults to Bifrost OSS as the proven provider-plumbing sidecar, with native OpenRouter kept as a fallback and direct provider-health smoke path. AgentGateway is available as an additional sidecar gateway for smoke testing before beta.
 
 **Phase 1G.2:** The `ai-orch` model compatibility gateway exposes runtime-facing OpenAI-compatible endpoints such as `/v1/models`, `/v1/chat/completions`, `/v1/responses`, and streaming. Runtimes such as OpenCode should call governed aliases through that gateway instead of receiving provider API keys or calling Bifrost directly.
 
-**Phase 2+:** Additional Bifrost providers, LiteLLM, direct cloud providers such as Azure OpenAI, or private gateways can be added behind the same alias system without changing agent definitions. Bifrost and LiteLLM should remain backend adapters or compatibility references, not the authority for policy, audit, session identity, or patch decisions.
+**Phase 2+:** Additional Bifrost providers, AgentGateway routes, LiteLLM, direct cloud providers such as Azure OpenAI, or private gateways can be added behind the same alias system without changing agent definitions. Bifrost, AgentGateway, native OpenRouter and LiteLLM should remain backend adapters or compatibility references, not the authority for policy, audit, session identity, or patch decisions.
 
 See [Governed Model Compatibility Gateway](../docs/model-compatibility-gateway.md) for the runtime-facing model API plan.
 
@@ -83,6 +83,10 @@ export OPENROUTER_APP_TITLE=ai-agent-orch-local
 # Select model backend
 export AI_ORCH_MODEL_BACKEND=bifrost
 export AI_ORCH_BIFROST_BASE_URL=http://bifrost:8080
+# Use this instead when smoke-testing agentgateway behind ai-orch.
+# export AI_ORCH_MODEL_BACKEND=agentgateway
+# export AI_ORCH_AGENTGATEWAY_BASE_URL=http://agentgateway:3000
+# export AI_ORCH_AGENTGATEWAY_READINESS_URL=http://agentgateway:15021/healthz/ready
 
 # Enable reasoning effort for supported models
 export AI_ORCH_OPENROUTER_REASONING_EFFORT=high

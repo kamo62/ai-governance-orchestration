@@ -6,7 +6,7 @@ auth_mode: local-dev-token
 credential_scope: local
 allowed_agents:
   - router-agent
-  - test-generation
+  - unit-tests
   - code-review
   - documentation
   - refactor
@@ -14,6 +14,8 @@ allowed_agents:
   - architecture-review
   - security-review
   - terraform-review
+  - backend-development
+  - frontend-development
 tool_policy:
   default_approval: auto
   allow:

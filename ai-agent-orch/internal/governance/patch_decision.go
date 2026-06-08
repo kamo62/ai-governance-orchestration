@@ -85,6 +85,7 @@ func (h *PatchDecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 
 	eventID := h.newID("evt")
+	trust := h.service.trustMetadataFromRequest(r)
 	_, err := h.service.audit.Append(r.Context(), audit.Event{
 		EventID:            eventID,
 		ParentEventID:      h.service.parentEventID(sessionID),
@@ -95,7 +96,8 @@ func (h *PatchDecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",
-		TrustLevel:         trustLevelFromRequest(r),
+		TrustLevel:         trust.TrustLevel,
+		EnforcementMode:    trust.EnforcementMode,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})

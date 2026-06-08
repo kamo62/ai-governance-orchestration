@@ -23,9 +23,9 @@ func TestAcceptSessionWritesCorrelatedAuditEvent(t *testing.T) {
 	})
 	handler := NewSessionIntakeHandler(service)
 
-	body := []byte(`{"agent":"test-generation"}`)
+	body := []byte(`{"agent":"unit-tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/sessions", bytes.NewReader(body))
-	req.Header.Set("X-AI-Orch-Session-ID", "sess_test_generation_1")
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_unit_tests_1")
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -37,7 +37,7 @@ func TestAcceptSessionWritesCorrelatedAuditEvent(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.SessionID != "sess_test_generation_1" {
+	if response.SessionID != "sess_unit_tests_1" {
 		t.Fatalf("unexpected session ID %q", response.SessionID)
 	}
 	if response.AuditEventID != "evt_orchestrator_accept_1" {
@@ -50,7 +50,7 @@ func TestAcceptSessionWritesCorrelatedAuditEvent(t *testing.T) {
 	}
 	auditText := string(auditBytes)
 	for _, want := range []string{
-		`"session_id":"sess_test_generation_1"`,
+		`"session_id":"sess_unit_tests_1"`,
 		`"event_type":"orchestrator.session.accepted"`,
 		`"correlation_subject":"orchestrator"`,
 	} {
@@ -66,7 +66,7 @@ func TestAcceptSessionRequiresCorrelationHeader(t *testing.T) {
 	})
 	handler := NewSessionIntakeHandler(service)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/sessions", bytes.NewReader([]byte(`{"agent":"test-generation"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/sessions", bytes.NewReader([]byte(`{"agent":"unit-tests"}`)))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -82,7 +82,7 @@ func TestAcceptSessionRejectsTrailingJSON(t *testing.T) {
 	})
 	handler := NewSessionIntakeHandler(service)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/sessions", strings.NewReader(`{"agent":"test-generation"} {}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/sessions", strings.NewReader(`{"agent":"unit-tests"} {}`))
 	req.Header.Set("X-AI-Orch-Session-ID", "sess_trailing")
 	rec := httptest.NewRecorder()
 

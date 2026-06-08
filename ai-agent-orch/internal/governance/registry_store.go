@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -127,6 +128,8 @@ func (s *DurableRegistryStore) migrate() error {
 			approval_receipt TEXT,
 			patch_decision TEXT,
 			external_ticket TEXT,
+			trust_level TEXT,
+			enforcement_mode TEXT,
 			recorded_at TEXT NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS maturity_exports (
@@ -180,8 +183,49 @@ func (s *DurableRegistryStore) migrate() error {
 		CREATE INDEX IF NOT EXISTS idx_cache_session ON cache_outcomes(session_id);
 		CREATE INDEX IF NOT EXISTS idx_evidence_session ON evidence_records(session_id);
 		CREATE INDEX IF NOT EXISTS idx_maturity_session ON maturity_exports(session_id);
-	`)
-	return err
+		`)
+	if err != nil {
+		return err
+	}
+	if err := s.ensureColumn("evidence_records", "trust_level", "TEXT"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("evidence_records", "enforcement_mode", "TEXT"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *DurableRegistryStore) ensureColumn(table string, column string, definition string) error {
+	rows, err := s.db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return fmt.Errorf("inspect %s schema: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return fmt.Errorf("scan %s schema: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate %s schema: %w", table, err)
+	}
+	if _, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, definition)); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return nil
+		}
+		return fmt.Errorf("add %s column %s: %w", table, column, err)
+	}
+	return nil
 }
 
 // UseCase methods.
@@ -198,6 +242,25 @@ func (s *DurableRegistryStore) RegisterUseCase(uc UseCase) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, uc.ID, uc.Owner, uc.Domain, uc.ExpectedBenefit, uc.LinkedWorkItem, uc.Classification, uc.RiskLevel, uc.CreatedAt.Format(time.RFC3339Nano))
 	return err
+}
+
+func (s *DurableRegistryStore) ListUseCases() ([]UseCase, error) {
+	rows, err := s.db.Query(`SELECT id, owner, domain, expected_benefit, linked_work_item, classification, risk_level, created_at FROM use_cases ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UseCase
+	for rows.Next() {
+		var uc UseCase
+		var createdAtStr string
+		if err := rows.Scan(&uc.ID, &uc.Owner, &uc.Domain, &uc.ExpectedBenefit, &uc.LinkedWorkItem, &uc.Classification, &uc.RiskLevel, &createdAtStr); err != nil {
+			return nil, err
+		}
+		uc.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAtStr)
+		out = append(out, uc)
+	}
+	return out, rows.Err()
 }
 
 func (s *DurableRegistryStore) GetUseCase(id string) (UseCase, bool) {
@@ -229,6 +292,27 @@ func (s *DurableRegistryStore) RegisterWorkflow(wf Workflow) error {
 		VALUES (?, ?, ?, ?, ?)
 	`, wf.ID, wf.Name, wf.Description, string(stagesJSON), wf.CreatedAt.Format(time.RFC3339Nano))
 	return err
+}
+
+func (s *DurableRegistryStore) ListWorkflows() ([]Workflow, error) {
+	rows, err := s.db.Query(`SELECT id, name, description, stages_json, created_at FROM workflows ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Workflow
+	for rows.Next() {
+		var wf Workflow
+		var stagesJSON string
+		var createdAtStr string
+		if err := rows.Scan(&wf.ID, &wf.Name, &wf.Description, &stagesJSON, &createdAtStr); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(stagesJSON), &wf.Stages)
+		wf.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAtStr)
+		out = append(out, wf)
+	}
+	return out, rows.Err()
 }
 
 func (s *DurableRegistryStore) GetWorkflow(id string) (Workflow, bool) {
@@ -352,10 +436,12 @@ func (s *DurableRegistryStore) AppendEvidence(e EvidenceRecord) error {
 	_, err := s.db.Exec(`
 		INSERT INTO evidence_records (
 			id, session_id, evidence_type, description, test_result, quality_system_link,
-			security_finding, approval_receipt, patch_decision, external_ticket, recorded_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			security_finding, approval_receipt, patch_decision, external_ticket,
+			trust_level, enforcement_mode, recorded_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, e.ID, e.SessionID, e.EvidenceType, e.Description, e.TestResult, e.QualitySystemLink,
 		e.SecurityFinding, e.ApprovalReceipt, e.PatchDecision, e.ExternalTicket,
+		e.TrustLevel, e.EnforcementMode,
 		e.RecordedAt.Format(time.RFC3339Nano))
 	return err
 }
@@ -363,7 +449,8 @@ func (s *DurableRegistryStore) AppendEvidence(e EvidenceRecord) error {
 func (s *DurableRegistryStore) Evidence() ([]EvidenceRecord, error) {
 	rows, err := s.db.Query(`
 		SELECT id, session_id, evidence_type, description, test_result, quality_system_link,
-			security_finding, approval_receipt, patch_decision, external_ticket, recorded_at
+			security_finding, approval_receipt, patch_decision, external_ticket,
+			trust_level, enforcement_mode, recorded_at
 		FROM evidence_records ORDER BY recorded_at ASC
 	`)
 	if err != nil {
@@ -380,7 +467,7 @@ func scanEvidence(rows *sql.Rows) ([]EvidenceRecord, error) {
 		var recordedAtStr string
 		if err := rows.Scan(&e.ID, &e.SessionID, &e.EvidenceType, &e.Description, &e.TestResult,
 			&e.QualitySystemLink, &e.SecurityFinding, &e.ApprovalReceipt, &e.PatchDecision,
-			&e.ExternalTicket, &recordedAtStr); err != nil {
+			&e.ExternalTicket, &e.TrustLevel, &e.EnforcementMode, &recordedAtStr); err != nil {
 			return nil, err
 		}
 		e.RecordedAt, _ = time.Parse(time.RFC3339Nano, recordedAtStr)

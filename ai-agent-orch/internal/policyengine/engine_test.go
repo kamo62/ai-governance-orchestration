@@ -32,7 +32,7 @@ func TestNativeEngineDeniesSecretFindings(t *testing.T) {
 
 	decision, err := engine.Evaluate(context.Background(), Request{
 		SessionID:  "sess_test",
-		AgentName:  "test-generation",
+		AgentName:  "unit-tests",
 		ActionType: "session.create",
 		Findings:   []string{"openrouter_api_key"},
 	})
@@ -100,6 +100,92 @@ func TestNativeEngineAppliesDefaultClassificationMax(t *testing.T) {
 	}
 }
 
+func TestNativeEngineMCPToolCallPolicy(t *testing.T) {
+	tests := []struct {
+		name      string
+		req       Request
+		wantAllow bool
+		wantPart  string
+	}{
+		{
+			name: "allowed tool for allowed agent",
+			req: Request{
+				ActionType:     "mcp.tool_call",
+				Resource:       "documentation",
+				ToolName:       "getPage",
+				AgentName:      "documentation",
+				Classification: "internal",
+				Metadata: map[string]any{
+					"allowed_agents": []string{"documentation"},
+					"tool_allow":     []string{"getPage", "searchPages"},
+					"tool_deny":      []string{"deletePage"},
+				},
+			},
+			wantAllow: true,
+			wantPart:  "allowed",
+		},
+		{
+			name: "denies tool outside allow list",
+			req: Request{
+				ActionType:     "mcp.tool_call",
+				Resource:       "documentation",
+				ToolName:       "deletePage",
+				AgentName:      "documentation",
+				Classification: "internal",
+				Metadata: map[string]any{
+					"allowed_agents": []string{"documentation"},
+					"tool_allow":     []string{"getPage"},
+				},
+			},
+			wantPart: "not in allow list",
+		},
+		{
+			name: "denies disallowed agent",
+			req: Request{
+				ActionType:     "mcp.tool_call",
+				Resource:       "playwright-cli",
+				ToolName:       "runPlaywrightTest",
+				AgentName:      "code-review",
+				Classification: "internal",
+				Metadata: map[string]any{
+					"allowed_agents": []string{"unit-tests"},
+					"tool_allow":     []string{"runPlaywrightTest"},
+				},
+			},
+			wantPart: "not allowed",
+		},
+		{
+			name: "defaults deny without allow list",
+			req: Request{
+				ActionType:     "mcp.tool_call",
+				Resource:       "documentation",
+				ToolName:       "getPage",
+				AgentName:      "documentation",
+				Classification: "internal",
+			},
+			wantPart: "not in allow list",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision, err := NativeEngine{}.Evaluate(context.Background(), tt.req)
+			if err != nil {
+				t.Fatalf("Evaluate returned error: %v", err)
+			}
+			if decision.Allowed != tt.wantAllow {
+				t.Fatalf("expected allowed=%v, got %v: %s", tt.wantAllow, decision.Allowed, decision.Reason)
+			}
+			if !strings.Contains(decision.Reason, tt.wantPart) {
+				t.Fatalf("expected reason containing %q, got %q", tt.wantPart, decision.Reason)
+			}
+			if decision.DecisionID == "" {
+				t.Fatal("expected decision id")
+			}
+		})
+	}
+}
+
 func TestDetectSecretsPositiveAndNegativePatterns(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -144,7 +230,7 @@ func TestCommandAllowlistPermissionsAndSubcommands(t *testing.T) {
 			Name:    "run_command",
 			Default: "deny",
 			Subcommands: []Subcommand{
-				{Name: "playwright", AllowedAgents: []string{"test-generation"}},
+				{Name: "playwright", AllowedAgents: []string{"unit-tests"}},
 			},
 		},
 	}}
@@ -158,13 +244,13 @@ func TestCommandAllowlistPermissionsAndSubcommands(t *testing.T) {
 	if !list.IsAllowedWithPermissions("write_file", "", "documentation", map[string]string{"workspace_write": "allow"}) {
 		t.Fatal("expected write_file to pass with workspace_write=allow")
 	}
-	if !list.IsAllowed("run_command", "playwright", "test-generation") {
-		t.Fatal("expected test-generation to run playwright")
+	if !list.IsAllowed("run_command", "playwright", "unit-tests") {
+		t.Fatal("expected unit-tests to run playwright")
 	}
 	if list.IsAllowed("run_command", "playwright", "code-review") {
 		t.Fatal("expected code-review to be denied playwright")
 	}
-	if list.IsAllowed("unknown", "", "test-generation") {
+	if list.IsAllowed("unknown", "", "unit-tests") {
 		t.Fatal("expected unknown command to fail closed")
 	}
 }

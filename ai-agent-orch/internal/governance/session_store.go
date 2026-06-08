@@ -20,13 +20,22 @@ type SessionRecord struct {
 	PromptSHA256   string
 	Status         string // created, awaiting_confirmation, confirming, confirmed, running, done, failed, confirm_failed, aborted
 	CreatedAt      time.Time
+	// Governed runtime binding fields.
+	RunID          string
+	PermissionMode string
+	ApprovalMode   string
+	WorkspaceMode  string
 	// Phase 1F control-plane binding fields.
-	UseCaseID  string
-	WorkflowID string
-	WorkItemID string
-	RepoURL    string
-	Branch     string
-	Intent     string
+	UseCaseID    string
+	WorkflowID   string
+	WorkItemID   string
+	WorkItemType string
+	RepoURL      string
+	Branch       string
+	CommitSHA    string
+	Intent       string
+	ActorHint    string
+	SourceSystem string
 	// Phase 1F cost/value sizing.
 	StoryPoints         int
 	EstimatedDevDays    float64
@@ -44,6 +53,7 @@ type SessionRecord struct {
 type SessionStore interface {
 	Create(ctx context.Context, rec SessionRecord) error
 	Get(ctx context.Context, sessionID string) (SessionRecord, error)
+	ListRecent(ctx context.Context, actorSubject string, limit int) ([]SessionRecord, error)
 	UpdateStatus(ctx context.Context, sessionID, status string) error
 	CompareAndSwapStatus(ctx context.Context, sessionID, from, to string) error
 }
@@ -110,12 +120,20 @@ func (s *SQLiteSessionStore) migrate() error {
 	}
 	// Phase 1F migrations: add control-plane binding and sizing columns.
 	cols := map[string]string{
+		"run_id":                "TEXT NOT NULL DEFAULT ''",
+		"permission_mode":       "TEXT NOT NULL DEFAULT 'reviewed'",
+		"approval_mode":         "TEXT NOT NULL DEFAULT 'manual'",
+		"workspace_mode":        "TEXT NOT NULL DEFAULT ''",
 		"use_case_id":           "TEXT NOT NULL DEFAULT ''",
 		"workflow_id":           "TEXT NOT NULL DEFAULT ''",
 		"work_item_id":          "TEXT NOT NULL DEFAULT ''",
+		"work_item_type":        "TEXT NOT NULL DEFAULT ''",
 		"repo_url":              "TEXT NOT NULL DEFAULT ''",
 		"branch":                "TEXT NOT NULL DEFAULT ''",
+		"commit_sha":            "TEXT NOT NULL DEFAULT ''",
 		"intent":                "TEXT NOT NULL DEFAULT ''",
+		"actor_hint":            "TEXT NOT NULL DEFAULT ''",
+		"source_system":         "TEXT NOT NULL DEFAULT ''",
 		"story_points":          "INTEGER NOT NULL DEFAULT 0",
 		"estimated_dev_days":    "REAL NOT NULL DEFAULT 0",
 		"blended_day_rate_usd":  "REAL NOT NULL DEFAULT 0",
@@ -173,18 +191,21 @@ func (s *SQLiteSessionStore) Create(ctx context.Context, rec SessionRecord) erro
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (
 			session_id, actor_subject, agent, classification, prompt_sha256, status, created_at,
-			use_case_id, workflow_id, work_item_id, repo_url, branch, intent,
+			run_id, permission_mode, approval_mode, workspace_mode,
+			use_case_id, workflow_id, work_item_id, work_item_type, repo_url, branch, commit_sha, intent, actor_hint, source_system,
 			story_points, estimated_dev_days, blended_day_rate_usd, baseline_cost_usd,
 			model_cost_usd, tool_cost_usd, platform_cost_usd, review_cost_usd,
 			verification_cost_usd, retry_count
 		) VALUES (?, ?, ?, ?, ?, ?, ?,
-			?, ?, ?, ?, ?, ?,
+			?, ?, ?, ?,
+			?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?)
 	`,
 		rec.SessionID, rec.ActorSubject, rec.Agent, rec.Classification, rec.PromptSHA256, rec.Status, rec.CreatedAt.Format(time.RFC3339Nano),
-		rec.UseCaseID, rec.WorkflowID, rec.WorkItemID, rec.RepoURL, rec.Branch, rec.Intent,
+		rec.RunID, rec.PermissionMode, rec.ApprovalMode, rec.WorkspaceMode,
+		rec.UseCaseID, rec.WorkflowID, rec.WorkItemID, rec.WorkItemType, rec.RepoURL, rec.Branch, rec.CommitSHA, rec.Intent, rec.ActorHint, rec.SourceSystem,
 		rec.StoryPoints, rec.EstimatedDevDays, rec.BlendedDayRateUSD, rec.BaselineCostUSD,
 		rec.ModelCostUSD, rec.ToolCostUSD, rec.PlatformCostUSD, rec.ReviewCostUSD,
 		rec.VerificationCostUSD, rec.RetryCount,
@@ -201,8 +222,9 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, sessionID string) (Session
 	err := s.db.QueryRowContext(ctx, `
 			SELECT
 				session_id, actor_subject, agent, classification, prompt_sha256, status, created_at,
-				COALESCE(use_case_id, ''), COALESCE(workflow_id, ''), COALESCE(work_item_id, ''),
-				COALESCE(repo_url, ''), COALESCE(branch, ''), COALESCE(intent, ''),
+				COALESCE(run_id, ''), COALESCE(permission_mode, 'reviewed'), COALESCE(approval_mode, 'manual'), COALESCE(workspace_mode, ''),
+				COALESCE(use_case_id, ''), COALESCE(workflow_id, ''), COALESCE(work_item_id, ''), COALESCE(work_item_type, ''),
+				COALESCE(repo_url, ''), COALESCE(branch, ''), COALESCE(commit_sha, ''), COALESCE(intent, ''), COALESCE(actor_hint, ''), COALESCE(source_system, ''),
 				COALESCE(story_points, 0), COALESCE(estimated_dev_days, 0), COALESCE(blended_day_rate_usd, 0),
 				COALESCE(baseline_cost_usd, 0), COALESCE(model_cost_usd, 0), COALESCE(tool_cost_usd, 0),
 				COALESCE(platform_cost_usd, 0), COALESCE(review_cost_usd, 0),
@@ -210,7 +232,8 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, sessionID string) (Session
 			FROM sessions WHERE session_id = ?
 	`, sessionID).Scan(
 		&rec.SessionID, &rec.ActorSubject, &rec.Agent, &rec.Classification, &rec.PromptSHA256, &rec.Status, &createdAtStr,
-		&rec.UseCaseID, &rec.WorkflowID, &rec.WorkItemID, &rec.RepoURL, &rec.Branch, &rec.Intent,
+		&rec.RunID, &rec.PermissionMode, &rec.ApprovalMode, &rec.WorkspaceMode,
+		&rec.UseCaseID, &rec.WorkflowID, &rec.WorkItemID, &rec.WorkItemType, &rec.RepoURL, &rec.Branch, &rec.CommitSHA, &rec.Intent, &rec.ActorHint, &rec.SourceSystem,
 		&rec.StoryPoints, &rec.EstimatedDevDays, &rec.BlendedDayRateUSD, &rec.BaselineCostUSD,
 		&rec.ModelCostUSD, &rec.ToolCostUSD, &rec.PlatformCostUSD, &rec.ReviewCostUSD,
 		&rec.VerificationCostUSD, &rec.RetryCount,
@@ -223,6 +246,56 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, sessionID string) (Session
 	}
 	rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAtStr)
 	return rec, nil
+}
+
+func (s *SQLiteSessionStore) ListRecent(ctx context.Context, actorSubject string, limit int) ([]SessionRecord, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+			SELECT
+				session_id, actor_subject, agent, classification, prompt_sha256, status, created_at,
+				COALESCE(run_id, ''), COALESCE(permission_mode, 'reviewed'), COALESCE(approval_mode, 'manual'), COALESCE(workspace_mode, ''),
+				COALESCE(use_case_id, ''), COALESCE(workflow_id, ''), COALESCE(work_item_id, ''), COALESCE(work_item_type, ''),
+				COALESCE(repo_url, ''), COALESCE(branch, ''), COALESCE(commit_sha, ''), COALESCE(intent, ''), COALESCE(actor_hint, ''), COALESCE(source_system, ''),
+				COALESCE(story_points, 0), COALESCE(estimated_dev_days, 0), COALESCE(blended_day_rate_usd, 0),
+				COALESCE(baseline_cost_usd, 0), COALESCE(model_cost_usd, 0), COALESCE(tool_cost_usd, 0),
+				COALESCE(platform_cost_usd, 0), COALESCE(review_cost_usd, 0),
+				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0)
+			FROM sessions
+			WHERE actor_subject = ?
+			ORDER BY created_at DESC
+			LIMIT ?
+	`, actorSubject, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recent sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []SessionRecord
+	for rows.Next() {
+		var rec SessionRecord
+		var createdAtStr string
+		if err := rows.Scan(
+			&rec.SessionID, &rec.ActorSubject, &rec.Agent, &rec.Classification, &rec.PromptSHA256, &rec.Status, &createdAtStr,
+			&rec.RunID, &rec.PermissionMode, &rec.ApprovalMode, &rec.WorkspaceMode,
+			&rec.UseCaseID, &rec.WorkflowID, &rec.WorkItemID, &rec.WorkItemType, &rec.RepoURL, &rec.Branch, &rec.CommitSHA, &rec.Intent, &rec.ActorHint, &rec.SourceSystem,
+			&rec.StoryPoints, &rec.EstimatedDevDays, &rec.BlendedDayRateUSD, &rec.BaselineCostUSD,
+			&rec.ModelCostUSD, &rec.ToolCostUSD, &rec.PlatformCostUSD, &rec.ReviewCostUSD,
+			&rec.VerificationCostUSD, &rec.RetryCount,
+		); err != nil {
+			return nil, fmt.Errorf("scan recent session: %w", err)
+		}
+		rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAtStr)
+		sessions = append(sessions, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recent sessions: %w", err)
+	}
+	return sessions, nil
 }
 
 func (s *SQLiteSessionStore) UpdateStatus(ctx context.Context, sessionID, status string) error {

@@ -131,6 +131,41 @@ func TestRegistryHandler_CreateAndListEvidence(t *testing.T) {
 	if resp.Evidence[0].EvidenceType != "test_result" {
 		t.Fatalf("unexpected evidence type: %s", resp.Evidence[0].EvidenceType)
 	}
+	if resp.Evidence[0].TrustLevel != "self_reported" || resp.Evidence[0].EnforcementMode != "advisory" {
+		t.Fatalf("expected ordinary evidence to be labelled self_reported/advisory, got %#v", resp.Evidence[0])
+	}
+}
+
+func TestRegistryHandler_DerivesExternalEvidenceTrustFields(t *testing.T) {
+	store := NewRegistryStore()
+	svc := registryTestService(t, "sess_1", "local-dev")
+	h := NewRegistryHandler(store, svc)
+
+	body, _ := json.Marshal(map[string]any{
+		"session_id":       "sess_1",
+		"evidence_type":    "external_tool_call",
+		"description":      "native client reported a shell command",
+		"trust_level":      "gateway_enforced",
+		"enforcement_mode": "gateway",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/evidence", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
+	req.Header.Set("X-AI-Orch-Trust-Level", "gateway_enforced")
+	req.Header.Set("X-AI-Orch-Enforcement-Mode", "gateway")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got EvidenceRecord
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode evidence: %v", err)
+	}
+	if got.TrustLevel != "self_reported" || got.EnforcementMode != "advisory" {
+		t.Fatalf("external evidence must remain self_reported/advisory, got %#v", got)
+	}
 }
 
 func TestRegistryHandler_EvidenceRequiresSessionOwnership(t *testing.T) {
@@ -192,7 +227,7 @@ func registryTestServiceWithSessions(t *testing.T, sessions map[string]string) *
 		if err := sessionStore.Create(context.Background(), SessionRecord{
 			SessionID:      sessionID,
 			ActorSubject:   actor,
-			Agent:          "test-generation",
+			Agent:          "unit-tests",
 			Classification: "internal",
 			PromptSHA256:   "abc123",
 			Status:         "created",

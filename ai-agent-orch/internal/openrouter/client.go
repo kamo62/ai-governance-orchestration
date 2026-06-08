@@ -43,20 +43,25 @@ type Message struct {
 }
 
 type ChatCompletionRequest struct {
-	SessionID   string           `json:"-"`
-	ModelAlias  string           `json:"-"`
-	Provider    string           `json:"-"`
-	Model       string           `json:"model"`
-	Messages    []Message        `json:"messages"`
-	Temperature float64          `json:"temperature,omitempty"`
-	MaxTokens   int              `json:"max_tokens,omitempty"`
-	Reasoning   *ReasoningConfig `json:"reasoning,omitempty"`
-	Stream      bool             `json:"stream,omitempty"`
+	SessionID     string           `json:"-"`
+	ModelAlias    string           `json:"-"`
+	Provider      string           `json:"-"`
+	Model         string           `json:"model"`
+	Messages      []Message        `json:"messages"`
+	Temperature   float64          `json:"temperature,omitempty"`
+	MaxTokens     int              `json:"max_tokens,omitempty"`
+	Reasoning     *ReasoningConfig `json:"reasoning,omitempty"`
+	Stream        bool             `json:"stream,omitempty"`
+	StreamOptions *StreamOptions   `json:"stream_options,omitempty"`
 }
 
 type ReasoningConfig struct {
 	Effort  string `json:"effort,omitempty"`
 	Exclude bool   `json:"exclude,omitempty"`
+}
+
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage,omitempty"`
 }
 
 type ChatCompletionResponse struct {
@@ -120,9 +125,10 @@ func parseCost(raw json.RawMessage) float64 {
 	}
 	for _, key := range []string{"total", "total_cost", "cost", "cost_usd", "amount"} {
 		if value, ok := asObject[key]; ok {
-			if n := parseCost(value); n != 0 {
-				return n
-			}
+			// A present total field is authoritative even when it is zero, so we
+			// must not fall through and sum sibling component fields (which would
+			// double-count or invent a cost).
+			return parseCost(value)
 		}
 	}
 	var sum float64
@@ -158,6 +164,9 @@ func NewClient(cfg Config) *Client {
 func (c *Client) ChatCompletion(ctx context.Context, request ChatCompletionRequest) (ChatCompletionResponse, error) {
 	if c.apiKey == "" {
 		return ChatCompletionResponse{}, errors.New("OPENROUTER_API_KEY is required")
+	}
+	if request.Provider != "" && request.Provider != "openrouter" {
+		return ChatCompletionResponse{}, fmt.Errorf("native OpenRouter client cannot route provider %q; use a provider-aware backend", request.Provider)
 	}
 	if request.Model == "" {
 		return ChatCompletionResponse{}, errors.New("model is required")
@@ -216,6 +225,9 @@ func (c *Client) ChatCompletionStream(ctx context.Context, request ChatCompletio
 	if c.apiKey == "" {
 		return nil, errors.New("OPENROUTER_API_KEY is required")
 	}
+	if request.Provider != "" && request.Provider != "openrouter" {
+		return nil, fmt.Errorf("native OpenRouter client cannot route provider %q; use a provider-aware backend", request.Provider)
+	}
 	if request.Model == "" {
 		return nil, errors.New("model is required")
 	}
@@ -267,6 +279,7 @@ type StreamChunk struct {
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason,omitempty"`
 	} `json:"choices"`
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // DecodeStreamChunk parses a single SSE data line into a StreamChunk.

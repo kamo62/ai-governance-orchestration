@@ -38,7 +38,10 @@ describe('Bridge workflow helpers', () => {
     test('builds governed auth headers and fails closed without a token', () => {
         expect(authHeadersForBridge({ devToken: ' local-dev ', identity: 'developer' }, { Accept: 'text/event-stream' })).toEqual({
             Authorization: 'Bearer local-dev',
+            'X-AI-Orch-Client': 'ai-agent-bridge',
             'X-AI-Orch-Local-Identity': 'developer',
+            'X-AI-Orch-Trust-Level': 'managed_client',
+            'X-AI-Orch-Enforcement-Mode': 'managed',
             Accept: 'text/event-stream',
         });
         expect(() => authHeadersForBridge({ devToken: ' ', identity: 'developer' })).toThrow('developer token is required');

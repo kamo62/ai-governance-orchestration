@@ -103,6 +103,12 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 	}
 
 	// Try ACP runtime first if agent specifies opencode.
+	// Beta/CI smoke uses EchoRuntime so governed runs complete without provider keys.
+	if betaSmokeEnabled() {
+		echo := dispatch.NewEchoRuntime()
+		return echo.StartSession(ctx, sessionCfg)
+	}
+
 	if agentCfg.Runtime == "opencode" {
 		if runtime, ok := d.runtimes["opencode"]; ok {
 			handle, err := runtime.StartSession(ctx, sessionCfg)
@@ -184,6 +190,15 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func betaSmokeEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("AI_ORCH_BETA_SMOKE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func workspaceRoot(catalogRoot string) string {

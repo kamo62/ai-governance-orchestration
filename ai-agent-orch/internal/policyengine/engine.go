@@ -78,6 +78,10 @@ func (NativeEngine) Evaluate(_ context.Context, req Request) (Decision, error) {
 		return Decision{Allowed: false, Reason: fmt.Sprintf("classification %s exceeds max %s", req.Classification, max), Engine: "native", DecisionID: decision.DecisionID}, nil
 	}
 
+	if req.ActionType == "mcp.tool_call" {
+		return evaluateMCPToolCall(req, decision), nil
+	}
+
 	// 2. Secret detection
 	findings := req.Findings
 	if len(findings) == 0 && req.Metadata != nil {
@@ -95,6 +99,64 @@ func (NativeEngine) Evaluate(_ context.Context, req Request) (Decision, error) {
 	}
 
 	return decision, nil
+}
+
+func evaluateMCPToolCall(req Request, decision Decision) Decision {
+	allowedAgents := stringSliceMetadata(req.Metadata, "allowed_agents")
+	toolAllow := stringSliceMetadata(req.Metadata, "tool_allow")
+	toolDeny := stringSliceMetadata(req.Metadata, "tool_deny")
+
+	if len(allowedAgents) > 0 && !stringSliceContains(allowedAgents, req.AgentName) {
+		decision.Allowed = false
+		decision.Reason = fmt.Sprintf("agent %q is not allowed to use mcp server %q", req.AgentName, req.Resource)
+		return decision
+	}
+	if stringSliceContains(toolDeny, req.ToolName) {
+		decision.Allowed = false
+		decision.Reason = fmt.Sprintf("mcp tool %q is explicitly denied", req.ToolName)
+		return decision
+	}
+	if len(toolAllow) == 0 || !stringSliceContains(toolAllow, req.ToolName) {
+		decision.Allowed = false
+		decision.Reason = fmt.Sprintf("mcp tool %q is not in allow list", req.ToolName)
+		return decision
+	}
+
+	decision.Reason = "mcp tool allowed"
+	return decision
+}
+
+func stringSliceMetadata(metadata map[string]any, key string) []string {
+	if metadata == nil {
+		return nil
+	}
+	value, ok := metadata[key]
+	if !ok {
+		return nil
+	}
+	switch typed := value.(type) {
+	case []string:
+		return typed
+	case []any:
+		var values []string
+		for _, item := range typed {
+			if s, ok := item.(string); ok {
+				values = append(values, s)
+			}
+		}
+		return values
+	default:
+		return nil
+	}
+}
+
+func stringSliceContains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func newDecisionID() string {

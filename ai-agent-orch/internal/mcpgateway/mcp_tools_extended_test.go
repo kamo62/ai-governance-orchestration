@@ -13,7 +13,7 @@ func TestDelegateGovernedWork(t *testing.T) {
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/messages") {
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"specialist": "test-generation",
+				"specialist": "unit-tests",
 				"reason":     "matched agent catalog",
 				"status":     "routed",
 			})
@@ -46,7 +46,7 @@ func TestDelegateGovernedWork(t *testing.T) {
 	}
 
 	result := toolsCallResult(t, resp.Result)
-	if !strings.Contains(result.Content[0].Text, "test-generation") {
+	if !strings.Contains(result.Content[0].Text, "unit-tests") {
 		t.Fatalf("expected specialist in response, got: %s", result.Content[0].Text)
 	}
 }
@@ -57,7 +57,7 @@ func TestDelegateGovernedWorkEscapesSessionIDPathSegment(t *testing.T) {
 			t.Fatalf("expected escaped session path, got path=%q escaped=%q", r.URL.Path, r.URL.EscapedPath())
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"specialist": "test-generation",
+			"specialist": "unit-tests",
 			"reason":     "matched agent catalog",
 			"status":     "routed",
 		})
@@ -303,6 +303,204 @@ func TestRecordExternalModelCallPostsEvidenceRoute(t *testing.T) {
 	result := toolsCallResult(t, resp.Result)
 	if result.IsError {
 		t.Fatalf("expected success, got: %s", result.Content[0].Text)
+	}
+}
+
+func TestCreateContextManifest(t *testing.T) {
+	var gotBody map[string]any
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/context-manifests" {
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatalf("decode manifest body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "manifest_123"})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mock.Close()
+
+	cfg := &GatewayConfig{GovernanceURL: mock.URL, DevToken: "tok"}
+	s := NewServer("test", "1.0")
+	RegisterPhase1ITools(s, cfg)
+
+	resp := s.Handle(context.Background(), &Request{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params: mustRawMessage(map[string]any{
+			"name": "create_context_manifest",
+			"arguments": map[string]any{
+				"session_id":       "sess_123",
+				"summary":          "test context",
+				"source_system":    "repo",
+				"source_object_id": "src/main.go",
+				"classification":   "internal",
+			},
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %+v", resp.Error)
+	}
+	result := toolsCallResult(t, resp.Result)
+	if !strings.Contains(result.Content[0].Text, "manifest_123") {
+		t.Fatalf("expected manifest ID in response, got: %s", result.Content[0].Text)
+	}
+	id, ok := gotBody["id"].(string)
+	if !ok || !strings.HasPrefix(id, "ctx_") || strings.Contains(id, "/") {
+		t.Fatalf("expected safe hashed manifest id, got %#v", gotBody["id"])
+	}
+}
+
+func TestAttachUseCase(t *testing.T) {
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/use-cases" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "uc_123"})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mock.Close()
+
+	cfg := &GatewayConfig{GovernanceURL: mock.URL, DevToken: "tok"}
+	s := NewServer("test", "1.0")
+	RegisterPhase1ITools(s, cfg)
+
+	resp := s.Handle(context.Background(), &Request{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params: mustRawMessage(map[string]any{
+			"name": "attach_use_case",
+			"arguments": map[string]any{
+				"id":             "uc_123",
+				"owner":          "team-a",
+				"domain":         "platform",
+				"classification": "internal",
+				"risk_level":     "medium",
+			},
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %+v", resp.Error)
+	}
+	result := toolsCallResult(t, resp.Result)
+	if !strings.Contains(result.Content[0].Text, "uc_123") {
+		t.Fatalf("expected use case ID in response, got: %s", result.Content[0].Text)
+	}
+}
+
+func TestAttachWorkflow(t *testing.T) {
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/workflows" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "wf_123"})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mock.Close()
+
+	cfg := &GatewayConfig{GovernanceURL: mock.URL, DevToken: "tok"}
+	s := NewServer("test", "1.0")
+	RegisterPhase1ITools(s, cfg)
+
+	resp := s.Handle(context.Background(), &Request{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params: mustRawMessage(map[string]any{
+			"name": "attach_workflow",
+			"arguments": map[string]any{
+				"id":     "wf_123",
+				"name":   "review",
+				"stages": []string{"draft", "review", "merge"},
+			},
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %+v", resp.Error)
+	}
+	result := toolsCallResult(t, resp.Result)
+	if !strings.Contains(result.Content[0].Text, "wf_123") {
+		t.Fatalf("expected workflow ID in response, got: %s", result.Content[0].Text)
+	}
+}
+
+func TestListAllowedTools(t *testing.T) {
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/internal/v1/mcp/catalog" {
+			if got := r.Header.Get("X-AI-Orch-Session-ID"); got != "sess_123" {
+				t.Fatalf("expected session header sess_123, got %q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"servers": map[string]any{
+					"repo-classification": map[string]any{
+						"tools": []string{"getRepoClassification"},
+					},
+				},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mock.Close()
+
+	cfg := &GatewayConfig{GovernanceURL: mock.URL, DevToken: "tok"}
+	s := NewServer("test", "1.0")
+	RegisterPhase1JTools(s, cfg)
+
+	resp := s.Handle(context.Background(), &Request{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  mustRawMessage(map[string]any{"name": "list_allowed_tools", "arguments": map[string]any{"session_id": "sess_123"}}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %+v", resp.Error)
+	}
+	result := toolsCallResult(t, resp.Result)
+	if !strings.Contains(result.Content[0].Text, "getRepoClassification") {
+		t.Fatalf("expected tool name in response, got: %s", result.Content[0].Text)
+	}
+}
+
+func TestCallGovernedTool(t *testing.T) {
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/internal/v1/mcp/repo-classification/tools/getRepoClassification" {
+			if got := r.Header.Get("X-AI-Orch-Session-ID"); got != "sess_123" {
+				t.Fatalf("expected session header sess_123, got %q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"classification": "internal"})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mock.Close()
+
+	cfg := &GatewayConfig{GovernanceURL: mock.URL, DevToken: "tok"}
+	s := NewServer("test", "1.0")
+	RegisterPhase1JTools(s, cfg)
+
+	resp := s.Handle(context.Background(), &Request{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params: mustRawMessage(map[string]any{
+			"name": "call_governed_tool",
+			"arguments": map[string]any{
+				"server_id":  "repo-classification",
+				"tool_name":  "getRepoClassification",
+				"arguments":  map[string]any{"repo_url": "https://example.com/repo"},
+				"session_id": "sess_123",
+			},
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %+v", resp.Error)
+	}
+	result := toolsCallResult(t, resp.Result)
+	if !strings.Contains(result.Content[0].Text, "internal") {
+		t.Fatalf("expected upstream response in result, got: %s", result.Content[0].Text)
 	}
 }
 

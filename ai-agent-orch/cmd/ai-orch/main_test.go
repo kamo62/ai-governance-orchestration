@@ -59,19 +59,19 @@ func TestStreamEventsFromURLReturnsPatchesWithoutError(t *testing.T) {
 func TestKillSwitchToggleRequestUsesPostToEnableAndDeleteToDisable(t *testing.T) {
 	cfg := Config{GovernanceURL: "http://governance"}
 
-	method, url := killSwitchToggleRequest(cfg, "agent", "test-generation", true)
+	method, url := killSwitchToggleRequest(cfg, "agent", "unit-tests", true)
 	if method != http.MethodPost {
 		t.Fatalf("enable method = %s, want POST", method)
 	}
-	if url != "http://governance/v1/admin/killswitch/agent/test-generation" {
+	if url != "http://governance/v1/admin/killswitch/agent/unit-tests" {
 		t.Fatalf("unexpected enable url %q", url)
 	}
 
-	method, url = killSwitchToggleRequest(cfg, "agent", "test-generation", false)
+	method, url = killSwitchToggleRequest(cfg, "agent", "unit-tests", false)
 	if method != http.MethodDelete {
 		t.Fatalf("disable method = %s, want DELETE", method)
 	}
-	if url != "http://governance/v1/admin/killswitch/agent/test-generation" {
+	if url != "http://governance/v1/admin/killswitch/agent/unit-tests" {
 		t.Fatalf("unexpected disable url %q", url)
 	}
 }
@@ -128,6 +128,27 @@ func TestDoRequestUsesDeveloperTokenForUserRoutes(t *testing.T) {
 
 	if _, err := doGet(context.Background(), cfg, server.URL+"/v1/agents"); err != nil {
 		t.Fatalf("developer request failed: %v", err)
+	}
+}
+
+func TestIsHelpOnly(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "long help", args: []string{"--help"}, want: true},
+		{name: "short help", args: []string{"-h"}, want: true},
+		{name: "prompt value", args: []string{"--prompt", "--help"}, want: false},
+		{name: "empty", args: nil, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isHelpOnly(tc.args); got != tc.want {
+				t.Fatalf("isHelpOnly(%#v) = %t, want %t", tc.args, got, tc.want)
+			}
+		})
 	}
 }
 

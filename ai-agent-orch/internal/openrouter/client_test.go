@@ -112,6 +112,31 @@ func TestChatCompletionRequiresAPIKey(t *testing.T) {
 	}
 }
 
+// TestChatCompletionRejectsForeignProvider verifies the native client fails fast
+// for a non-OpenRouter provider instead of silently dropping it and sending an
+// unqualified model id to OpenRouter.
+func TestChatCompletionRejectsForeignProvider(t *testing.T) {
+	client := NewClient(Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:0"})
+	req := ChatCompletionRequest{
+		Provider: "anthropic",
+		Model:    "claude-haiku-4-5-20251001",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	}
+	if _, err := client.ChatCompletion(context.Background(), req); err == nil {
+		t.Fatal("expected error for non-openrouter provider in ChatCompletion")
+	}
+	if _, err := client.ChatCompletionStream(context.Background(), req); err == nil {
+		t.Fatal("expected error for non-openrouter provider in ChatCompletionStream")
+	}
+
+	// The openrouter provider (and empty) must still be accepted past the guard.
+	okReq := ChatCompletionRequest{Provider: "openrouter", Model: "x/y", Messages: req.Messages}
+	if _, err := client.ChatCompletion(context.Background(), okReq); err != nil &&
+		strings.Contains(err.Error(), "cannot route provider") {
+		t.Fatalf("openrouter provider must pass the guard, got %v", err)
+	}
+}
+
 func TestUsageUnmarshalAcceptsObjectCost(t *testing.T) {
 	var usage Usage
 	if err := json.Unmarshal([]byte(`{
@@ -221,5 +246,24 @@ func TestDecodeStreamChunkAcceptsDataPrefixWithoutSpace(t *testing.T) {
 	_, err = DecodeStreamChunk("data:[DONE]")
 	if err != io.EOF {
 		t.Fatalf("expected EOF for DONE without space, got %v", err)
+	}
+}
+
+func TestDecodeStreamChunkParsesUsageOnlyChunk(t *testing.T) {
+	chunk, err := DecodeStreamChunk(`data: {"id":"chunk_usage","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16,"cost":"0.00002","completion_tokens_details":{"reasoning_tokens":1}}}`)
+	if err != nil {
+		t.Fatalf("DecodeStreamChunk returned error: %v", err)
+	}
+	if chunk.Usage == nil {
+		t.Fatal("expected usage on stream chunk")
+	}
+	if chunk.Usage.PromptTokens != 12 || chunk.Usage.CompletionTokens != 4 || chunk.Usage.TotalTokens != 16 {
+		t.Fatalf("unexpected usage: %#v", chunk.Usage)
+	}
+	if chunk.Usage.Cost != 0.00002 {
+		t.Fatalf("expected parsed cost, got %v", chunk.Usage.Cost)
+	}
+	if chunk.Usage.CompletionTokensDetails.ReasoningTokens != 1 {
+		t.Fatalf("expected reasoning tokens, got %d", chunk.Usage.CompletionTokensDetails.ReasoningTokens)
 	}
 }

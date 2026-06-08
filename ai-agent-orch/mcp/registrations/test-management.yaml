@@ -5,7 +5,7 @@ endpoint: http://localhost:8097
 auth_mode: oauth-user
 credential_scope: user-scoped-read-only-stub
 allowed_agents:
-  - test-generation
+  - unit-tests
   - code-review
   - security-scan
   - security-review

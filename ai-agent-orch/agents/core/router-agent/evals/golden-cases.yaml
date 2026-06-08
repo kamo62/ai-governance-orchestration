@@ -1,6 +1,6 @@
 cases:
   - prompt: "Write Playwright tests for this login page."
-    expected_specialist: test-generation
+    expected_specialist: unit-tests
   - prompt: "Review this diff for bugs and risky changes."
     expected_specialist: code-review
   - prompt: "Improve the README for this package."
@@ -15,3 +15,7 @@ cases:
     expected_specialist: security-review
   - prompt: "Review this Terraform for security and cost."
     expected_specialist: terraform-review
+  - prompt: "Create a Go HTTP handler for a REST API endpoint."
+    expected_specialist: backend-development
+  - prompt: "Build a React component with TypeScript and CSS."
+    expected_specialist: frontend-development

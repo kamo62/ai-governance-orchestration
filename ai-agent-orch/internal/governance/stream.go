@@ -108,6 +108,21 @@ func (s *EventStore) Publish(sessionID string, event SessionEvent) {
 	}
 }
 
+// Reopen clears the closed flag so a follow-up turn can stream new events on the same session.
+func (s *EventStore) Reopen(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.closed, sessionID)
+	for i, id := range s.closedOrder {
+		if id == sessionID {
+			s.closedOrder = append(s.closedOrder[:i], s.closedOrder[i+1:]...)
+			break
+		}
+	}
+	delete(s.history, sessionID)
+	delete(s.chans, sessionID)
+}
+
 // Close marks a session as closed and notifies subscribers with a done event.
 func (s *EventStore) Close(sessionID string) {
 	s.mu.Lock()

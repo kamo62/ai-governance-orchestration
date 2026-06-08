@@ -3,8 +3,10 @@ import { describe, expect, test } from 'bun:test';
 import {
     buildContextualPrompt,
     contextSummary,
+    parseBranchWorkItem,
     parseGitBranch,
     parseGitRemote,
+    preserveExplicitContextAttachments,
     sanitiseRepositoryURL,
 } from '../src/bridgeWorkspace';
 
@@ -51,6 +53,52 @@ describe('Bridge workspace context helpers', () => {
     url = git@github.com:org/upstream.git
 `;
         expect(parseGitRemote(config)).toBe('https://example.com/org/repo.git');
+    });
+
+    test('parses branch work item metadata', () => {
+        expect(parseBranchWorkItem('frontend/APP-123-navigation')).toEqual({
+            workItemId: 'APP-123',
+            workItemType: 'frontend',
+            sourceSystem: 'jira',
+        });
+        expect(parseBranchWorkItem('backend/APP-124-api')).toEqual({
+            workItemId: 'APP-124',
+            workItemType: 'backend',
+            sourceSystem: 'jira',
+        });
+        expect(parseBranchWorkItem('users/kamo/ADO-456-fix')).toEqual({
+            workItemId: 'ADO-456',
+            workItemType: 'feature',
+            sourceSystem: 'ado',
+        });
+        expect(parseBranchWorkItem('bugfix/123-login')).toEqual({
+            workItemId: '123',
+            workItemType: 'bugfix',
+            sourceSystem: 'github',
+        });
+    });
+
+    test('preserves explicit attachments across fresh workspace scans', () => {
+        const merged = preserveExplicitContextAttachments(
+            {
+                workspaceName: 'demo',
+                branch: 'main',
+                activeFile: 'src/current.ts',
+            },
+            {
+                attachedFiles: [{ path: 'src/attached.ts', excerpt: 'export const kept = true;' }],
+                searchHits: [{ path: 'src/search.ts', line: 12, preview: 'function searchHit' }],
+                terminalExcerpt: 'last test output',
+                localToolNotes: ['local note'],
+            }
+        );
+
+        expect(merged.workspaceName).toBe('demo');
+        expect(merged.activeFile).toBe('src/current.ts');
+        expect(merged.attachedFiles?.[0].path).toBe('src/attached.ts');
+        expect(merged.searchHits?.[0].preview).toBe('function searchHit');
+        expect(merged.terminalExcerpt).toBe('last test output');
+        expect(merged.localToolNotes?.[0]).toBe('local note');
     });
 
     test('summarises context without leaking selected text', () => {

@@ -12,6 +12,8 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/catalog-validator ./cmd/catalog-validator \
 	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/governance-shell ./cmd/governance-shell \
 	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/openrouter-smoke ./cmd/openrouter-smoke \
+	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/opencode-smoke ./cmd/opencode-smoke \
+	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/beta-gateway-smoke ./cmd/beta-gateway-smoke \
 	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/orchestrator ./cmd/orchestrator \
 	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/ai-orch ./cmd/ai-orch \
 	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mcp-repo-classification ./cmd/mcp-repo-classification \
@@ -29,6 +31,8 @@ WORKDIR /app
 COPY --from=build /out/catalog-validator /usr/local/bin/catalog-validator
 COPY --from=build /out/governance-shell /usr/local/bin/governance-shell
 COPY --from=build /out/openrouter-smoke /usr/local/bin/openrouter-smoke
+COPY --from=build /out/opencode-smoke /usr/local/bin/opencode-smoke
+COPY --from=build /out/beta-gateway-smoke /usr/local/bin/beta-gateway-smoke
 COPY --from=build /out/orchestrator /usr/local/bin/orchestrator
 COPY --from=build /out/ai-orch /usr/local/bin/ai-orch
 COPY --from=build /out/mcp-repo-classification /usr/local/bin/mcp-repo-classification

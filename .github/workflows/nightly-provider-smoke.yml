@@ -1,0 +1,33 @@
+name: Nightly Provider Smoke
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provider-smoke:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./ai-agent-orch
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Provider gateway and governed-run smoke
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "OPENROUTER_API_KEY secret is not configured; skipping provider smoke."
+            exit 0
+          fi
+          docker compose -f docker-compose.yml -f docker-compose.provider.yml --profile provider up -d bifrost orchestrator governance-shell
+          docker compose -f docker-compose.yml -f docker-compose.provider.yml --profile provider run --rm provider-gateway-smoke
+          docker compose -f docker-compose.yml -f docker-compose.provider.yml --profile provider run --rm provider-run-smoke
+          docker compose -f docker-compose.yml -f docker-compose.provider.yml --profile provider down --remove-orphans

@@ -223,17 +223,18 @@ func generateAGENTSMarkdown(gatewayURL string) string {
 		"## Workflow\n\n"+
 		"1. **Start a governed session** before agentic engineering work.\n"+
 		"   Use the `start_governed_session` tool.\n"+
-		"2. **Attach context** (use-case, workflow, repo, branch, intent) when available.\n"+
+		"2. **Attach context** with `create_context_manifest`, `attach_use_case` and `attach_workflow` when available.\n"+
 		"3. **Delegate substantial work** through `delegate_governed_work`.\n"+
 		"   Do not call provider models directly for governed work.\n"+
-		"4. **Submit patch proposals** through the gateway, not via direct file writes.\n"+
-		"5. **Record patch decisions** with `record_patch_decision`.\n"+
-		"6. **Lookup audit** with `lookup_audit` to verify governance metadata.\n\n"+
+		"4. **Use upstream tools** through `list_allowed_tools` and `call_governed_tool` with the governed session ID for repo classification, documentation, tests and issue tracking.\n"+
+		"5. **Submit patch proposals** through the gateway, not via direct file writes.\n"+
+		"6. **Record patch decisions** with `record_patch_decision`.\n"+
+		"7. **Lookup audit** with `lookup_audit` to verify governance metadata.\n\n"+
 		"## Trust Levels\n\n"+
 		"- `gateway_enforced`: work that routed through the MCP Gateway and was evaluated by the Governance Shell.\n"+
 		"- `managed_client`: work from a managed client path where setup is controlled, but enforcement still differs from gateway-routed tools.\n"+
 		"- `self_reported`: work that the agent reports natively but did not route through the gateway.\n\n"+
-		"Always prefer gateway_enforced paths for file-changing, model-calling and tool-calling work.\n\n"+
+		"Trust levels are observations for audit and reporting. They describe how the work was run; they are not permission settings.\n\n"+
 		"## Security\n\n"+
 		"- Do not paste raw secrets, API keys, or credentials into prompts.\n"+
 		"- Do not call provider models directly for governed work.\n"+
@@ -242,9 +243,14 @@ func generateAGENTSMarkdown(gatewayURL string) string {
 		"Available governed tools:\n\n"+
 		"- `mcp_doctor` — Check gateway health and configuration.\n"+
 		"- `start_governed_session` — Create a new governed session.\n"+
+		"- `create_context_manifest` — Create a bounded context manifest for a session.\n"+
+		"- `attach_use_case` — Register a use case in the governance registry.\n"+
+		"- `attach_workflow` — Register a workflow template in the governance registry.\n"+
 		"- `delegate_governed_work` — Route work to the Governance Shell model proxy.\n"+
 		"- `record_patch_decision` — Submit patch decisions (applied, rejected, partially_applied).\n"+
 		"- `lookup_audit` — Retrieve audit and evidence metadata.\n"+
+		"- `list_allowed_tools` — List upstream MCP tools available for a governed session.\n"+
+		"- `call_governed_tool` — Call an upstream MCP tool through the Governance Shell for a governed session.\n"+
 		"- `record_external_tool_call` — Self-report native tool calls.\n"+
 		"- `record_external_model_call` — Self-report native model calls.\n",
 		gatewayURL)

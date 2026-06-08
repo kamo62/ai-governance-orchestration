@@ -206,7 +206,7 @@ func compositionSessionStore(t *testing.T, sessionID string, actor string) *SQLi
 	if err := store.Create(context.Background(), SessionRecord{
 		SessionID:      sessionID,
 		ActorSubject:   actor,
-		Agent:          "test-generation",
+		Agent:          "unit-tests",
 		Classification: "internal",
 		PromptSHA256:   "abc123",
 		Status:         "created",

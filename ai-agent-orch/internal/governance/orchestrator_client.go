@@ -24,8 +24,8 @@ func NewOrchestratorHTTPClient(baseURL string, serviceToken string) *Orchestrato
 	}
 }
 
-func (c *OrchestratorHTTPClient) Route(ctx context.Context, sessionID string, prompt string) (RouteDecision, error) {
-	body, _ := json.Marshal(map[string]any{"prompt": prompt})
+func (c *OrchestratorHTTPClient) Route(ctx context.Context, sessionID string, prompt string, context SessionContext) (RouteDecision, error) {
+	body, _ := json.Marshal(map[string]any{"prompt": prompt, "context": context})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/orchestrator/route", bytes.NewReader(body))
 	if err != nil {
 		return RouteDecision{}, err

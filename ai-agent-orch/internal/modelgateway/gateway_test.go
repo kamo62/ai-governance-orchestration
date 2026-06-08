@@ -167,6 +167,9 @@ func TestGatewayChatCompletionsSuccess(t *testing.T) {
 	if events[0].TrustLevel != "gateway_enforced" {
 		t.Fatalf("expected gateway_enforced trust level, got %q", events[0].TrustLevel)
 	}
+	if events[0].EnforcementMode != "gateway" {
+		t.Fatalf("expected gateway enforcement mode, got %q", events[0].EnforcementMode)
+	}
 	if got := numericAuditValue(events[0].TokenUsage["total_tokens"]); got != 15 {
 		t.Fatalf("expected token usage in audit metadata, got %#v", events[0].TokenUsage)
 	}
@@ -300,6 +303,9 @@ func TestGatewayResponsesSuccess(t *testing.T) {
 	if events[0].EventType != "model.gateway_responses" {
 		t.Fatalf("expected responses audit event, got %q", events[0].EventType)
 	}
+	if events[0].EnforcementMode != "gateway" {
+		t.Fatalf("expected gateway enforcement mode, got %q", events[0].EnforcementMode)
+	}
 	if got := numericAuditValue(events[0].TokenUsage["total_tokens"]); got != 15 {
 		t.Fatalf("expected token usage in audit metadata, got %#v", events[0].TokenUsage)
 	}
@@ -353,6 +359,12 @@ func TestGatewayStreamTranslatesChunks(t *testing.T) {
 	if !streamClient.lastRequest.Stream {
 		t.Fatal("expected upstream stream request to set stream=true")
 	}
+	if streamClient.lastRequest.StreamOptions == nil || !streamClient.lastRequest.StreamOptions.IncludeUsage {
+		t.Fatalf("expected upstream stream request to ask for usage, got %#v", streamClient.lastRequest.StreamOptions)
+	}
+	if !strings.Contains(rec.Body.String(), `"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16}`) {
+		t.Fatalf("expected streamed usage frame, got: %s", rec.Body.String())
+	}
 	events, err := auditStore.EventsBySession(context.Background(), "sess_model_gateway")
 	if err != nil {
 		t.Fatalf("audit lookup: %v", err)
@@ -365,6 +377,15 @@ func TestGatewayStreamTranslatesChunks(t *testing.T) {
 	}
 	if events[0].ResponseSHA256 == "" {
 		t.Fatal("expected response hash on stream completion audit")
+	}
+	if got := numericAuditValue(events[0].TokenUsage["prompt_tokens"]); got != 12 {
+		t.Fatalf("expected prompt tokens in stream audit, got %#v", events[0].TokenUsage)
+	}
+	if got := numericAuditValue(events[0].TokenUsage["completion_tokens"]); got != 4 {
+		t.Fatalf("expected completion tokens in stream audit, got %#v", events[0].TokenUsage)
+	}
+	if got := floatAuditValue(events[0].TokenUsage["cost_usd"]); got != 0.00002 {
+		t.Fatalf("expected cost in stream audit, got %#v", events[0].TokenUsage)
 	}
 }
 
@@ -394,6 +415,7 @@ func (s *streamFakeClient) ChatCompletion(_ context.Context, _ openrouter.ChatCo
 func (s *streamFakeClient) ChatCompletionStream(_ context.Context, req openrouter.ChatCompletionRequest) (io.ReadCloser, error) {
 	s.lastRequest = req
 	data := `data: {"id":"chunk1","object":"chat.completion.chunk","model":"m1","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"}}]}` + "\n\n" +
+		`data: {"id":"chunk-usage","object":"chat.completion.chunk","model":"m1","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16,"cost":"0.00002"}}` + "\n\n" +
 		`data: [DONE]` + "\n\n"
 	return io.NopCloser(strings.NewReader(data)), nil
 }
@@ -406,6 +428,21 @@ func numericAuditValue(value any) int {
 		return int(v)
 	case float64:
 		return int(v)
+	default:
+		return 0
+	}
+}
+
+func floatAuditValue(value any) float64 {
+	switch v := value.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
 	default:
 		return 0
 	}

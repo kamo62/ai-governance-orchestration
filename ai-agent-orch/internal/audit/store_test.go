@@ -20,7 +20,7 @@ func TestFileStoreAppendsJSONLEvents(t *testing.T) {
 		SessionID:          "sess_1",
 		EventType:          "session.created",
 		Actor:              "local-dev",
-		Agent:              "test-generation",
+		Agent:              "unit-tests",
 		Classification:     "internal",
 		RawPromptStored:    false,
 		RawResponseStored:  false,

@@ -31,6 +31,9 @@ type Decision struct {
 	Reasons         []string `json:"reasons"`
 	FallbackChain   []string `json:"fallback_chain,omitempty"`
 	RejectedAliases []string `json:"rejected_aliases,omitempty"`
+	CostPosture     string   `json:"cost_posture,omitempty"`
+	LatencyPosture  string   `json:"latency_posture,omitempty"`
+	RequestedAlias  string   `json:"requested_alias,omitempty"`
 }
 
 // Router selects model aliases from the catalog registry based on governance context.
@@ -44,13 +47,19 @@ func New(registry catalog.ModelRegistry) *Router {
 }
 
 // Route selects the best model alias for the given request.
-// It filters by classification compatibility, then scores by task alignment.
+// It filters by classification compatibility, then scores by task alignment,
+// workflow stage, risk, cost sensitivity, latency sensitivity and evidence needs.
 func (r *Router) Route(ctx context.Context, req Request) (Decision, error) {
 	if r == nil || len(r.registry.Models) == 0 {
 		return Decision{}, errors.New("router not configured")
 	}
 
-	decision := Decision{Reasons: []string{}}
+	decision := Decision{
+		Reasons:        []string{},
+		CostPosture:    "controlled",
+		LatencyPosture: "balanced",
+		RequestedAlias: req.PreferredAlias,
+	}
 
 	// Build candidate list filtered by classification.
 	var candidates []catalog.ModelDefinition
@@ -75,6 +84,9 @@ func (r *Router) Route(ctx context.Context, req Request) (Decision, error) {
 				decision.Provider = m.Provider
 				decision.Reasons = append(decision.Reasons, fmt.Sprintf("preferred alias %q accepted", m.Alias))
 				decision.FallbackChain = buildFallbackChain(r.registry, m, req.Classification)
+				// Override postures based on request context even for preferred aliases.
+				decision.CostPosture = costPostureFromRequest(req)
+				decision.LatencyPosture = latencyPostureFromRequest(req)
 				return decision, nil
 			}
 		}
@@ -92,6 +104,19 @@ func (r *Router) Route(ctx context.Context, req Request) (Decision, error) {
 	decision.Provider = best.Provider
 	decision.Reasons = append(decision.Reasons, fmt.Sprintf("selected by task alignment: %s", best.Purpose))
 	decision.FallbackChain = buildFallbackChain(r.registry, best, req.Classification)
+	decision.CostPosture = costPostureFromRequest(req)
+	decision.LatencyPosture = latencyPostureFromRequest(req)
+
+	// Enrich reasons with workflow and risk context.
+	if req.WorkflowStage != "" {
+		decision.Reasons = append(decision.Reasons, fmt.Sprintf("workflow_stage: %s", req.WorkflowStage))
+	}
+	if req.RiskLevel != "" {
+		decision.Reasons = append(decision.Reasons, fmt.Sprintf("risk_level: %s", req.RiskLevel))
+	}
+	if req.EvidenceNeeds == "full" {
+		decision.Reasons = append(decision.Reasons, "evidence_required")
+	}
 
 	return decision, nil
 }
@@ -125,7 +150,6 @@ func selectBestCandidate(candidates []catalog.ModelDefinition, req Request) cata
 		return catalog.ModelDefinition{}
 	}
 
-	// Simple scoring: match keywords from task type and risk level against purpose.
 	var best catalog.ModelDefinition
 	bestScore := -1
 
@@ -145,6 +169,7 @@ func scoreCandidate(m catalog.ModelDefinition, req Request) int {
 	purpose := strings.ToLower(m.Purpose)
 	task := strings.ToLower(req.TaskType)
 	risk := strings.ToLower(req.RiskLevel)
+	workflow := strings.ToLower(req.WorkflowStage)
 
 	// Task type alignment
 	switch task {
@@ -170,6 +195,22 @@ func scoreCandidate(m catalog.ModelDefinition, req Request) int {
 		}
 	}
 
+	// Workflow stage alignment
+	switch workflow {
+	case "draft", "investigate":
+		if strings.Contains(purpose, "fast") || strings.Contains(purpose, "economy") {
+			score += 4
+		}
+	case "review", "verify":
+		if strings.Contains(purpose, "highest-quality") || strings.Contains(purpose, "security") || strings.Contains(purpose, "review") {
+			score += 4
+		}
+	case "execute", "merge":
+		if strings.Contains(purpose, "coding") || strings.Contains(purpose, "implementation") {
+			score += 4
+		}
+	}
+
 	// Risk level alignment
 	if risk == "high" {
 		if strings.Contains(purpose, "highest-quality") || strings.Contains(purpose, "security") || strings.Contains(purpose, "deep") {
@@ -183,19 +224,56 @@ func scoreCandidate(m catalog.ModelDefinition, req Request) int {
 
 	// Cost sensitivity
 	if strings.ToLower(req.CostSensitivity) == "high" {
-		if strings.Contains(purpose, "economy") || strings.Contains(purpose, "cheap") {
+		if strings.Contains(purpose, "economy") || strings.Contains(purpose, "cheap") || strings.Contains(purpose, "fast") {
+			score += 3
+		}
+	} else if strings.ToLower(req.CostSensitivity) == "low" {
+		if strings.Contains(purpose, "highest-quality") || strings.Contains(purpose, "deep") {
+			score += 3
+		}
+	}
+
+	// Latency sensitivity
+	if strings.ToLower(req.LatencySensitivity) == "high" {
+		if strings.Contains(purpose, "fast") || strings.Contains(purpose, "economy") {
+			score += 3
+		}
+	} else if strings.ToLower(req.LatencySensitivity) == "low" {
+		if strings.Contains(purpose, "highest-quality") || strings.Contains(purpose, "deep") || strings.Contains(purpose, "reasoning") {
 			score += 3
 		}
 	}
 
 	// Evidence needs
 	if strings.ToLower(req.EvidenceNeeds) == "full" {
-		if strings.Contains(purpose, "highest-quality") || strings.Contains(purpose, "security") {
+		if strings.Contains(purpose, "highest-quality") || strings.Contains(purpose, "security") || strings.Contains(purpose, "review") {
 			score += 3
 		}
 	}
 
 	return score
+}
+
+func costPostureFromRequest(req Request) string {
+	switch strings.ToLower(req.CostSensitivity) {
+	case "high":
+		return "economy"
+	case "low":
+		return "performance"
+	default:
+		return "controlled"
+	}
+}
+
+func latencyPostureFromRequest(req Request) string {
+	switch strings.ToLower(req.LatencySensitivity) {
+	case "high":
+		return "fast"
+	case "low":
+		return "thorough"
+	default:
+		return "balanced"
+	}
 }
 
 func buildFallbackChain(registry catalog.ModelRegistry, start catalog.ModelDefinition, classification string) []string {

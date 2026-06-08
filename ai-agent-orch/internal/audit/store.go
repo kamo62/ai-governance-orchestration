@@ -46,6 +46,17 @@ type Event struct {
 	TokenUsage         map[string]any `json:"token_usage,omitempty"`
 	GatewayBackend     string         `json:"gateway_backend,omitempty"`
 	TrustLevel         string         `json:"trust_level,omitempty"`
+	EnforcementMode    string         `json:"enforcement_mode,omitempty"`
+	PolicyDecisionID   string         `json:"policy_decision_id,omitempty"`
+	RunID              string         `json:"run_id,omitempty"`
+	PermissionMode     string         `json:"permission_mode,omitempty"`
+	ApprovalMode       string         `json:"approval_mode,omitempty"`
+	WorkspaceMode      string         `json:"workspace_mode,omitempty"`
+	WorkItemID         string         `json:"work_item_id,omitempty"`
+	WorkItemType       string         `json:"work_item_type,omitempty"`
+	CommitSHA          string         `json:"commit_sha,omitempty"`
+	ActorHint          string         `json:"actor_hint,omitempty"`
+	SourceSystem       string         `json:"source_system,omitempty"`
 	RawPromptStored    bool           `json:"raw_prompt_stored"`
 	RawResponseStored  bool           `json:"raw_response_stored"`
 	CorrelationSubject string         `json:"correlation_subject,omitempty"`

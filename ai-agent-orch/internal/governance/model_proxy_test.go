@@ -71,6 +71,9 @@ func TestModelProxyForwardsWithProviderKeyAndAuditsHashes(t *testing.T) {
 	if event.TrustLevel != "gateway_enforced" {
 		t.Fatalf("expected gateway_enforced trust level, got %q", event.TrustLevel)
 	}
+	if event.EnforcementMode != "gateway" {
+		t.Fatalf("expected gateway enforcement mode, got %q", event.EnforcementMode)
+	}
 }
 
 func TestModelProxyRejectsMissingServiceToken(t *testing.T) {

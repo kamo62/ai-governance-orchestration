@@ -35,7 +35,7 @@ allowed_agents:
   - read-only
   - not-tests
   - duplicate
-  - test-generation
+  - unit-tests
 `)
 }
 

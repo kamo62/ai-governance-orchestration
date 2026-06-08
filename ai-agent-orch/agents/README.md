@@ -105,7 +105,7 @@ The catalog validator enforces these rules on every refresh:
 - `agent.config.yaml` must use model **aliases** only (defined in `models/registry.yaml`)
 - MCP servers referenced must exist in `mcp/registrations/`
 - Read-only agents (`workspace_write: deny`) cannot have `write_file` in `tools_allowed`
-- Only `test-generation` can use `run_command:playwright`
+- Only `unit-tests` can use `run_command:playwright`
 - `published/` agents must have `phase: published`, `version >= 1.0.0`, and `evals.required_for_phase0: true`
 - Router golden cases must cover all temporary and published agents
 

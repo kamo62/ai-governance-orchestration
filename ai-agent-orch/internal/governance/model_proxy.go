@@ -111,6 +111,7 @@ func (h *ModelProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			TokenUsage:         tokenUsage(resp.Usage),
 			GatewayBackend:     h.backend.Name(),
 			TrustLevel:         "gateway_enforced",
+			EnforcementMode:    "gateway",
 			RawPromptStored:    false,
 			RawResponseStored:  false,
 			CorrelationSubject: "governance-shell",

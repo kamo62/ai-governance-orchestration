@@ -163,3 +163,78 @@ func TestRouterAliasesFiltered(t *testing.T) {
 		t.Fatalf("expected 1 internal alias, got %v", aliases)
 	}
 }
+
+func TestRouterEnrichmentPostures(t *testing.T) {
+	r := New(catalog.ModelRegistry{
+		Models: []catalog.ModelDefinition{
+			{Alias: "coding-primary", Provider: "openrouter", ModelID: "m1", Purpose: "Highest-quality coding", AllowedClassifications: []string{"public", "internal"}},
+		},
+	})
+
+	decision, err := r.Route(context.Background(), Request{
+		TaskType:           "coding",
+		Classification:     "internal",
+		WorkflowStage:      "review",
+		RiskLevel:          "high",
+		CostSensitivity:    "low",
+		LatencySensitivity: "low",
+		EvidenceNeeds:      "full",
+	})
+	if err != nil {
+		t.Fatalf("route failed: %v", err)
+	}
+	if decision.CostPosture != "performance" {
+		t.Fatalf("expected performance cost posture, got %q", decision.CostPosture)
+	}
+	if decision.LatencyPosture != "thorough" {
+		t.Fatalf("expected thorough latency posture, got %q", decision.LatencyPosture)
+	}
+	if len(decision.Reasons) == 0 {
+		t.Fatal("expected enriched reasons")
+	}
+	found := false
+	for _, r := range decision.Reasons {
+		if r == "evidence_required" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected evidence_required in reasons, got %v", decision.Reasons)
+	}
+}
+
+func TestRouterScoresByWorkflowStage(t *testing.T) {
+	r := New(catalog.ModelRegistry{
+		Models: []catalog.ModelDefinition{
+			{Alias: "coding-fast", Provider: "openrouter", ModelID: "m1", Purpose: "Fast economy coding", AllowedClassifications: []string{"public", "internal"}},
+			{Alias: "coding-deep", Provider: "openrouter", ModelID: "m2", Purpose: "Highest-quality coding review", AllowedClassifications: []string{"public", "internal"}},
+		},
+	})
+
+	// Draft stage should prefer fast/economy model
+	decision, err := r.Route(context.Background(), Request{
+		TaskType:       "coding",
+		Classification: "internal",
+		WorkflowStage:  "draft",
+	})
+	if err != nil {
+		t.Fatalf("route failed: %v", err)
+	}
+	if decision.SelectedAlias != "coding-fast" {
+		t.Fatalf("expected coding-fast for draft stage, got %q", decision.SelectedAlias)
+	}
+
+	// Review stage should prefer deep/quality model
+	decision, err = r.Route(context.Background(), Request{
+		TaskType:       "coding",
+		Classification: "internal",
+		WorkflowStage:  "review",
+	})
+	if err != nil {
+		t.Fatalf("route failed: %v", err)
+	}
+	if decision.SelectedAlias != "coding-deep" {
+		t.Fatalf("expected coding-deep for review stage, got %q", decision.SelectedAlias)
+	}
+}
