@@ -311,6 +311,37 @@ func TestGatewayResponsesSuccess(t *testing.T) {
 	}
 }
 
+func TestGatewayResponsesAcceptsStringInput(t *testing.T) {
+	backend := &fakeChatClient{
+		resp: openrouter.ChatCompletionResponse{
+			ID:    "chatcmpl-test",
+			Model: "anthropic/claude-opus-4.7",
+			Choices: []struct {
+				Message openrouter.Message `json:"message"`
+			}{
+				{Message: openrouter.Message{Role: "assistant", Content: "Hello"}},
+			},
+			Usage: openrouter.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+	}
+	g := newTestGatewayWithBackend(backend, audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")))
+	body := []byte(`{"model":"coding-primary","input":"hello"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-test-token")
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_model_gateway")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(backend.lastRequest.Messages) != 1 {
+		t.Fatalf("expected one upstream message, got %#v", backend.lastRequest.Messages)
+	}
+	if got := backend.lastRequest.Messages[0]; got.Role != "user" || got.Content != "hello" {
+		t.Fatalf("expected string input to become user message, got %#v", got)
+	}
+}
+
 func TestGatewayResponsesRequiresSessionID(t *testing.T) {
 	g := newTestGateway()
 	body := []byte(`{"model":"coding-primary","input":[{"role":"user","content":"hello"}]}`)

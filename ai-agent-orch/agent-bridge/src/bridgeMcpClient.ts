@@ -17,7 +17,11 @@ export class BridgeMcpClient {
 
     private headers(sessionId: string, extra: Record<string, string> = {}): Record<string, string> {
         return authHeadersForBridge(
-            { devToken: this.settings.devToken, identity: this.settings.identity },
+            {
+                devToken: this.settings.devToken,
+                identity: this.settings.identity,
+                trustedClientToken: this.settings.trustedClientToken,
+            },
             {
                 'X-AI-Orch-Session-ID': sessionId,
                 'Content-Type': 'application/json',

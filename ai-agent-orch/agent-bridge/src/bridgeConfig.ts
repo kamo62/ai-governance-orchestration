@@ -6,7 +6,9 @@ export interface RawBridgeSettings {
     configuredGovernanceUrl?: string;
     configuredDevToken?: string;
     configuredIdentity?: string;
+    configuredTrustedClientToken?: string;
     envDevToken?: string;
+    envTrustedClientToken?: string;
     secretDevToken?: string;
 }
 
@@ -14,6 +16,7 @@ export interface BridgeSettings {
     governanceUrl: string;
     devToken: string;
     identity: string;
+    trustedClientToken: string;
 }
 
 export interface BridgeConnectionStatusInput {
@@ -70,6 +73,7 @@ export function resolveBridgeSettings(raw: RawBridgeSettings): BridgeSettings {
         governanceUrl: normalizeGovernanceUrl(raw.configuredGovernanceUrl),
         devToken: firstNonBlank(raw.secretDevToken, raw.configuredDevToken, raw.envDevToken),
         identity: firstNonBlank(raw.configuredIdentity) || DEFAULT_IDENTITY,
+        trustedClientToken: firstNonBlank(raw.configuredTrustedClientToken, raw.envTrustedClientToken),
     };
 }
 

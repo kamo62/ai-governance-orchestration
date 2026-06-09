@@ -114,7 +114,7 @@ func RunGatewaySmoke(ctx context.Context, cfg Config) error {
 	chatBody, _ := json.Marshal(map[string]any{
 		"model": cfg.ModelAlias,
 		"messages": []map[string]string{
-			{"role": "user", "content": cfg.Prompt},
+			{"role": "user", "content": prompt},
 		},
 		"temperature": 0,
 		"max_tokens":  32,

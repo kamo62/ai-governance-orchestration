@@ -30,7 +30,11 @@ export class GovernanceClient {
 
     authHeaders(extra: Record<string, string> = {}): Record<string, string> {
         return authHeadersForBridge(
-            { devToken: this.settings.devToken, identity: this.settings.identity },
+            {
+                devToken: this.settings.devToken,
+                identity: this.settings.identity,
+                trustedClientToken: this.settings.trustedClientToken,
+            },
             extra
         );
     }

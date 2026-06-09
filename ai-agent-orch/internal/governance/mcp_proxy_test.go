@@ -119,6 +119,38 @@ func TestMCPProxyCatalogWithDevToken(t *testing.T) {
 	}
 }
 
+func TestMCPProxyRejectsDevTokenSessionOwnershipMismatch(t *testing.T) {
+	var backendCalled bool
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalled = true
+	}))
+	defer backend.Close()
+
+	handler := NewMCPProxyHandler(MCPProxyConfig{
+		DevToken: "dev-token",
+		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+		Sessions: mcpSessionStore(t, "sess_mcp", "documentation", "internal"),
+		Registrations: map[string]MCPProxyRegistration{
+			"docs": {Endpoint: backend.URL, AuthMode: "none", AllowedAgents: []string{"documentation"}, ToolAllow: []string{"search"}},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/mcp/docs/tools/search", strings.NewReader(`{"query":"abc"}`))
+	req.Header.Set("Authorization", "Bearer dev-token")
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_mcp")
+	req.Header.Set("X-AI-Orch-Local-Identity", "other-dev")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if backendCalled {
+		t.Fatal("backend must not be called for another actor's session")
+	}
+}
+
 func TestMCPProxyForwardsDirectPath(t *testing.T) {
 	var gotPath string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -19,6 +19,7 @@ export interface PatchEnvelope {
 export interface BridgeAuthSettings {
     devToken: string;
     identity: string;
+    trustedClientToken?: string;
 }
 
 export interface SessionEvent {
@@ -62,7 +63,7 @@ export function authHeadersForBridge(settings: BridgeAuthSettings, extra: Record
     if (!token) {
         throw new Error('AI Agent Bridge developer token is required.');
     }
-    return {
+    const headers: Record<string, string> = {
         Authorization: `Bearer ${token}`,
         'X-AI-Orch-Client': 'ai-agent-bridge',
         'X-AI-Orch-Local-Identity': settings.identity,
@@ -70,6 +71,11 @@ export function authHeadersForBridge(settings: BridgeAuthSettings, extra: Record
         'X-AI-Orch-Enforcement-Mode': 'managed',
         ...extra,
     };
+    const trustedClientToken = settings.trustedClientToken?.trim();
+    if (trustedClientToken) {
+        headers['X-AI-Orch-Trusted-Client-Token'] = trustedClientToken;
+    }
+    return headers;
 }
 
 export function parseSessionEventLine(line: string): SessionEvent | undefined {

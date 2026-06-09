@@ -36,6 +36,7 @@ func (s StaticUserTokenStore) Token(_ context.Context, userID string, serverID s
 type MCPProxyConfig struct {
 	ServiceToken      string
 	DevToken          string
+	Authorizer        RequestAuthorizer
 	Audit             audit.Store
 	Sessions          SessionStore
 	Registrations     map[string]MCPProxyRegistration
@@ -49,6 +50,7 @@ type MCPProxyConfig struct {
 type MCPProxyHandler struct {
 	serviceToken      string
 	devToken          string
+	authorizer        RequestAuthorizer
 	audit             audit.Store
 	sessions          SessionStore
 	registrations     map[string]MCPProxyRegistration
@@ -75,6 +77,7 @@ func NewMCPProxyHandler(cfg MCPProxyConfig) http.Handler {
 	return &MCPProxyHandler{
 		serviceToken:      cfg.ServiceToken,
 		devToken:          cfg.DevToken,
+		authorizer:        cfg.Authorizer,
 		audit:             cfg.Audit,
 		sessions:          cfg.Sessions,
 		registrations:     cfg.Registrations,
@@ -87,14 +90,15 @@ func NewMCPProxyHandler(cfg MCPProxyConfig) http.Handler {
 }
 
 func (h *MCPProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !h.authorized(r) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+	authReq, auth, ok := h.requireAuthorizedRequest(w, r)
+	if !ok {
 		return
 	}
+	r = authReq
 
 	// Catalog endpoint: list registered MCP servers and their tools.
 	if r.Method == http.MethodGet && isMCPCatalogPath(r.URL.Path) {
-		record, ok := h.requireSessionRecord(w, r)
+		record, ok := h.requireSessionRecord(w, r, auth)
 		if !ok {
 			return
 		}
@@ -118,7 +122,7 @@ func (h *MCPProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	record, ok := h.requireSessionRecord(w, r)
+	record, ok := h.requireSessionRecord(w, r, auth)
 	if !ok {
 		return
 	}
@@ -201,7 +205,7 @@ func (h *MCPProxyHandler) handleCatalog(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
 }
 
-func (h *MCPProxyHandler) requireSessionRecord(w http.ResponseWriter, r *http.Request) (SessionRecord, bool) {
+func (h *MCPProxyHandler) requireSessionRecord(w http.ResponseWriter, r *http.Request, auth mcpProxyAuth) (SessionRecord, bool) {
 	sessionID := r.Header.Get("X-AI-Orch-Session-ID")
 	if sessionID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id is required"})
@@ -214,6 +218,10 @@ func (h *MCPProxyHandler) requireSessionRecord(w http.ResponseWriter, r *http.Re
 	record, err := h.sessions.Get(r.Context(), sessionID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+		return SessionRecord{}, false
+	}
+	if !auth.Service && record.ActorSubject != auth.Subject {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
 		return SessionRecord{}, false
 	}
 	return record, true
@@ -294,15 +302,39 @@ func (h *MCPProxyHandler) auditMCP(ctx context.Context, record SessionRecord, se
 	return err
 }
 
-func (h *MCPProxyHandler) authorized(r *http.Request) bool {
+type mcpProxyAuth struct {
+	Subject string
+	Service bool
+}
+
+func (h *MCPProxyHandler) requireAuthorizedRequest(w http.ResponseWriter, r *http.Request) (*http.Request, mcpProxyAuth, bool) {
 	auth := r.Header.Get("Authorization")
 	if h.serviceToken != "" && authorizedBearer(auth, h.serviceToken) {
-		return true
+		return r, mcpProxyAuth{Service: true}, true
+	}
+	if h.authorizer != nil {
+		subject, ok := h.authorizer.Validate(r.Context(), auth)
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+			return r, mcpProxyAuth{}, false
+		}
+		r = r.WithContext(WithAuthInfo(r.Context(), AuthInfo{Subject: subject, Method: "oidc"}))
+		return r, mcpProxyAuth{Subject: subject}, true
 	}
 	if h.devToken != "" && authorizedBearer(auth, h.devToken) {
-		return true
+		subject := "local-dev"
+		if localIdentity := r.Header.Get("X-AI-Orch-Local-Identity"); localIdentity != "" {
+			if !validActorLabel(localIdentity) {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid local identity"})
+				return r, mcpProxyAuth{}, false
+			}
+			subject = localIdentity
+		}
+		r = r.WithContext(WithAuthInfo(r.Context(), AuthInfo{Subject: subject, Method: "dev"}))
+		return r, mcpProxyAuth{Subject: subject}, true
 	}
-	return false
+	writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+	return r, mcpProxyAuth{}, false
 }
 
 func isMCPCatalogPath(path string) bool {

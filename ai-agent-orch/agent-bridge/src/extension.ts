@@ -141,7 +141,9 @@ async function refreshBridgeSettings(context: vscode.ExtensionContext): Promise<
         configuredGovernanceUrl: config.get<string>('governanceUrl'),
         configuredDevToken: config.get<string>('devToken'),
         configuredIdentity: config.get<string>('identity'),
+        configuredTrustedClientToken: config.get<string>('trustedClientToken'),
         envDevToken: process.env.AI_ORCH_DEV_TOKEN,
+        envTrustedClientToken: process.env.AI_ORCH_TRUSTED_CLIENT_TOKEN,
         secretDevToken: await context.secrets.get(DEV_TOKEN_SECRET_KEY),
     });
 

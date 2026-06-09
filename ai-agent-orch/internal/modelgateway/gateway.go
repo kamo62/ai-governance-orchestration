@@ -4,6 +4,7 @@ package modelgateway
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -690,13 +691,36 @@ type openAIMessageDelta struct {
 // OpenAI Responses API types.
 
 type openAIResponsesRequest struct {
-	Model string                 `json:"model"`
-	Input []openAIResponsesInput `json:"input"`
+	Model string                  `json:"model"`
+	Input openAIResponsesInputSet `json:"input"`
 }
 
 type openAIResponsesInput struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+type openAIResponsesInputSet []openAIResponsesInput
+
+func (s *openAIResponsesInputSet) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var input string
+		if err := json.Unmarshal(trimmed, &input); err != nil {
+			return err
+		}
+		*s = []openAIResponsesInput{{Role: "user", Content: input}}
+		return nil
+	}
+	var items []openAIResponsesInput
+	if err := json.Unmarshal(trimmed, &items); err != nil {
+		return err
+	}
+	*s = items
+	return nil
 }
 
 type openAIResponsesResponse struct {

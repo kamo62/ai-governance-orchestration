@@ -206,6 +206,7 @@ func main() {
 	mcpProxy := governance.NewMCPProxyHandler(governance.MCPProxyConfig{
 		ServiceToken:      cfg.ServiceToken,
 		DevToken:          cfg.DevToken,
+		Authorizer:        requestAuthorizer,
 		Audit:             auditStore,
 		Sessions:          sessionStore,
 		Registrations:     defaultMCPRegistrations(cfg.CatalogRoot, cfg.ClassificationMax),

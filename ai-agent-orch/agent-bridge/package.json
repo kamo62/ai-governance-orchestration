@@ -162,6 +162,12 @@
           "scope": "machine",
           "description": "Identity label for audit and session attribution (e.g., developer, ci-bot, review-assistant)."
         },
+        "aiAgentBridge.trustedClientToken": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Trusted client token sent as X-AI-Orch-Trusted-Client-Token. Falls back to AI_ORCH_TRUSTED_CLIENT_TOKEN."
+        },
         "aiAgentBridge.autoConfirmSpecialist": {
           "type": "boolean",
           "default": false,
