@@ -29,6 +29,9 @@ type Config struct {
 	AgentGatewayAPIKey          string // Optional agentgateway bearer token if enabled.
 	AgentGatewayReadinessURL    string // Optional agentgateway readiness URL, usually on the management/readiness port.
 	EnableServerContextResolver bool   // Local-dev only git context fallback.
+	RequireWorkItem             bool   // Require a branch or explicit work item ID before creating governed sessions.
+	BackendControlEnabled       bool   // Allow admin UI to run docker compose backend controls.
+	BackendControlWorkDir       string // Directory containing docker-compose files for backend controls.
 	TrustedClientToken          string // Shared secret that gates privileged audit trust levels (gateway_enforced, managed_client).
 }
 
@@ -50,6 +53,14 @@ func Load(args []string) (Config, error) {
 		return Config{}, err
 	}
 	enableServerContextResolver, err := envBool("AI_ORCH_ENABLE_SERVER_CONTEXT_RESOLVER", false)
+	if err != nil {
+		return Config{}, err
+	}
+	requireWorkItem, err := envBool("AI_ORCH_REQUIRE_WORK_ITEM", false)
+	if err != nil {
+		return Config{}, err
+	}
+	backendControlEnabled, err := envBool("AI_ORCH_BACKEND_CONTROL_ENABLED", false)
 	if err != nil {
 		return Config{}, err
 	}
@@ -75,6 +86,9 @@ func Load(args []string) (Config, error) {
 		AgentGatewayAPIKey:          envOrDefault("AI_ORCH_AGENTGATEWAY_API_KEY", ""),
 		AgentGatewayReadinessURL:    envOrDefault("AI_ORCH_AGENTGATEWAY_READINESS_URL", ""),
 		EnableServerContextResolver: enableServerContextResolver,
+		RequireWorkItem:             requireWorkItem,
+		BackendControlEnabled:       backendControlEnabled,
+		BackendControlWorkDir:       envOrDefault("AI_ORCH_BACKEND_CONTROL_WORKDIR", "."),
 		TrustedClientToken:          envOrDefault("AI_ORCH_TRUSTED_CLIENT_TOKEN", ""),
 	}
 
@@ -100,6 +114,9 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.AgentGatewayAPIKey, "agentgateway-api-key", cfg.AgentGatewayAPIKey, "optional agentgateway bearer token")
 	fs.StringVar(&cfg.AgentGatewayReadinessURL, "agentgateway-readiness-url", cfg.AgentGatewayReadinessURL, "optional agentgateway readiness URL")
 	fs.BoolVar(&cfg.EnableServerContextResolver, "enable-server-context-resolver", cfg.EnableServerContextResolver, "enable local-dev server-side git context fallback")
+	fs.BoolVar(&cfg.RequireWorkItem, "require-work-item", cfg.RequireWorkItem, "require work item ID from branch or request before governed sessions")
+	fs.BoolVar(&cfg.BackendControlEnabled, "backend-control-enabled", cfg.BackendControlEnabled, "allow admin UI to run docker compose backend controls")
+	fs.StringVar(&cfg.BackendControlWorkDir, "backend-control-workdir", cfg.BackendControlWorkDir, "directory containing docker-compose files for backend controls")
 	fs.StringVar(&cfg.TrustedClientToken, "trusted-client-token", cfg.TrustedClientToken, "shared secret that gates privileged audit trust levels")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err

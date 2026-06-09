@@ -32,6 +32,8 @@ Request (required fields):
 
 Response includes `run_id`, `session_id`, `specialist`, `status`, and `events_url`.
 
+When `AI_ORCH_REQUIRE_WORK_ITEM=true`, the shell rejects governed runs unless the session has a work item ID and a feature branch containing that ID. Example branch: `feature/OMENG-300-governance-fixes`. The work item may come from branch parsing or an explicit `work_item_id` field.
+
 ## Session lifecycle
 
 | Method | Path | Purpose |
@@ -75,6 +77,12 @@ MCP tool `start_governed_run` mirrors `POST /v1/runs` for MCP-native clients.
 | `GET` | `/healthz` | Liveness |
 | `GET` | `/readyz` | Readiness (includes catalog validation) |
 | `GET` | `/v1/system/status` | Version, backend, gateway posture |
+| `GET` | `/v1/backends` | Current backend, available backend options and compose commands |
+| `POST` | `/v1/backends` | Admin-only backend start/stop when backend control is enabled |
+| `POST` | `/v1/copilot/login/start` | Start GitHub Copilot device auth for the current actor |
+| `GET` | `/v1/copilot/login/{id}` | Poll Copilot device auth status |
+| `GET` | `/v1/copilot/status` | Copilot token status for current actor |
+| `GET` | `/v1/copilot/models` | Live Copilot models for current actor |
 | `GET` | `/v1/audit/sessions/{id}` | Session audit events (hashes only; no raw prompts) + `usage_summary` |
 | `GET` | `/v1/use-cases` | List registered use cases (Bridge/POC seed defaults) |
 | `GET` | `/v1/workflows` | List registered workflows |
@@ -102,6 +110,19 @@ MCP tool `start_governed_run` mirrors `POST /v1/runs` for MCP-native clients.
 ```
 
 `cost_source` is `provider_reported` when the provider/backend supplied cost, `pricing_table` when ai-orch estimated from stored model prices and token counts, `mixed` when a session has both, and `unavailable` when token usage exists but pricing is not available yet.
+
+Durable audit events are stored as full JSON payloads and indexed for common reporting fields, including `trust_level`, `enforcement_mode`, `provider`, `model_alias`, `model_resolved`, `gateway_backend`, `run_id`, `work_item_id`, `patch_id` and token usage.
+
+Runtime execution emits durable audit events for:
+
+- `runtime.started`;
+- `runtime.acp.permission`;
+- `runtime.acp.file_write`;
+- `patch.proposed`;
+- `runtime.done`;
+- `runtime.failed`.
+
+Model gateway audit events include session context when available: agent, classification, run ID, permission mode, approval mode, workspace mode, work item, branch, commit SHA and actor hints. Raw prompts and raw responses remain hash-only unless a future policy explicitly enables raw storage.
 
 ## Patch envelope wire format
 

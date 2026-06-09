@@ -11,7 +11,8 @@ Developer tool
   OpenCode / Cline / VS Code Copilot / Claude Code / Codex / workbench
     -> keeps local repository access
     -> calls ai-orch for model access where supported
-    -> calls ai-orch-mcp for governed tools where supported
+    -> uses ACP-native file and terminal permissions where supported
+    -> calls ai-orch-mcp only for MCP-native tool integrations
     -> reports evidence, patch metadata and decisions back to ai-orch
 ```
 
@@ -64,7 +65,7 @@ This means the model router remains mandatory for governed work. The correction 
 
 | Client | Model gateway path | MCP/tool path | Notes |
 | --- | --- | --- | --- |
-| OpenCode | Strong fit. Configure a custom OpenAI-compatible provider pointing at ai-orch `/v1`. | Strong fit where OpenCode MCP config is available. | Best first E2E target because it can run locally against a real repo while model calls route through ai-orch. |
+| OpenCode | Strong fit through ACP plus a custom OpenAI-compatible provider pointing at ai-orch `/v1`. | MCP is optional and should stay on the MCP route, not injected through ACP. | Best first E2E target because it can run locally against a real repo while model calls route through ai-orch and file edits are captured as ACP workspace diff evidence. |
 | Cline | Strong fit through OpenAI-compatible provider base URL. | Strong fit through Cline MCP server config. | Good second E2E target once OpenCode proves the gateway shape. |
 | VS Code / Copilot | MCP fit through `.vscode/mcp.json` or user-scope `mcp.json`. Model endpoint control depends on Copilot/enterprise policy surface. | Strong MCP fit in VS Code. | Primary managed-client adoption lane where settings can be pushed centrally. |
 | GitHub Copilot repository agents | MCP fit through repository MCP configuration. | Strong for delivery-time tools and evidence. | Better for issue/PR/check evidence than local IDE supervision. |
@@ -77,11 +78,12 @@ This means the model router remains mandatory for governed work. The correction 
 | Level | What ai-orch knows | Trust label |
 | --- | --- | --- |
 | Model gateway | Model request crossed ai-orch; alias, provider, usage, cost and hashes are enforceable. | `gateway_enforced` |
-| MCP/tool gateway | Tool call crossed ai-orch; tool policy, auth and response metadata are enforceable. | `gateway_enforced` |
+| ACP runtime | OpenCode ran under ACP; model calls crossed ai-orch; file writes are captured through ACP write hooks or before/after workspace diff evidence. | `gateway_enforced` for model calls and durable runtime/patch events |
+| MCP/tool gateway | Tool call crossed ai-orch MCP route; tool policy, auth and response metadata are enforceable. | `gateway_enforced` |
 | Managed client | The client is configured by managed policy and reports local events. | `managed_client` |
 | Self-report | The client reports native activity that did not cross a gateway. | `self_reported` |
 
-The model gateway is necessary but not sufficient. It proves model routing and model usage. It does not prove local file edits, command execution or human review unless those events are also routed through MCP, a managed client, CI or an evidence API.
+The model gateway is necessary but not sufficient. It proves model routing and model usage. Local file edits are proven through ACP write events or workspace diff evidence. MCP remains separate and is only proof for tools that explicitly cross the MCP gateway.
 
 These labels are observed facts, not access-control settings. ai-orch should not decide that a developer may or may not use Cline, OpenCode, Codex or another client because of a trust label. It should record how the work was run and make the evidence strength visible in audit and reporting.
 
@@ -118,10 +120,10 @@ Target flow:
 start governed run
   -> create session/runtime token
   -> generate temporary OpenCode config pointing at ai-orch model gateway
-  -> configure ai-orch-mcp as the governed tool gateway
+  -> start OpenCode through ACP in the local workspace
   -> run OpenCode inside a real local repo, disposable local worktree or Docker sandbox volume
   -> verify model calls reach ai-orch, not the upstream provider
-  -> capture file-change metadata or git diff
+  -> capture ACP file-write events or before/after workspace diff metadata
   -> submit patch metadata/content through the patch buffer path
   -> record patch decision
   -> confirm audit contains model usage, trust labels, tool/evidence events and no provider keys

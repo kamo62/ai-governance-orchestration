@@ -144,7 +144,66 @@ func RunGatewaySmoke(ctx context.Context, cfg Config) error {
 	}
 	fmt.Printf("   model response: %s\n", content)
 
-	fmt.Println("\n6. Audit lookup for gateway event...")
+	fmt.Println("\n6. Gateway tool-call transcript compatibility...")
+	toolBody, _ := json.Marshal(map[string]any{
+		"model": cfg.ModelAlias,
+		"messages": []map[string]any{
+			{
+				"role":    "assistant",
+				"content": nil,
+				"tool_calls": []map[string]any{
+					{
+						"id":   "call_ai_orch_smoke",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "read_workspace_state",
+							"arguments": `{"target":"smoke"}`,
+						},
+					},
+				},
+			},
+			{"role": "tool", "tool_call_id": "call_ai_orch_smoke", "content": `{"status":"ok"}`},
+			{"role": "user", "content": "Reply with exactly: gateway-tools-ok"},
+		},
+		"tools": []map[string]any{
+			{
+				"type": "function",
+				"function": map[string]any{
+					"name":        "read_workspace_state",
+					"description": "Read sanitized workspace state for smoke validation.",
+					"parameters": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"target": map[string]any{"type": "string"}},
+					},
+				},
+			},
+		},
+		"tool_choice": "auto",
+		"temperature": 0,
+		"max_tokens":  32,
+	})
+	toolReq, err := http.NewRequestWithContext(ctx, http.MethodPost, gatewayBase+"/v1/chat/completions", bytes.NewReader(toolBody))
+	if err != nil {
+		return err
+	}
+	toolReq.Header.Set("Content-Type", "application/json")
+	toolReq.Header.Set("Authorization", "Bearer "+cfg.RuntimeToken)
+	toolReq.Header.Set("X-AI-Orch-Session-ID", runResp.SessionID)
+	toolResp, err := httpClient.Do(toolReq)
+	if err != nil {
+		return fmt.Errorf("tool-call transcript completion: %w", err)
+	}
+	defer toolResp.Body.Close()
+	toolRaw, _ := io.ReadAll(toolResp.Body)
+	if toolResp.StatusCode < 200 || toolResp.StatusCode >= 300 {
+		return fmt.Errorf("tool-call transcript completion: HTTP %d: %s", toolResp.StatusCode, strings.TrimSpace(string(toolRaw)))
+	}
+	if len(toolRaw) == 0 {
+		return fmt.Errorf("tool-call transcript completion returned empty body")
+	}
+	fmt.Println("   tool-call transcript accepted")
+
+	fmt.Println("\n7. Audit lookup for gateway events...")
 	auditURL := fmt.Sprintf("%s/v1/audit/sessions/%s", strings.TrimRight(cfg.GovernanceURL, "/"), runResp.SessionID)
 	status, raw, err = client.do(ctx, http.MethodGet, auditURL, cfg.DevToken, nil)
 	if err != nil {
@@ -155,6 +214,9 @@ func RunGatewaySmoke(ctx context.Context, cfg Config) error {
 	}
 	if !strings.Contains(string(raw), "model.gateway") {
 		return fmt.Errorf("audit trail missing model.gateway event")
+	}
+	if strings.Count(string(raw), "model.gateway") < 2 {
+		return fmt.Errorf("audit trail missing tool-call gateway event")
 	}
 	fmt.Println("   gateway audit event present")
 

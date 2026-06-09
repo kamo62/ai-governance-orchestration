@@ -55,6 +55,8 @@ BIFROST_ENCRYPTION_KEY=local-bifrost-enc-key-32-bytes!!
 
 `AI_ORCH_TRUSTED_CLIENT_TOKEN` is the secret that lets trusted clients (the MCP gateway and the VS Code bridge) record privileged audit trust levels (`gateway_enforced`, `managed_client`). The Governance Shell reads it, and trusted clients present it via the `X-AI-Orch-Trusted-Client-Token` header. When it is empty the shell falls back to honoring the `X-AI-Orch-Client` identity header on its own, which is convenient for local dev but means any token holder can claim a privileged trust level. Set a strong value in shared and production deployments, and configure the same value on the gateway/bridge, so trust labels on the audit trail cannot be forged.
 
+Set `AI_ORCH_REQUIRE_WORK_ITEM=true` in shared beta and production-like environments. With this gate enabled, governed runs fail closed unless the current branch or request metadata supplies a work item ID, and the branch contains that ID. Use branch names like `feature/OMENG-300-governance-fixes`, `bugfix/OMENG-301-null-session`, or `docs/OMENG-302-audit-export`.
+
 Optional provider credentials for Bifrost can be added only when you are deliberately testing those paths:
 
 ```sh
@@ -329,6 +331,51 @@ For streamed chat completions, ai-orch asks the selected backend for stream usag
 
 The model gateway uses `AI_ORCH_RUNTIME_TOKEN`, not `AI_ORCH_DEV_TOKEN`. Runtime tokens belong to runtime adapters. Developer tokens belong to the CLI, VS Code Bridge and MCP tools.
 
+### GitHub Copilot User Backend
+
+The experimental Copilot backend is per-user and actor-bound. It is intended for internal beta use where developers already have Copilot seats.
+
+CLI setup:
+
+```sh
+export AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY='<local secret>'
+ai-orch copilot login
+ai-orch copilot status
+ai-orch copilot models
+```
+
+Gateway setup:
+
+```sh
+AI_ORCH_MODEL_BACKEND=copilot-user
+AI_ORCH_COPILOT_TOKEN_DB=~/.ai-orch/copilot-tokens.db
+AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY='<same local secret>'
+```
+
+OpenCode still points only at ai-orch. Use governed aliases such as `ai-orch/copilot-gpt-5-mini`. Do not configure OpenCode to call `github-copilot` directly in governed mode.
+
+### Backend Control From The UI
+
+The Governance UI can start and stop model sidecars when backend control is explicitly enabled. This requires Docker access inside the Governance Shell container.
+
+Local trusted setup:
+
+```sh
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.backend-control.yml \
+  up -d governance-shell orchestrator
+```
+
+The override mounts `/var/run/docker.sock`, runs `governance-shell` as root, and enables:
+
+```text
+AI_ORCH_BACKEND_CONTROL_ENABLED=true
+AI_ORCH_BACKEND_CONTROL_WORKDIR=/app
+```
+
+Use an admin token in the UI. Backend actions call `POST /v1/backends` and run the corresponding `docker compose` command from the container. Do not enable this mode in untrusted shared deployments without a dedicated sidecar supervisor or Docker API proxy.
+
 Backend selection is controlled by:
 
 ```sh
@@ -388,7 +435,7 @@ Target shape:
 ```text
 OpenCode running in a local repo
   -> ai-orch model compatibility gateway
-  -> ai-orch-mcp where tool calls can be routed
+  -> OpenCode ACP file/terminal permissions in the local workspace
   -> Governance Shell audit, patch and evidence records
 ```
 
@@ -435,14 +482,15 @@ OPENCODE_EXPECT=opencode-e2e-ok \
 go run ./cmd/opencode-smoke e2e --dir /tmp/ai-orch-opencode-e2e
 ```
 
-The E2E creates a governed session, runs the local `opencode` binary with `OPENCODE_CONFIG`, `AI_ORCH_RUNTIME_TOKEN` and `AI_ORCH_SESSION_ID`, then verifies the session audit contains a `model.gateway` event.
+The E2E creates a governed session, runs the local `opencode` binary with `OPENCODE_CONFIG`, `AI_ORCH_RUNTIME_TOKEN` and `AI_ORCH_SESSION_ID`, then verifies the session audit contains `model.gateway` events. ACP runs additionally emit durable runtime events and patch evidence from file-write hooks or before/after workspace diffs.
 
 Use `/Users/kamogelo/Code/ado_scripts` as a realistic repo target only through a disposable worktree or a deliberately temporary test file.
 
-The implemented E2E verifies read-only model routing and audit evidence. The broader OpenCode rollout still needs to verify native patch/diff evidence:
+The implemented E2E verifies model routing, audit evidence and ACP patch/diff evidence:
 
 1. **Read-only model routing.** OpenCode performs a review/explanation task. The model call appears in ai-orch audit with session ID, alias, provider/backend, usage and trust label.
 2. **Patch evidence.** OpenCode changes a disposable file or worktree. ai-orch records patch/diff metadata, buffers patch content where available and records the human patch decision.
+3. **ACP permissions.** OpenCode ACP permissions are accepted in the ACP lane by default. MCP is not injected through ACP; MCP calls must use the MCP gateway route.
 
 The generated OpenCode config should point at the ai-orch model gateway, not Bifrost or a provider directly. `opencode-smoke generate-config` emits the local config shape, including the required runtime token and session header placeholders:
 

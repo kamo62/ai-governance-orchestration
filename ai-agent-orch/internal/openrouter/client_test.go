@@ -112,6 +112,37 @@ func TestChatCompletionRequiresAPIKey(t *testing.T) {
 	}
 }
 
+func TestChatCompletionRawPreservesToolPayload(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/chat/completions" {
+			t.Fatalf("expected chat completions path, got %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"raw","model":"x/y","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(Config{APIKey: "test-key", BaseURL: srv.URL + "/api/v1", HTTPClient: srv.Client()})
+	body := []byte(`{"model":"x/y","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}]}],"tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}],"response_format":{"type":"json_object"}}`)
+	resp, err := client.ChatCompletionRaw(context.Background(), body)
+	if err != nil {
+		t.Fatalf("ChatCompletionRaw returned error: %v", err)
+	}
+	if _, ok := got["tools"].([]any); !ok {
+		t.Fatalf("expected tools to be preserved, got %#v", got)
+	}
+	if _, ok := got["response_format"].(map[string]any); !ok {
+		t.Fatalf("expected response_format to be preserved, got %#v", got)
+	}
+	if !strings.Contains(string(resp), `"model":"x/y"`) {
+		t.Fatalf("unexpected raw response: %s", string(resp))
+	}
+}
+
 // TestChatCompletionRejectsForeignProvider verifies the native client fails fast
 // for a non-OpenRouter provider instead of silently dropping it and sending an
 // unqualified model id to OpenRouter.

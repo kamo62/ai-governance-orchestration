@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,6 +39,19 @@ type GatewayConfig struct {
 // SessionInfo is server-side session context used by runtime model routing.
 type SessionInfo struct {
 	Classification string
+	ActorSubject   string
+	Agent          string
+	RunID          string
+	WorkItemID     string
+	WorkItemType   string
+	RepoURL        string
+	Branch         string
+	CommitSHA      string
+	ActorHint      string
+	SourceSystem   string
+	PermissionMode string
+	ApprovalMode   string
+	WorkspaceMode  string
 }
 
 // Gateway is an OpenAI-compatible model endpoint owned by the Governance Shell.
@@ -176,7 +188,33 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Build upstream request.
+	if req.Stream {
+		g.handleStream(w, r, req, decision, session, sessionID, body)
+		return
+	}
+
+	if rawBackend, ok := g.backend.(modelbackend.RawChatBackend); ok {
+		respBody, err := rawBackend.ChatCompletionRaw(r.Context(), modelbackend.RawRequest{
+			Provider:     decision.Provider,
+			ModelAlias:   decision.SelectedAlias,
+			Model:        decision.SelectedModelID,
+			Body:         body,
+			ActorSubject: session.ActorSubject,
+		})
+		if err != nil {
+			g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, nil, nil, err.Error())
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
+			return
+		}
+		respBody = rewriteTopLevelModel(respBody, decision.SelectedAlias)
+		usage := usageFromRawResponse(respBody)
+		g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, respBody, usage, "")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(respBody)
+		return
+	}
+
 	upstream := openrouter.ChatCompletionRequest{
 		Provider:    decision.Provider,
 		ModelAlias:  decision.SelectedAlias,
@@ -186,20 +224,15 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		MaxTokens:   req.MaxTokens,
 	}
 
-	if req.Stream {
-		g.handleStream(w, r, upstream, decision, sessionID, body)
-		return
-	}
-
 	resp, err := g.backend.ChatCompletion(r.Context(), upstream)
 	if err != nil {
-		g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_call", body, nil, nil, err.Error())
+		g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, nil, nil, err.Error())
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 		return
 	}
 
 	respBody, _ := json.Marshal(resp)
-	g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_call", body, respBody, &resp.Usage, "")
+	g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, respBody, openrouterUsageMap(&resp.Usage), "")
 
 	openAIResp := openAIChatCompletionResponse{
 		ID:      resp.ID,
@@ -216,13 +249,12 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, openAIResp)
 }
 
-func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream openrouter.ChatCompletionRequest, decision router.Decision, sessionID string, reqBody []byte) {
+func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, req openAIChatCompletionRequest, decision router.Decision, session SessionInfo, sessionID string, reqBody []byte) {
 	reqHash := sha256Hex(reqBody)
-	upstream.Stream = true
-	upstream.StreamOptions = &openrouter.StreamOptions{IncludeUsage: true}
-	streamReader, err := g.backend.ChatCompletionStream(r.Context(), upstream)
+	streamBody := ensureChatStreamOptions(reqBody)
+	streamReader, err := startChatStream(r.Context(), g.backend, decision, req, session.ActorSubject, streamBody)
 	if err != nil {
-		g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", err.Error())
+		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", err.Error())
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("stream start failed: %v", err)})
 		return
 	}
@@ -230,7 +262,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream 
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", "streaming not supported")
+		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", "streaming not supported")
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "streaming not supported"})
 		return
 	}
@@ -244,85 +276,43 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream 
 	scanner.Buffer(make([]byte, 0, 256*1024), 10*1024*1024)
 	responseHash := sha256.New()
 	done := false
-	var streamUsage *openrouter.Usage
+	var streamUsage map[string]any
 	for scanner.Scan() {
 		select {
 		case <-r.Context().Done():
-			g.auditModelCallHashes(context.Background(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", r.Context().Err().Error())
+			g.auditModelCallHashes(context.Background(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", r.Context().Err().Error())
 			return
 		default:
 		}
 		line := scanner.Text()
 		if line == "" {
+			_, _ = responseHash.Write([]byte("\n"))
+			fmt.Fprint(w, "\n")
+			flusher.Flush()
 			continue
 		}
-		chunk, err := openrouter.DecodeStreamChunk(line)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				frame := "data: [DONE]\n\n"
-				_, _ = responseHash.Write([]byte(frame))
-				fmt.Fprint(w, frame)
-				flusher.Flush()
-				done = true
-				break
-			}
-			continue // skip malformed lines
+		line, lineDone, usage := rewriteSSELine(line, decision.SelectedAlias)
+		if lineDone {
+			done = true
 		}
-		if usageHasValues(chunk.Usage) {
-			streamUsage = chunk.Usage
+		if usage != nil {
+			streamUsage = usage
 		}
-		if len(chunk.Choices) == 0 {
-			if chunk.Usage != nil {
-				openAIChunk := openAIStreamChunk{
-					ID:      chunk.ID,
-					Object:  "chat.completion.chunk",
-					Model:   decision.SelectedAlias,
-					Choices: []openAIStreamChoice{},
-					Usage:   openAIUsageFromOpenRouter(chunk.Usage),
-				}
-				data, _ := json.Marshal(openAIChunk)
-				frame := fmt.Sprintf("data: %s\n\n", data)
-				_, _ = responseHash.Write([]byte(frame))
-				fmt.Fprint(w, frame)
-				flusher.Flush()
-			}
-			continue
-		}
-
-		// Translate provider chunk to OpenAI-compatible chunk with alias.
-		openAIChunk := openAIStreamChunk{
-			ID:     chunk.ID,
-			Object: "chat.completion.chunk",
-			Model:  decision.SelectedAlias,
-			Choices: []openAIStreamChoice{
-				{
-					Index: chunk.Choices[0].Index,
-					Delta: openAIMessageDelta{
-						Role:    chunk.Choices[0].Delta.Role,
-						Content: chunk.Choices[0].Delta.Content,
-					},
-					FinishReason: chunk.Choices[0].FinishReason,
-				},
-			},
-			Usage: openAIUsageFromOpenRouter(chunk.Usage),
-		}
-
-		data, _ := json.Marshal(openAIChunk)
-		frame := fmt.Sprintf("data: %s\n\n", data)
+		frame := line + "\n"
 		_, _ = responseHash.Write([]byte(frame))
 		fmt.Fprint(w, frame)
 		flusher.Flush()
 	}
 	if err := scanner.Err(); err != nil {
-		g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", err.Error())
+		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", err.Error())
 		return
 	}
 	if !done {
-		g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", "stream ended before done")
+		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", "stream ended before done")
 		return
 	}
 	respHash := "sha256:" + hex.EncodeToString(responseHash.Sum(nil))
-	g.auditModelCallHashesWithUsage(r.Context(), sessionID, decision, "model.gateway_stream.completed", reqHash, respHash, openrouterUsageMap(streamUsage), "")
+	g.auditModelCallHashesWithUsage(r.Context(), sessionID, session, decision, "model.gateway_stream.completed", reqHash, respHash, streamUsage, "")
 }
 
 func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
@@ -347,8 +337,6 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Phase 1G.5: Responses API MVP.
-	// For now, map responses to chat completions internally.
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "read body: " + err.Error()})
@@ -379,6 +367,37 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if rawBackend, ok := g.backend.(modelbackend.RawResponsesBackend); ok {
+		if req.Stream {
+			g.handleResponsesStream(w, r, rawBackend, decision, session, sessionID, body)
+			return
+		}
+		respBody, err := rawBackend.ResponsesRaw(r.Context(), modelbackend.RawRequest{
+			Provider:     decision.Provider,
+			ModelAlias:   decision.SelectedAlias,
+			Model:        decision.SelectedModelID,
+			Body:         body,
+			ActorSubject: session.ActorSubject,
+		})
+		if err != nil {
+			g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_responses", body, nil, nil, err.Error())
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
+			return
+		}
+		respBody = rewriteTopLevelModel(respBody, decision.SelectedAlias)
+		usage := usageFromRawResponse(respBody)
+		g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_responses", body, respBody, usage, "")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(respBody)
+		return
+	}
+
+	if req.Stream {
+		writeJSON(w, http.StatusNotImplemented, map[string]any{"error": "responses streaming is not supported by the selected backend"})
+		return
+	}
+
 	upstream := openrouter.ChatCompletionRequest{
 		Provider:   decision.Provider,
 		ModelAlias: decision.SelectedAlias,
@@ -388,13 +407,13 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := g.backend.ChatCompletion(r.Context(), upstream)
 	if err != nil {
-		g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_responses", body, nil, nil, err.Error())
+		g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_responses", body, nil, nil, err.Error())
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 		return
 	}
 
 	respBody, _ := json.Marshal(resp)
-	g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_responses", body, respBody, &resp.Usage, "")
+	g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_responses", body, respBody, openrouterUsageMap(&resp.Usage), "")
 
 	openAIResp := openAIResponsesResponse{
 		ID:     g.newID("resp"),
@@ -416,6 +435,78 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, openAIResp)
+}
+
+func (g *Gateway) handleResponsesStream(w http.ResponseWriter, r *http.Request, backend modelbackend.RawResponsesBackend, decision router.Decision, session SessionInfo, sessionID string, reqBody []byte) {
+	reqHash := sha256Hex(reqBody)
+	streamBody := ensureJSONBool(reqBody, "stream", true)
+	streamReader, err := backend.ResponsesStreamRaw(r.Context(), modelbackend.RawRequest{
+		Provider:     decision.Provider,
+		ModelAlias:   decision.SelectedAlias,
+		Model:        decision.SelectedModelID,
+		Body:         streamBody,
+		ActorSubject: session.ActorSubject,
+	})
+	if err != nil {
+		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.failed", reqHash, "", err.Error())
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("responses stream start failed: %v", err)})
+		return
+	}
+	defer streamReader.Close()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.failed", reqHash, "", "streaming not supported")
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "streaming not supported"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	scanner := bufio.NewScanner(streamReader)
+	scanner.Buffer(make([]byte, 0, 256*1024), 10*1024*1024)
+	responseHash := sha256.New()
+	done := false
+	var streamUsage map[string]any
+	for scanner.Scan() {
+		select {
+		case <-r.Context().Done():
+			g.auditModelCallHashes(context.Background(), sessionID, session, decision, "model.gateway_responses_stream.failed", reqHash, "", r.Context().Err().Error())
+			return
+		default:
+		}
+		line := scanner.Text()
+		if line == "" {
+			_, _ = responseHash.Write([]byte("\n"))
+			fmt.Fprint(w, "\n")
+			flusher.Flush()
+			continue
+		}
+		line, lineDone, usage := rewriteSSELine(line, decision.SelectedAlias)
+		if lineDone || strings.Contains(line, "response.completed") || strings.Contains(line, "response.incomplete") {
+			done = true
+		}
+		if usage != nil {
+			streamUsage = usage
+		}
+		frame := line + "\n"
+		_, _ = responseHash.Write([]byte(frame))
+		fmt.Fprint(w, frame)
+		flusher.Flush()
+	}
+	if err := scanner.Err(); err != nil {
+		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.failed", reqHash, "", err.Error())
+		return
+	}
+	if !done {
+		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.failed", reqHash, "", "stream ended before completion")
+		return
+	}
+	respHash := "sha256:" + hex.EncodeToString(responseHash.Sum(nil))
+	g.auditModelCallHashesWithUsage(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.completed", reqHash, respHash, streamUsage, "")
 }
 
 func requiredSessionID(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -465,7 +556,7 @@ func (g *Gateway) authorized(r *http.Request) bool {
 	return httpauth.AuthorizedBearer(r.Header.Get("Authorization"), g.runtimeToken)
 }
 
-func (g *Gateway) auditModelCall(ctx context.Context, sessionID string, decision router.Decision, eventType string, reqBody, respBody []byte, usage *openrouter.Usage, errMsg string) {
+func (g *Gateway) auditModelCall(ctx context.Context, sessionID string, session SessionInfo, decision router.Decision, eventType string, reqBody, respBody []byte, usage map[string]any, errMsg string) {
 	if g.audit == nil {
 		return
 	}
@@ -476,14 +567,14 @@ func (g *Gateway) auditModelCall(ctx context.Context, sessionID string, decision
 	if len(respBody) > 0 {
 		respHash = sha256Hex(respBody)
 	}
-	g.auditModelCallHashesWithUsage(ctx, sessionID, decision, eventType, reqHash, respHash, openrouterUsageMap(usage), errMsg)
+	g.auditModelCallHashesWithUsage(ctx, sessionID, session, decision, eventType, reqHash, respHash, usage, errMsg)
 }
 
-func (g *Gateway) auditModelCallHashes(ctx context.Context, sessionID string, decision router.Decision, eventType string, reqHash, respHash, errMsg string) {
-	g.auditModelCallHashesWithUsage(ctx, sessionID, decision, eventType, reqHash, respHash, nil, errMsg)
+func (g *Gateway) auditModelCallHashes(ctx context.Context, sessionID string, session SessionInfo, decision router.Decision, eventType string, reqHash, respHash, errMsg string) {
+	g.auditModelCallHashesWithUsage(ctx, sessionID, session, decision, eventType, reqHash, respHash, nil, errMsg)
 }
 
-func (g *Gateway) auditModelCallHashesWithUsage(ctx context.Context, sessionID string, decision router.Decision, eventType string, reqHash, respHash string, usage map[string]any, errMsg string) {
+func (g *Gateway) auditModelCallHashesWithUsage(ctx context.Context, sessionID string, session SessionInfo, decision router.Decision, eventType string, reqHash, respHash string, usage map[string]any, errMsg string) {
 	if g.audit == nil {
 		return
 	}
@@ -491,11 +582,17 @@ func (g *Gateway) auditModelCallHashesWithUsage(ctx context.Context, sessionID s
 	if errMsg != "" {
 		reason = errMsg
 	}
+	actor := strings.TrimSpace(session.ActorSubject)
+	if actor == "" {
+		actor = "runtime"
+	}
 	_, _ = g.audit.Append(ctx, audit.Event{
 		EventID:            g.newID("evt"),
 		SessionID:          sessionID,
 		EventType:          eventType,
-		Actor:              "runtime",
+		Actor:              actor,
+		Agent:              session.Agent,
+		Classification:     session.Classification,
 		Provider:           decision.Provider,
 		ModelAlias:         decision.SelectedAlias,
 		ModelResolved:      g.resolvedModel(decision),
@@ -503,6 +600,15 @@ func (g *Gateway) auditModelCallHashesWithUsage(ctx context.Context, sessionID s
 		ResponseSHA256:     respHash,
 		TokenUsage:         usage,
 		GatewayBackend:     g.backendName(),
+		RunID:              session.RunID,
+		PermissionMode:     session.PermissionMode,
+		ApprovalMode:       session.ApprovalMode,
+		WorkspaceMode:      session.WorkspaceMode,
+		WorkItemID:         session.WorkItemID,
+		WorkItemType:       session.WorkItemType,
+		CommitSHA:          session.CommitSHA,
+		ActorHint:          session.ActorHint,
+		SourceSystem:       session.SourceSystem,
 		TrustLevel:         "gateway_enforced",
 		EnforcementMode:    "gateway",
 		Reason:             reason,
@@ -522,6 +628,213 @@ func openrouterUsageMap(usage *openrouter.Usage) map[string]any {
 		"total_tokens":      usage.TotalTokens,
 		"reasoning_tokens":  usage.CompletionTokensDetails.ReasoningTokens,
 		"cost_usd":          usage.Cost,
+	}
+}
+
+func startChatStream(ctx context.Context, backend modelbackend.Backend, decision router.Decision, req openAIChatCompletionRequest, actorSubject string, body []byte) (io.ReadCloser, error) {
+	if rawBackend, ok := backend.(modelbackend.RawChatBackend); ok {
+		return rawBackend.ChatCompletionStreamRaw(ctx, modelbackend.RawRequest{
+			Provider:     decision.Provider,
+			ModelAlias:   decision.SelectedAlias,
+			Model:        decision.SelectedModelID,
+			Body:         body,
+			ActorSubject: actorSubject,
+		})
+	}
+	return backend.ChatCompletionStream(ctx, openrouter.ChatCompletionRequest{
+		Provider:      decision.Provider,
+		ModelAlias:    decision.SelectedAlias,
+		Model:         decision.SelectedModelID,
+		Messages:      convertMessages(req.Messages),
+		Temperature:   req.Temperature,
+		MaxTokens:     req.MaxTokens,
+		Stream:        true,
+		StreamOptions: &openrouter.StreamOptions{IncludeUsage: true},
+	})
+}
+
+func ensureChatStreamOptions(body []byte) []byte {
+	body = ensureJSONBool(body, "stream", true)
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	if _, ok := obj["stream_options"]; !ok {
+		obj["stream_options"] = json.RawMessage(`{"include_usage":true}`)
+	} else {
+		var opts map[string]json.RawMessage
+		if err := json.Unmarshal(obj["stream_options"], &opts); err == nil {
+			opts["include_usage"] = json.RawMessage(`true`)
+			if encoded, err := json.Marshal(opts); err == nil {
+				obj["stream_options"] = encoded
+			}
+		}
+	}
+	encoded, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return encoded
+}
+
+func ensureJSONBool(body []byte, key string, value bool) []byte {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	if value {
+		obj[key] = json.RawMessage(`true`)
+	} else {
+		obj[key] = json.RawMessage(`false`)
+	}
+	encoded, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return encoded
+}
+
+func rewriteTopLevelModel(body []byte, alias string) []byte {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	model, err := json.Marshal(alias)
+	if err != nil {
+		return body
+	}
+	obj["model"] = model
+	encoded, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return encoded
+}
+
+func rewriteSSELine(line string, alias string) (string, bool, map[string]any) {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "data:") {
+		payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+		if payload == "[DONE]" {
+			return line, true, nil
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(payload), &obj); err != nil {
+			return line, false, nil
+		}
+		if _, ok := obj["model"]; ok {
+			if model, err := json.Marshal(alias); err == nil {
+				obj["model"] = model
+			}
+		}
+		usage := usageFromRawObject(obj)
+		encoded, err := json.Marshal(obj)
+		if err != nil {
+			return line, false, usage
+		}
+		return "data: " + string(encoded), false, usage
+	}
+	return line, false, nil
+}
+
+func usageFromRawResponse(body []byte) map[string]any {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil
+	}
+	return usageFromRawObject(obj)
+}
+
+func usageFromRawObject(obj map[string]json.RawMessage) map[string]any {
+	if usageRaw, ok := obj["usage"]; ok {
+		return usageMapFromRaw(usageRaw)
+	}
+	if responseRaw, ok := obj["response"]; ok {
+		var response map[string]json.RawMessage
+		if err := json.Unmarshal(responseRaw, &response); err == nil {
+			return usageFromRawObject(response)
+		}
+	}
+	return nil
+}
+
+func usageMapFromRaw(raw json.RawMessage) map[string]any {
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil
+	}
+	usage := make(map[string]any)
+	copyUsageNumber(usage, parsed, "prompt_tokens")
+	copyUsageNumber(usage, parsed, "completion_tokens")
+	copyUsageNumber(usage, parsed, "total_tokens")
+	copyUsageNumber(usage, parsed, "input_tokens")
+	copyUsageNumber(usage, parsed, "output_tokens")
+	if _, ok := usage["total_tokens"]; !ok {
+		if input, inputOK := numericValue(parsed["input_tokens"]); inputOK {
+			if output, outputOK := numericValue(parsed["output_tokens"]); outputOK {
+				usage["total_tokens"] = input + output
+			}
+		}
+	}
+	copyUsageCost(usage, parsed, "cost")
+	copyUsageCost(usage, parsed, "cost_usd")
+	copyNestedUsageNumber(usage, parsed, "prompt_tokens_details", "cached_tokens", "cache_read_tokens")
+	copyNestedUsageNumber(usage, parsed, "input_tokens_details", "cached_tokens", "cache_read_tokens")
+	copyNestedUsageNumber(usage, parsed, "completion_tokens_details", "reasoning_tokens", "reasoning_tokens")
+	copyNestedUsageNumber(usage, parsed, "output_tokens_details", "reasoning_tokens", "reasoning_tokens")
+	if len(usage) == 0 {
+		return nil
+	}
+	return usage
+}
+
+func copyUsageNumber(dst map[string]any, src map[string]any, key string) {
+	if value, ok := numericValue(src[key]); ok {
+		dst[key] = value
+	}
+}
+
+func copyNestedUsageNumber(dst map[string]any, src map[string]any, parent string, key string, dstKey string) {
+	obj, ok := src[parent].(map[string]any)
+	if !ok {
+		return
+	}
+	if value, ok := numericValue(obj[key]); ok {
+		dst[dstKey] = value
+	}
+}
+
+func copyUsageCost(dst map[string]any, src map[string]any, key string) {
+	value, ok := src[key]
+	if !ok {
+		return
+	}
+	if n, ok := numericValue(value); ok {
+		dst["cost_usd"] = n
+		return
+	}
+	if s, ok := value.(string); ok {
+		if n, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
+			dst["cost_usd"] = n
+		}
+	}
+}
+
+func numericValue(value any) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case json.Number:
+		n, err := v.Float64()
+		return n, err == nil
+	default:
+		return 0, false
 	}
 }
 
@@ -558,18 +871,18 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func inferTaskType(messages []openAIMessage) string {
+func inferTaskType(messages []openAIRequestMessage) string {
 	if len(messages) == 0 {
 		return "general"
 	}
-	return inferTaskTypeFromText(messages[len(messages)-1].Content)
+	return inferTaskTypeFromText(messages[len(messages)-1].Content.String())
 }
 
 func inferTaskTypeFromInput(input []openAIResponsesInput) string {
 	if len(input) == 0 {
 		return "general"
 	}
-	return inferTaskTypeFromText(input[len(input)-1].Content)
+	return inferTaskTypeFromText(input[len(input)-1].Content.String())
 }
 
 func inferTaskTypeFromText(text string) string {
@@ -602,10 +915,10 @@ func (g *Gateway) resolvedModel(decision router.Decision) string {
 	return g.backend.ResolvedModel(decision.Provider, decision.SelectedModelID)
 }
 
-func convertMessages(msgs []openAIMessage) []openrouter.Message {
+func convertMessages(msgs []openAIRequestMessage) []openrouter.Message {
 	out := make([]openrouter.Message, len(msgs))
 	for i, m := range msgs {
-		out[i] = openrouter.Message{Role: m.Role, Content: m.Content}
+		out[i] = openrouter.Message{Role: m.Role, Content: m.Content.String()}
 	}
 	return out
 }
@@ -630,7 +943,7 @@ func convertResponsesInput(input []openAIResponsesInput) []openrouter.Message {
 		if role == "" {
 			role = "user"
 		}
-		out = append(out, openrouter.Message{Role: role, Content: item.Content})
+		out = append(out, openrouter.Message{Role: role, Content: item.Content.String()})
 	}
 	return out
 }
@@ -638,11 +951,54 @@ func convertResponsesInput(input []openAIResponsesInput) []openrouter.Message {
 // OpenAI-compatible request/response types.
 
 type openAIChatCompletionRequest struct {
-	Model       string          `json:"model"`
-	Messages    []openAIMessage `json:"messages"`
-	Temperature float64         `json:"temperature,omitempty"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
+	Model       string                 `json:"model"`
+	Messages    []openAIRequestMessage `json:"messages"`
+	Temperature float64                `json:"temperature,omitempty"`
+	MaxTokens   int                    `json:"max_tokens,omitempty"`
+	Stream      bool                   `json:"stream,omitempty"`
+}
+
+type openAIRequestMessage struct {
+	Role    string         `json:"role"`
+	Content rawTextContent `json:"content"`
+}
+
+type rawTextContent string
+
+func (c *rawTextContent) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		*c = ""
+		return nil
+	}
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		var text string
+		if err := json.Unmarshal(trimmed, &text); err != nil {
+			return err
+		}
+		*c = rawTextContent(text)
+		return nil
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(trimmed, &parts); err == nil {
+		var texts []string
+		for _, part := range parts {
+			if part.Type == "text" || part.Type == "input_text" {
+				texts = append(texts, part.Text)
+			}
+		}
+		*c = rawTextContent(strings.Join(texts, "\n"))
+		return nil
+	}
+	*c = ""
+	return nil
+}
+
+func (c rawTextContent) String() string {
+	return string(c)
 }
 
 type openAIMessage struct {
@@ -691,13 +1047,18 @@ type openAIMessageDelta struct {
 // OpenAI Responses API types.
 
 type openAIResponsesRequest struct {
-	Model string                  `json:"model"`
-	Input openAIResponsesInputSet `json:"input"`
+	Model  string                  `json:"model"`
+	Input  openAIResponsesInputSet `json:"input"`
+	Stream bool                    `json:"stream,omitempty"`
 }
 
 type openAIResponsesInput struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string         `json:"role"`
+	Type    string         `json:"type"`
+	Content rawTextContent `json:"content"`
+	Output  string         `json:"output"`
+	Name    string         `json:"name"`
+	Args    string         `json:"arguments"`
 }
 
 type openAIResponsesInputSet []openAIResponsesInput
@@ -712,15 +1073,56 @@ func (s *openAIResponsesInputSet) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(trimmed, &input); err != nil {
 			return err
 		}
-		*s = []openAIResponsesInput{{Role: "user", Content: input}}
+		*s = []openAIResponsesInput{{Role: "user", Content: rawTextContent(input)}}
 		return nil
 	}
-	var items []openAIResponsesInput
-	if err := json.Unmarshal(trimmed, &items); err != nil {
+	var rawItems []json.RawMessage
+	if err := json.Unmarshal(trimmed, &rawItems); err != nil {
 		return err
+	}
+	items := make([]openAIResponsesInput, 0, len(rawItems))
+	for _, raw := range rawItems {
+		var item openAIResponsesInput
+		if err := json.Unmarshal(raw, &item); err != nil {
+			return err
+		}
+		if item.Content.String() == "" {
+			item.Content = rawTextContent(textFromResponsesItem(raw, item))
+		}
+		items = append(items, item)
 	}
 	*s = items
 	return nil
+}
+
+func textFromResponsesItem(raw json.RawMessage, item openAIResponsesInput) string {
+	if item.Output != "" {
+		return item.Output
+	}
+	if item.Args != "" {
+		return item.Args
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	contentRaw, ok := obj["content"]
+	if !ok {
+		return ""
+	}
+	var parts []map[string]any
+	if err := json.Unmarshal(contentRaw, &parts); err != nil {
+		return ""
+	}
+	var texts []string
+	for _, part := range parts {
+		for _, key := range []string{"text", "output"} {
+			if text, ok := part[key].(string); ok && text != "" {
+				texts = append(texts, text)
+			}
+		}
+	}
+	return strings.Join(texts, "\n")
 }
 
 type openAIResponsesResponse struct {

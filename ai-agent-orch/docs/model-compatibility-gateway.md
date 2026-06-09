@@ -357,7 +357,10 @@ Deliverables:
 
 - implement `GET /v1/models`;
 - implement non-streaming `POST /v1/chat/completions`;
+- preserve OpenAI-compatible request fields such as `tools`, `tool_choice`, `tool_calls`, `tool_call_id`, `response_format`, multimodal content arrays and provider metadata;
 - route model alias through the Governance Shell backend selector;
+- rewrite only the concrete upstream `model` field before provider forwarding;
+- return the governed alias in the response `model` field;
 - record model decision audit event;
 - prove the runtime does not receive provider keys.
 
@@ -366,7 +369,8 @@ Deliverables:
 Deliverables:
 
 - support `stream: true` for chat completions;
-- translate provider stream chunks into OpenAI-compatible streaming chunks;
+- proxy OpenAI-compatible SSE chunks while rewriting only the chunk `model` field where present;
+- preserve tool-call deltas, reasoning deltas, provider-specific fields and usage chunks;
 - record stream start, completion and failure audit events.
 
 ### Phase 1G.5: Responses API MVP
@@ -374,9 +378,21 @@ Deliverables:
 Deliverables:
 
 - implement non-streaming `POST /v1/responses`;
-- support a small text-output subset;
+- forward raw OpenAI-compatible Responses payloads for backends that support `/v1/responses`;
+- preserve `input`, `tools`, `tool_choice`, `include`, `store`, `reasoning`, `text`, `previous_response_id`, `prompt_cache_key` and provider metadata;
+- support Responses streaming for raw-compatible backends;
 - add response ID correlation;
 - add response usage audit records.
+
+### Phase 1G.6: Enterprise Provider Compatibility
+
+Deliverables:
+
+- verify OpenCode `v1.16.2` fixture payloads against the gateway contract;
+- prove `OpenCode -> ai-orch -> Bifrost -> Bedrock` with tool-call payloads;
+- prove `OpenCode -> ai-orch -> Bifrost or Foundry adapter -> Azure AI Foundry` with tool-call payloads;
+- keep direct Anthropic, Bedrock and Foundry SDK translation behind Bifrost, AgentGateway or a dedicated backend adapter;
+- do not expose Bifrost, Bedrock, Foundry or provider credentials directly to OpenCode.
 
 ### Phase 1M Dependency: OpenCode Managed-Provider E2E
 
@@ -386,7 +402,8 @@ The local OpenCode E2E should not start until the compatibility gateway can prov
 - model aliases resolve through Governance Shell;
 - provider key is absent from runtime env;
 - model calls are audited;
-- tool calls can be pointed at `ai-orch-mcp`.
+- ACP runtime file changes produce durable patch evidence;
+- MCP calls, when needed, use the MCP gateway route rather than the ACP session configuration.
 
 The first E2E should run OpenCode locally against a real repo or disposable worktree while routing model calls through ai-orch. Sandbox/worktree isolation remains a later risk-based mode, not the default proof of the provider endpoint lane.
 

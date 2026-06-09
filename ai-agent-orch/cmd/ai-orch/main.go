@@ -134,6 +134,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "unknown mcp subcommand: %s\n", os.Args[2])
 			os.Exit(1)
 		}
+	case "copilot":
+		handleCopilot(ctx, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -158,6 +160,7 @@ Usage:
   ai-orch mcp start [--transport http|stdio] [--host 127.0.0.1] [--port 18081]
   ai-orch mcp install --client <vscode|cline|claude-code|codex> [--force]
   ai-orch mcp doctor
+  ai-orch copilot login|status|models|logout|smoke
 
 Environment:
   AI_ORCH_GOVERNANCE_URL    Governance Shell base URL (default: http://127.0.0.1:18080)
@@ -165,7 +168,8 @@ Environment:
   AI_ORCH_MODEL_GATEWAY_URL Runtime model gateway base URL (default: http://127.0.0.1:18082)
   AI_ORCH_DEV_TOKEN         Bearer token for local dev auth
   AI_ORCH_ADMIN_TOKEN       Bearer token for admin routes such as killswitch
-  AI_ORCH_RUNTIME_TOKEN     Bearer token for runtime model gateway calls`)
+  AI_ORCH_RUNTIME_TOKEN     Bearer token for runtime model gateway calls
+  AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY  Required for copilot token storage`)
 }
 
 func printSmokeUsage() {

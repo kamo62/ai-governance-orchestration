@@ -98,6 +98,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 		ModelID:       modelAlias,
 		WorkspacePath: workspaceRoot(d.catalogRoot),
 		AllowedTools:  agentCfg.ToolsAllowed,
+		Permissions:   permissions,
 		CostCapUSD:    agentCfg.Cost.PerInvocationCapUSD,
 		MCPEndpoints:  resolveMCPEndpoints(agentCfg.MCPServers),
 	}

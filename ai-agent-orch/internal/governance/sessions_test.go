@@ -398,6 +398,69 @@ func TestCreateSessionAuditsResolvedContextBeforeCreatedEvent(t *testing.T) {
 	}
 }
 
+func TestCreateSessionRequiresWorkItemWhenEnabled(t *testing.T) {
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	service := NewSessionService(SessionConfig{
+		DevToken:        "local-test-token",
+		Audit:           audit.NewFileStore(auditPath),
+		RequireWorkItem: true,
+		NewID: fixedIDs(
+			"evt_denied_work_item",
+		),
+		ContextResolver: staticContextResolver{context: SessionContext{
+			Branch:    "main",
+			CommitSHA: "0123456789abcdef0123456789abcdef01234567",
+		}},
+	})
+	handler := NewSessionHandler(service)
+
+	req := authorizedSessionRequest(`{"agent":"unit-tests","classification":"internal","prompt":"write tests"}`)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusPreconditionRequired {
+		t.Fatalf("expected 428, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "work item ID is required") {
+		t.Fatalf("expected work item guidance, got %s", rec.Body.String())
+	}
+}
+
+func TestCreateSessionAllowsFeatureBranchWithWorkItemWhenRequired(t *testing.T) {
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	service := NewSessionService(SessionConfig{
+		DevToken:        "local-test-token",
+		Audit:           audit.NewFileStore(auditPath),
+		RequireWorkItem: true,
+		NewID: fixedIDs(
+			"sess_work_item_required",
+			"evt_work_item_required",
+		),
+		ContextResolver: staticContextResolver{context: SessionContext{
+			Branch:       "feature/OMENG-300-governance-fixes",
+			WorkItemID:   "OMENG-300",
+			WorkItemType: "feature",
+			CommitSHA:    "0123456789abcdef0123456789abcdef01234567",
+		}},
+	})
+	handler := NewSessionHandler(service)
+
+	req := authorizedSessionRequest(`{"agent":"unit-tests","classification":"internal","prompt":"write tests"}`)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	events, err := audit.NewFileStore(auditPath).EventsBySession(context.Background(), "sess_work_item_required")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 || events[0].WorkItemID != "OMENG-300" || events[0].WorkItemType != "feature" {
+		t.Fatalf("expected resolved work item audit event, got %#v", events)
+	}
+}
+
 func TestCreateSessionDoesNotTrustBareTrustHeader(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	service := NewSessionService(SessionConfig{

@@ -25,6 +25,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/catalog
 	&& CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mcp-test-management ./cmd/mcp-test-management
 
 FROM alpine:3.22
+RUN apk add --no-cache docker-cli docker-cli-compose
 RUN adduser -D -H aiagent
 WORKDIR /app
 

@@ -211,6 +211,33 @@ func (c *Client) ChatCompletion(ctx context.Context, request ChatCompletionReque
 	return result, nil
 }
 
+// ChatCompletionRaw forwards an already-validated OpenAI-compatible request
+// body to OpenRouter without narrowing fields such as tools, tool_choice,
+// tool_calls, response_format, or multimodal content arrays.
+func (c *Client) ChatCompletionRaw(ctx context.Context, body []byte) ([]byte, error) {
+	if c.apiKey == "" {
+		return nil, errors.New("OPENROUTER_API_KEY is required")
+	}
+	if len(body) == 0 {
+		return nil, errors.New("request body is required")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create OpenRouter raw chat completion request: %w", err)
+	}
+	c.setHeaders(httpReq)
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("call OpenRouter raw chat completions: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("OpenRouter returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return respBody, nil
+}
+
 func (r ChatCompletionResponse) FirstContent() string {
 	if len(r.Choices) == 0 {
 		return ""
@@ -264,6 +291,43 @@ func (c *Client) ChatCompletionStream(ctx context.Context, request ChatCompletio
 		return nil, fmt.Errorf("OpenRouter returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return resp.Body, nil
+}
+
+// ChatCompletionStreamRaw is the streaming equivalent of ChatCompletionRaw.
+func (c *Client) ChatCompletionStreamRaw(ctx context.Context, body []byte) (io.ReadCloser, error) {
+	if c.apiKey == "" {
+		return nil, errors.New("OPENROUTER_API_KEY is required")
+	}
+	if len(body) == 0 {
+		return nil, errors.New("request body is required")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create OpenRouter raw chat completion stream request: %w", err)
+	}
+	c.setHeaders(httpReq)
+	httpReq.Header.Set("Accept", "text/event-stream")
+	resp, err := c.streamClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("call OpenRouter raw chat completions stream: %w", err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		return nil, fmt.Errorf("OpenRouter returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return resp.Body, nil
+}
+
+func (c *Client) setHeaders(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	if c.referer != "" {
+		req.Header.Set("HTTP-Referer", c.referer)
+	}
+	if c.appTitle != "" {
+		req.Header.Set("X-Title", c.appTitle)
+	}
 }
 
 // StreamChunk is a single SSE chunk from a streaming chat completion.

@@ -929,16 +929,45 @@ Keep the Copilot POC branch focused on model access:
 
 ## Immediate Next Steps
 
-1. Commit the current beta branch.
-2. Create `spike/copilot-user-backend`.
-3. Implement `ai-orch copilot login` and `ai-orch copilot models`.
-4. Prove `gpt-5-mini` through a direct ai-orch Copilot smoke command.
-5. Add `copilot-gpt-5-mini` to `models/registry.yaml`.
-6. Route `/v1/chat/completions` through `copilot-user`.
-7. Run OpenCode against ai-orch, not against `github-copilot` directly.
-8. Record audit evidence showing `gateway_enforced` Copilot model calls.
-9. Add `github-models` backend as the official provider path.
-10. Decide whether org-attributed GitHub Models access should be enabled by the enterprise.
+1. Keep OpenCode configured only against ai-orch in governed mode.
+2. Keep the gateway contract aligned to OpenCode `v1.16.2` request shapes.
+3. Preserve OpenAI-compatible chat and Responses payload fields through ai-orch before adding more providers.
+4. Prove Bifrost routes Bedrock and Foundry-compatible payloads without dropping tool-call fields.
+5. Create `spike/copilot-user-backend`.
+6. Implement `ai-orch copilot login` and `ai-orch copilot models`.
+7. Prove `gpt-5-mini` through a direct ai-orch Copilot smoke command.
+8. Add `copilot-gpt-5-mini` to `models/registry.yaml` using `model_id`.
+9. Route `/v1/chat/completions` through `copilot-user`.
+10. Add `/v1/responses` support for GPT-5 class Copilot models after the chat path works.
+11. Run OpenCode against ai-orch, not against `github-copilot` directly.
+12. Record audit evidence showing `gateway_enforced` Copilot model calls.
+
+Current ACP posture: OpenCode ACP is the direct runtime lane. It should not receive MCP servers through `session/new`; MCP remains a separate gateway route. ACP file writes and workspace diffs are recorded as patch evidence, while model calls remain gateway-enforced through ai-orch.
+
+Implemented local commands:
+
+```sh
+ai-orch copilot login
+ai-orch copilot status
+ai-orch copilot models
+ai-orch copilot smoke --model gpt-5-mini --prompt "Reply exactly: copilot-smoke-ok"
+ai-orch copilot logout
+```
+
+Required local storage setting:
+
+```sh
+AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY=<32+ byte secret>
+```
+
+Gateway backend setting:
+
+```sh
+AI_ORCH_MODEL_BACKEND=copilot-user
+AI_ORCH_COPILOT_TOKEN_DB=~/.ai-orch/copilot-tokens.db
+```
+
+GitHub Models remains a lower-priority optional backend for environments that need an official GitHub inference API. The beta priority is Copilot user entitlement plus enterprise Bedrock and Foundry routes through the governed ai-orch gateway.
 
 ## Open Questions
 

@@ -80,8 +80,17 @@ func (h *DispatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// for the non-streaming Phase 1 fallback. In Phase 2, this would become SSE.
 	var events []dispatch.RuntimeEvent
 	var runtimeError string
+	patchCount := 0
+	toolCallCount := 0
+	startedAt := time.Now()
 	for event := range handle.Events() {
 		events = append(events, event)
+		if event.Type == "patch" {
+			patchCount++
+		}
+		if event.Type == "tool" || event.Type == "tool_call" || event.Type == "tool_request" {
+			toolCallCount++
+		}
 		if event.Type == "error" && runtimeError == "" {
 			runtimeError = event.Payload
 		}
@@ -112,6 +121,12 @@ func (h *DispatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		EventType:          "specialist.execution",
 		Actor:              "local-dev",
 		Agent:              req.Agent,
+		Runtime:            "opencode_acp",
+		RuntimeStatus:      "completed",
+		DurationMS:         time.Since(startedAt).Milliseconds(),
+		EventCount:         len(events),
+		PatchCount:         patchCount,
+		ToolCallCount:      toolCallCount,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "orchestrator",

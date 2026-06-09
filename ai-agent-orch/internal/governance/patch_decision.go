@@ -93,6 +93,8 @@ func (h *PatchDecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		EventType:          "patch.decision",
 		Actor:              actor,
 		Reason:             fmt.Sprintf("%s: %s", req.Decision, req.Reason),
+		PatchID:            req.PatchID,
+		PatchDecision:      req.Decision,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",

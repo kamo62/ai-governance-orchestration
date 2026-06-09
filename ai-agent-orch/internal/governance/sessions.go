@@ -66,6 +66,7 @@ type SessionConfig struct {
 	Metrics           *MetricsHandler
 	NewID             func(prefix string) string
 	LocalStateTTL     time.Duration
+	RequireWorkItem   bool
 	// ContextResolver auto-resolves git/repo/branch metadata when not provided explicitly.
 	ContextResolver ContextResolver
 	// TrustedClientToken, when set, gates the privileged trust levels
@@ -129,7 +130,8 @@ type SessionService struct {
 	lastEventMu sync.Mutex
 	lastEventID map[string]string
 	// localStateTTL controls how long abandoned in-process state is retained.
-	localStateTTL time.Duration
+	localStateTTL   time.Duration
+	requireWorkItem bool
 }
 
 // rememberEventID stores the latest audit event ID for a session.
@@ -362,6 +364,7 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 		cancels:            make(map[string]context.CancelFunc),
 		cancelTimes:        make(map[string]time.Time),
 		localStateTTL:      ttl,
+		requireWorkItem:    cfg.RequireWorkItem,
 	}
 }
 
@@ -492,6 +495,14 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.resolveSessionContext(&request)
+	if err := s.enforceWorkItemContext(&request); err != nil {
+		if auditErr := s.appendDenied(r.Context(), err.Error(), nil, request.Classification); auditErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			return
+		}
+		writeJSON(w, http.StatusPreconditionRequired, map[string]any{"error": err.Error()})
+		return
+	}
 	if blocked, reason := s.blockedByKillSwitch(request.Agent); blocked {
 		if err := s.appendDenied(r.Context(), reason, nil, request.Classification); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
@@ -674,6 +685,28 @@ func (s *SessionService) resolveSessionContext(request *CreateSessionRequest) {
 	if request.SourceSystem == "" {
 		request.SourceSystem = resolved.SourceSystem
 	}
+}
+
+func (s *SessionService) enforceWorkItemContext(request *CreateSessionRequest) error {
+	if s == nil || !s.requireWorkItem || request == nil {
+		return nil
+	}
+	workItemID := strings.TrimSpace(request.WorkItemID)
+	if workItemID == "" {
+		return errors.New("work item ID is required; switch to a feature branch like feature/OMENG-300-governance-fixes or pass work_item_id")
+	}
+	branch := strings.TrimSpace(request.Branch)
+	if branch == "" {
+		return errors.New("feature branch is required before starting governed work; switch to feature/OMENG-300-governance-fixes")
+	}
+	switch strings.ToLower(branch) {
+	case "main", "master", "trunk", "develop", "development":
+		return fmt.Errorf("governed work cannot start on protected branch %q; switch to a feature branch containing %s", branch, workItemID)
+	}
+	if !strings.Contains(strings.ToLower(branch), strings.ToLower(workItemID)) {
+		return fmt.Errorf("branch %q must contain work item ID %q", branch, workItemID)
+	}
+	return nil
 }
 
 // actorFromContext extracts the authenticated subject from the context, falling back to "local-dev".

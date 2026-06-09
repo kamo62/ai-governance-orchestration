@@ -29,6 +29,12 @@
     patchCount: document.getElementById("patchCount"),
     versionBadge: document.getElementById("versionBadge"),
     gatewayList: document.getElementById("gatewayList"),
+    backendCommandList: document.getElementById("backendCommandList"),
+    copilotStatusBadge: document.getElementById("copilotStatusBadge"),
+    copilotStatusText: document.getElementById("copilotStatusText"),
+    copilotLogin: document.getElementById("copilotLogin"),
+    copilotModels: document.getElementById("copilotModels"),
+    copilotOutput: document.getElementById("copilotOutput"),
     sessionList: document.getElementById("sessionList"),
     sessionBadge: document.getElementById("sessionBadge"),
     auditSessionTitle: document.getElementById("auditSessionTitle"),
@@ -227,6 +233,79 @@
       ].join("");
       el.gatewayList.appendChild(card);
     });
+    loadBackends().catch((err) => log("backend commands unavailable: " + err.message));
+    loadCopilotStatus().catch(() => {});
+  }
+
+  async function loadBackends() {
+    if (!requireDevToken("Backend status")) return;
+    const data = await api("/v1/backends", { headers: devHeaders() });
+    el.backendCommandList.innerHTML = "";
+    const commands = data.commands || {};
+    Object.keys(commands).sort().forEach((key) => {
+      const item = document.createElement("div");
+      item.className = "command-item";
+      item.innerHTML = [
+        "<strong>" + escapeHtml(key) + "</strong>",
+        "<code>" + escapeHtml(commands[key]) + "</code>",
+        "<span><button type=\"button\" data-backend=\"" + escapeHtml(key) + "\" data-action=\"up\">Start</button> ",
+        "<button type=\"button\" data-backend=\"" + escapeHtml(key) + "\" data-action=\"down\">Stop</button></span>",
+      ].join("");
+      el.backendCommandList.appendChild(item);
+    });
+    el.backendCommandList.querySelectorAll("button[data-backend]").forEach((button) => {
+      button.addEventListener("click", () => runBackendAction(button.dataset.backend, button.dataset.action));
+    });
+  }
+
+  async function runBackendAction(backend, action) {
+    if (!state.adminToken.trim()) {
+      setStatus("Admin token required", "warn");
+      log("backend " + action + " requires admin token");
+      return;
+    }
+    try {
+      const result = await api("/v1/backends", {
+        method: "POST",
+        headers: adminHeaders(),
+        body: JSON.stringify({ backend, action }),
+      });
+      log("backend " + action + " completed: " + backend);
+      if (el.copilotOutput) el.copilotOutput.textContent = result.output || "ok";
+      refreshAll();
+    } catch (err) {
+      log("backend " + action + " failed: " + err.message);
+      if (el.copilotOutput) el.copilotOutput.textContent = err.message;
+    }
+  }
+
+  async function loadCopilotStatus() {
+    if (!hasDevToken()) return;
+    try {
+      const status = await api("/v1/copilot/status", { headers: devHeaders() });
+      el.copilotStatusBadge.textContent = status.configured ? "Configured" : "Not configured";
+      el.copilotStatusText.textContent = status.configured
+        ? "GitHub " + (status.github_login || "unknown") + " for " + status.actor_subject
+        : "No Copilot token for " + (status.actor_subject || "current actor") + ".";
+    } catch (err) {
+      el.copilotStatusBadge.textContent = "Unavailable";
+      el.copilotStatusText.textContent = err.message;
+    }
+  }
+
+  async function startCopilotLogin() {
+    if (!requireDevToken("Copilot login")) return;
+    const login = await api("/v1/copilot/login/start", { method: "POST", headers: devHeaders() });
+    const url = login.verification_uri_complete || login.verification_uri;
+    el.copilotOutput.textContent = "Open: " + url + "\nCode: " + login.user_code + "\nLogin ID: " + login.login_id;
+    log("copilot login started");
+  }
+
+  async function listCopilotModels() {
+    if (!requireDevToken("Copilot models")) return;
+    const models = await api("/v1/copilot/models", { headers: devHeaders() });
+    el.copilotOutput.textContent = JSON.stringify(models, null, 2);
+    log("copilot models loaded");
   }
 
   function renderAgents(agents) {
@@ -605,6 +684,16 @@
   });
 
   el.refresh.addEventListener("click", refreshAll);
+  if (el.copilotLogin) {
+    el.copilotLogin.addEventListener("click", () => {
+      startCopilotLogin().catch((err) => log("copilot login failed: " + err.message));
+    });
+  }
+  if (el.copilotModels) {
+    el.copilotModels.addEventListener("click", () => {
+      listCopilotModels().catch((err) => log("copilot models failed: " + err.message));
+    });
+  }
   el.clearLog.addEventListener("click", () => {
     el.activityLog.innerHTML = "";
   });

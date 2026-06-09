@@ -43,6 +43,18 @@ type Event struct {
 	MCPServerID        string         `json:"mcp_server_id,omitempty"`
 	MCPToolName        string         `json:"mcp_tool_name,omitempty"`
 	AuthMode           string         `json:"auth_mode,omitempty"`
+	PatchID            string         `json:"patch_id,omitempty"`
+	PatchBufferID      string         `json:"patch_buffer_id,omitempty"`
+	PatchDecision      string         `json:"patch_decision,omitempty"`
+	PatchFileCount     int            `json:"patch_file_count,omitempty"`
+	Runtime            string         `json:"runtime,omitempty"`
+	RuntimeStatus      string         `json:"runtime_status,omitempty"`
+	DurationMS         int64          `json:"duration_ms,omitempty"`
+	EventCount         int            `json:"event_count,omitempty"`
+	PatchCount         int            `json:"patch_count,omitempty"`
+	ToolCallCount      int            `json:"tool_call_count,omitempty"`
+	WorkspaceSHA256    string         `json:"workspace_sha256,omitempty"`
+	OpencodeVersion    string         `json:"opencode_version,omitempty"`
 	TokenUsage         map[string]any `json:"token_usage,omitempty"`
 	GatewayBackend     string         `json:"gateway_backend,omitempty"`
 	TrustLevel         string         `json:"trust_level,omitempty"`

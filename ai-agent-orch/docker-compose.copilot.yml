@@ -1,0 +1,20 @@
+# Copilot-backed local profile.
+#
+# Usage:
+#   export AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY='<local secret>'
+#   scripts/copilot-verify.sh
+#   docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d governance-shell orchestrator
+
+services:
+  bifrost:
+    profiles: ["bifrost"]
+
+  governance-shell:
+    environment:
+      AI_ORCH_MODEL_BACKEND: copilot-user
+      AI_ORCH_COPILOT_TOKEN_DB: ${AI_ORCH_COPILOT_TOKEN_DB:-/app/var/audit/copilot-tokens.db}
+      AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY: ${AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY:-}
+
+  orchestrator:
+    environment:
+      AI_ORCH_MODEL_ALIAS_OVERRIDE: ${AI_ORCH_MODEL_ALIAS_OVERRIDE:-copilot-gpt-5-mini}

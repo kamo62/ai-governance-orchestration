@@ -1,5 +1,11 @@
 package patch
 
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+)
+
 // PatchEnvelope is the wire format for proposed file changes.
 type PatchEnvelope struct {
 	ProtocolVersion int         `json:"protocolVersion"`
@@ -9,6 +15,35 @@ type PatchEnvelope struct {
 	Summary         string      `json:"summary"`
 	Rationale       string      `json:"rationale"`
 	Files           []PatchFile `json:"files"`
+}
+
+func (p *PatchEnvelope) UnmarshalJSON(data []byte) error {
+	type alias PatchEnvelope
+	var raw struct {
+		ProtocolVersion json.RawMessage `json:"protocolVersion"`
+		*alias
+	}
+	raw.alias = (*alias)(p)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw.ProtocolVersion) == 0 {
+		return nil
+	}
+	var version int
+	if err := json.Unmarshal(raw.ProtocolVersion, &version); err == nil {
+		p.ProtocolVersion = version
+		return nil
+	}
+	var versionText string
+	if err := json.Unmarshal(raw.ProtocolVersion, &versionText); err == nil {
+		parsed, err := strconv.Atoi(strings.TrimSpace(versionText))
+		if err == nil {
+			p.ProtocolVersion = parsed
+		}
+		return nil
+	}
+	return nil
 }
 
 // PatchFile describes one file change.

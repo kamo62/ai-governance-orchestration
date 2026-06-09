@@ -11,16 +11,18 @@ import (
 
 // OrchestratorHTTPClient is the concrete client that calls the Orchestrator.
 type OrchestratorHTTPClient struct {
-	baseURL      string
-	serviceToken string
-	client       *http.Client
+	baseURL        string
+	serviceToken   string
+	client         *http.Client
+	dispatchClient *http.Client
 }
 
 func NewOrchestratorHTTPClient(baseURL string, serviceToken string) *OrchestratorHTTPClient {
 	return &OrchestratorHTTPClient{
-		baseURL:      baseURL,
-		serviceToken: serviceToken,
-		client:       &http.Client{Timeout: 30 * time.Second},
+		baseURL:        baseURL,
+		serviceToken:   serviceToken,
+		client:         &http.Client{Timeout: 30 * time.Second},
+		dispatchClient: &http.Client{Timeout: 10 * time.Minute},
 	}
 }
 
@@ -83,7 +85,11 @@ func (c *OrchestratorHTTPClient) Dispatch(ctx context.Context, sessionID string,
 	req.Header.Set("X-AI-Orch-Session-ID", sessionID)
 	c.setServiceAuth(req)
 
-	resp, err := c.client.Do(req)
+	dispatchClient := c.dispatchClient
+	if dispatchClient == nil {
+		dispatchClient = c.client
+	}
+	resp, err := dispatchClient.Do(req)
 	if err != nil {
 		return DispatchResult{}, err
 	}

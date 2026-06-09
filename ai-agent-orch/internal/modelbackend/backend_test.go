@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"ai-agent-orch/internal/copilot"
 	"ai-agent-orch/internal/openrouter"
 )
 
@@ -132,6 +133,74 @@ func TestBifrostBackendStreamUsesResolvedModel(t *testing.T) {
 	}
 }
 
+func TestBifrostBackendRawChatPreservesToolFields(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("expected /v1/chat/completions, got %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_raw","model":"bedrock/anthropic.claude","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	backend := NewBifrostBackend(BifrostConfig{BaseURL: server.URL, HTTPClient: server.Client()})
+	body := []byte(`{"model":"coding-bedrock","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_1","content":"ok"}],"tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}],"tool_choice":"auto"}`)
+	resp, err := backend.ChatCompletionRaw(context.Background(), RawRequest{Provider: "bedrock", Model: "anthropic.claude", Body: body})
+	if err != nil {
+		t.Fatalf("ChatCompletionRaw returned error: %v", err)
+	}
+	if got["model"] != "bedrock/anthropic.claude" {
+		t.Fatalf("expected resolved model, got %#v", got["model"])
+	}
+	if _, ok := got["tools"].([]any); !ok {
+		t.Fatalf("expected tools to be preserved, got %#v", got)
+	}
+	messages, ok := got["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("expected messages to be preserved, got %#v", got["messages"])
+	}
+	if !strings.Contains(string(resp), "tool_calls") {
+		t.Fatalf("expected raw response body, got %s", string(resp))
+	}
+}
+
+func TestBifrostBackendRawResponsesUsesResponsesPath(t *testing.T) {
+	var gotPath string
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_raw","model":"bedrock/anthropic.claude","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":2,"output_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	backend := NewBifrostBackend(BifrostConfig{BaseURL: server.URL, HTTPClient: server.Client()})
+	body := []byte(`{"model":"coding-bedrock","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}],"tools":[{"type":"function","name":"read","parameters":{"type":"object"}}]}`)
+	resp, err := backend.ResponsesRaw(context.Background(), RawRequest{Provider: "bedrock", Model: "anthropic.claude", Body: body})
+	if err != nil {
+		t.Fatalf("ResponsesRaw returned error: %v", err)
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("expected /v1/responses, got %s", gotPath)
+	}
+	if got["model"] != "bedrock/anthropic.claude" {
+		t.Fatalf("expected resolved model, got %#v", got["model"])
+	}
+	if _, ok := got["tools"].([]any); !ok {
+		t.Fatalf("expected responses tools to be preserved, got %#v", got)
+	}
+	if !strings.Contains(string(resp), "input_tokens") {
+		t.Fatalf("expected raw responses body, got %s", string(resp))
+	}
+}
+
 func TestAgentGatewayBackendPostsOpenAICompatibleChatCompletion(t *testing.T) {
 	var gotAuth string
 	var gotModel string
@@ -248,4 +317,60 @@ func TestNewBackendRejectsAgentGatewayWithoutBaseURL(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected missing agentgateway base URL error")
 	}
+}
+
+func TestNewBackendRejectsCopilotWithoutResolver(t *testing.T) {
+	_, err := New(BackendConfig{Name: BackendCopilotUser})
+	if err == nil {
+		t.Fatal("expected missing copilot token resolver error")
+	}
+}
+
+func TestRoutedBackendRoutesRawChatByProvider(t *testing.T) {
+	defaultBackend := &recordRawBackend{name: "default"}
+	copilotBackend := &recordRawBackend{name: BackendCopilotUser}
+	routed := NewRoutedBackend(defaultBackend, map[string]Backend{BackendCopilotUser: copilotBackend})
+	_, err := routed.ChatCompletionRaw(context.Background(), RawRequest{Provider: BackendCopilotUser, Model: "gpt-5-mini", Body: []byte(`{"model":"x"}`), ActorSubject: "dev"})
+	if err != nil {
+		t.Fatalf("ChatCompletionRaw returned error: %v", err)
+	}
+	if copilotBackend.calls != 1 || defaultBackend.calls != 0 {
+		t.Fatalf("expected copilot route, default=%d copilot=%d", defaultBackend.calls, copilotBackend.calls)
+	}
+	if routed.ResolvedModel(BackendCopilotUser, "gpt-5-mini") != "copilot-user:gpt-5-mini" {
+		t.Fatalf("expected routed resolved model")
+	}
+}
+
+type recordRawBackend struct {
+	name  string
+	calls int
+}
+
+func (b *recordRawBackend) Name() string { return b.name }
+
+func (b *recordRawBackend) ResolvedModel(_ string, model string) string { return b.name + ":" + model }
+
+func (b *recordRawBackend) ChatCompletion(context.Context, openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
+	return openrouter.ChatCompletionResponse{}, nil
+}
+
+func (b *recordRawBackend) ChatCompletionStream(context.Context, openrouter.ChatCompletionRequest) (io.ReadCloser, error) {
+	return nil, nil
+}
+
+func (b *recordRawBackend) ChatCompletionRaw(context.Context, RawRequest) ([]byte, error) {
+	b.calls++
+	return []byte(`{"ok":true}`), nil
+}
+
+func (b *recordRawBackend) ChatCompletionStreamRaw(context.Context, RawRequest) (io.ReadCloser, error) {
+	b.calls++
+	return io.NopCloser(strings.NewReader("data: [DONE]\n\n")), nil
+}
+
+type staticCopilotResolver struct{}
+
+func (staticCopilotResolver) TokenForActor(context.Context, string) (copilot.TokenRecord, error) {
+	return copilot.TokenRecord{AccessToken: "token"}, nil
 }

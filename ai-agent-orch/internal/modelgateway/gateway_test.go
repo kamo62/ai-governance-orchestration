@@ -14,6 +14,7 @@ import (
 
 	"ai-agent-orch/internal/audit"
 	"ai-agent-orch/internal/catalog"
+	"ai-agent-orch/internal/modelbackend"
 	"ai-agent-orch/internal/openrouter"
 	"ai-agent-orch/internal/router"
 )
@@ -40,6 +41,51 @@ func (f *fakeChatClient) ChatCompletion(_ context.Context, req openrouter.ChatCo
 func (f *fakeChatClient) ChatCompletionStream(_ context.Context, req openrouter.ChatCompletionRequest) (io.ReadCloser, error) {
 	f.lastRequest = req
 	return nil, f.err
+}
+
+type rawFakeBackend struct {
+	lastRaw modelbackend.RawRequest
+	chat    []byte
+	resp    []byte
+	stream  string
+	err     error
+}
+
+func (f *rawFakeBackend) Name() string { return "raw-test-backend" }
+
+func (f *rawFakeBackend) ResolvedModel(provider string, model string) string {
+	if provider == "" {
+		return model
+	}
+	return provider + "/" + model
+}
+
+func (f *rawFakeBackend) ChatCompletion(context.Context, openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
+	return openrouter.ChatCompletionResponse{}, f.err
+}
+
+func (f *rawFakeBackend) ChatCompletionStream(context.Context, openrouter.ChatCompletionRequest) (io.ReadCloser, error) {
+	return nil, f.err
+}
+
+func (f *rawFakeBackend) ChatCompletionRaw(_ context.Context, req modelbackend.RawRequest) ([]byte, error) {
+	f.lastRaw = req
+	return f.chat, f.err
+}
+
+func (f *rawFakeBackend) ChatCompletionStreamRaw(_ context.Context, req modelbackend.RawRequest) (io.ReadCloser, error) {
+	f.lastRaw = req
+	return io.NopCloser(strings.NewReader(f.stream)), f.err
+}
+
+func (f *rawFakeBackend) ResponsesRaw(_ context.Context, req modelbackend.RawRequest) ([]byte, error) {
+	f.lastRaw = req
+	return f.resp, f.err
+}
+
+func (f *rawFakeBackend) ResponsesStreamRaw(_ context.Context, req modelbackend.RawRequest) (io.ReadCloser, error) {
+	f.lastRaw = req
+	return io.NopCloser(strings.NewReader(f.stream)), f.err
 }
 
 func newTestGateway() *Gateway {
@@ -175,6 +221,53 @@ func TestGatewayChatCompletionsSuccess(t *testing.T) {
 	}
 }
 
+func TestGatewayChatCompletionsPreservesOpenAIToolPayload(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	backend := &rawFakeBackend{
+		chat: []byte(`{"id":"chatcmpl-test","model":"openrouter/upstream-model","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`),
+	}
+	g := NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.New(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+			{Alias: "coding-primary", Provider: "openrouter", ModelID: "upstream-model", AllowedClassifications: []string{"public", "internal"}},
+		}}),
+		Backend: backend,
+		Audit:   auditStore,
+		NewID:   func(prefix string) string { return prefix + "_test" },
+		LookupSession: func(context.Context, string) (SessionInfo, error) {
+			return SessionInfo{Classification: "internal", ActorSubject: "dev@example.com"}, nil
+		},
+	})
+	body := []byte(`{"model":"coding-primary","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_1","content":"ok"},{"role":"user","content":[{"type":"text","text":"continue"}]}],"tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}],"tool_choice":"auto","response_format":{"type":"json_object"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-test-token")
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_model_gateway")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if backend.lastRaw.Model != "upstream-model" || backend.lastRaw.Provider != "openrouter" {
+		t.Fatalf("unexpected raw routing request: %#v", backend.lastRaw)
+	}
+	if !bytes.Contains(backend.lastRaw.Body, []byte(`"tool_calls"`)) || !bytes.Contains(backend.lastRaw.Body, []byte(`"response_format"`)) {
+		t.Fatalf("expected raw request body to preserve tools and response_format: %s", string(backend.lastRaw.Body))
+	}
+	if !strings.Contains(rec.Body.String(), `"model":"coding-primary"`) {
+		t.Fatalf("expected alias model in response, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "tool_calls") {
+		t.Fatalf("expected tool_calls in response, got %s", rec.Body.String())
+	}
+	events, err := auditStore.EventsBySession(context.Background(), "sess_model_gateway")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 || events[0].Actor != "dev@example.com" {
+		t.Fatalf("expected actor-bound audit event, got %#v", events)
+	}
+}
+
 func TestGatewayChatCompletionsRequiresSessionID(t *testing.T) {
 	g := newTestGateway()
 	body := []byte(`{"model":"coding-primary","messages":[{"role":"user","content":"hello"}]}`)
@@ -261,20 +354,19 @@ func TestGatewayChatCompletionsIgnoresCallerClassificationHeader(t *testing.T) {
 
 func TestGatewayResponsesSuccess(t *testing.T) {
 	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
-	backend := &fakeChatClient{
-		resp: openrouter.ChatCompletionResponse{
-			ID:    "chatcmpl-test",
-			Model: "anthropic/claude-opus-4.7",
-			Choices: []struct {
-				Message openrouter.Message `json:"message"`
-			}{
-				{Message: openrouter.Message{Role: "assistant", Content: "Hello"}},
-			},
-			Usage: openrouter.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
-		},
+	backend := &rawFakeBackend{
+		resp: []byte(`{"id":"resp-test","model":"openrouter/upstream-model","output":[{"type":"message","content":[{"type":"output_text","text":"Hello"}]}],"usage":{"input_tokens":10,"output_tokens":5}}`),
 	}
-	g := newTestGatewayWithBackend(backend, auditStore)
-	body := []byte(`{"model":"coding-primary","input":[{"role":"user","content":"hello"}]}`)
+	g := NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.New(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+			{Alias: "coding-primary", Provider: "openrouter", ModelID: "upstream-model", AllowedClassifications: []string{"public", "internal"}},
+		}}),
+		Backend: backend,
+		Audit:   auditStore,
+		NewID:   func(prefix string) string { return prefix + "_test" },
+	})
+	body := []byte(`{"model":"coding-primary","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}],"tools":[{"type":"function","name":"read","parameters":{"type":"object"}}]}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer runtime-test-token")
 	req.Header.Set("X-AI-Orch-Session-ID", "sess_model_gateway")
@@ -283,15 +375,15 @@ func TestGatewayResponsesSuccess(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var result openAIResponsesResponse
+	var result map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if result.Model != "coding-primary" {
-		t.Fatalf("expected alias in response model field, got %q", result.Model)
+	if result["model"] != "coding-primary" {
+		t.Fatalf("expected alias in response model field, got %#v", result["model"])
 	}
-	if len(result.Output) != 1 {
-		t.Fatalf("expected 1 output, got %d", len(result.Output))
+	if !bytes.Contains(backend.lastRaw.Body, []byte(`"tools"`)) {
+		t.Fatalf("expected responses tools to be preserved, got %s", string(backend.lastRaw.Body))
 	}
 	events, err := auditStore.EventsBySession(context.Background(), "sess_model_gateway")
 	if err != nil {
@@ -393,7 +485,7 @@ func TestGatewayStreamTranslatesChunks(t *testing.T) {
 	if streamClient.lastRequest.StreamOptions == nil || !streamClient.lastRequest.StreamOptions.IncludeUsage {
 		t.Fatalf("expected upstream stream request to ask for usage, got %#v", streamClient.lastRequest.StreamOptions)
 	}
-	if !strings.Contains(rec.Body.String(), `"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16}`) {
+	if !strings.Contains(rec.Body.String(), `"prompt_tokens":12`) || !strings.Contains(rec.Body.String(), `"completion_tokens":4`) || !strings.Contains(rec.Body.String(), `"total_tokens":16`) {
 		t.Fatalf("expected streamed usage frame, got: %s", rec.Body.String())
 	}
 	events, err := auditStore.EventsBySession(context.Background(), "sess_model_gateway")

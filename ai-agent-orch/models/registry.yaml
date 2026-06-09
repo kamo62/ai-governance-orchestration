@@ -98,3 +98,24 @@ models:
     cost:
       pricing_source: openrouter
       verified_on: 2026-05-24
+
+  - alias: copilot-gpt-5-mini
+    provider: copilot-user
+    model_id: gpt-5-mini
+    purpose: Governed per-user GitHub Copilot GPT-5 Mini route.
+    allowed_classifications: [public, internal]
+    fallback_alias: coding-balanced
+
+  - alias: copilot-gpt-5.3-codex
+    provider: copilot-user
+    model_id: gpt-5.3-codex
+    purpose: Governed per-user GitHub Copilot Codex route.
+    allowed_classifications: [public, internal]
+    fallback_alias: copilot-gpt-5-mini
+
+  - alias: copilot-gpt-5.5
+    provider: copilot-user
+    model_id: gpt-5.5
+    purpose: Governed per-user GitHub Copilot high-reasoning route.
+    allowed_classifications: [public, internal]
+    fallback_alias: copilot-gpt-5-mini

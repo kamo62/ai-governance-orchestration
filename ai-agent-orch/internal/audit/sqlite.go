@@ -104,11 +104,42 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.ensureAuditColumn("event_hash", "TEXT"); err != nil {
 		return err
 	}
+	for column, definition := range map[string]string{
+		"trust_level":      "TEXT",
+		"enforcement_mode": "TEXT",
+		"provider":         "TEXT",
+		"model_alias":      "TEXT",
+		"model_resolved":   "TEXT",
+		"gateway_backend":  "TEXT",
+		"run_id":           "TEXT",
+		"work_item_id":     "TEXT",
+		"patch_id":         "TEXT",
+		"patch_buffer_id":  "TEXT",
+		"patch_decision":   "TEXT",
+		"patch_file_count": "INTEGER NOT NULL DEFAULT 0",
+		"runtime":          "TEXT",
+		"runtime_status":   "TEXT",
+		"duration_ms":      "INTEGER NOT NULL DEFAULT 0",
+		"event_count":      "INTEGER NOT NULL DEFAULT 0",
+		"patch_count":      "INTEGER NOT NULL DEFAULT 0",
+		"tool_call_count":  "INTEGER NOT NULL DEFAULT 0",
+		"workspace_sha256": "TEXT",
+		"opencode_version": "TEXT",
+		"token_usage_json": "TEXT",
+	} {
+		if err := s.ensureAuditColumn(column, definition); err != nil {
+			return err
+		}
+	}
 	_, err = s.db.Exec(`
 		CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_events(session_id);
 		CREATE INDEX IF NOT EXISTS idx_audit_type ON audit_events(event_type);
 		CREATE INDEX IF NOT EXISTS idx_audit_recorded ON audit_events(recorded_at);
 		CREATE INDEX IF NOT EXISTS idx_audit_parent ON audit_events(parent_event_id);
+		CREATE INDEX IF NOT EXISTS idx_audit_trust ON audit_events(trust_level);
+		CREATE INDEX IF NOT EXISTS idx_audit_provider_model ON audit_events(provider, model_alias);
+		CREATE INDEX IF NOT EXISTS idx_audit_run ON audit_events(run_id);
+		CREATE INDEX IF NOT EXISTS idx_audit_patch ON audit_events(patch_id);
 		CREATE TABLE IF NOT EXISTS audit_chain_heads (
 			session_id TEXT PRIMARY KEY,
 			head_hash TEXT NOT NULL
@@ -181,6 +212,10 @@ func (s *SQLiteStore) insertEvent(ctx context.Context, execer sqlExecutor, event
 	if err != nil {
 		return Event{}, fmt.Errorf("encode findings: %w", err)
 	}
+	tokenUsageJSON, err := json.Marshal(event.TokenUsage)
+	if err != nil {
+		return Event{}, fmt.Errorf("encode token usage: %w", err)
+	}
 
 	// Store full event as JSON for schema flexibility.
 	payloadJSON, err := json.Marshal(event)
@@ -193,15 +228,23 @@ func (s *SQLiteStore) insertEvent(ctx context.Context, execer sqlExecutor, event
 				event_id, parent_event_id, session_id, event_type, actor, agent, classification,
 				reason, findings_json, prompt_sha256, estimated_cost_usd, cost_cap_usd,
 				raw_prompt_stored, raw_response_stored, correlation_subject, recorded_at,
-				prev_event_hash, event_hash, payload_json
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				prev_event_hash, event_hash,
+				trust_level, enforcement_mode, provider, model_alias, model_resolved, gateway_backend,
+				run_id, work_item_id, patch_id, patch_buffer_id, patch_decision, patch_file_count,
+				runtime, runtime_status, duration_ms, event_count, patch_count, tool_call_count,
+				workspace_sha256, opencode_version, token_usage_json, payload_json
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 		event.EventID, event.ParentEventID, event.SessionID, event.EventType, event.Actor, event.Agent,
 		event.Classification, event.Reason, string(findingsJSON), event.PromptSHA256,
 		event.EstimatedCostUSD, event.CostCapUSD,
 		boolToInt(event.RawPromptStored), boolToInt(event.RawResponseStored),
 		event.CorrelationSubject, event.RecordedAt.Format(time.RFC3339Nano),
-		event.PrevEventHash, event.EventHash, string(payloadJSON),
+		event.PrevEventHash, event.EventHash,
+		event.TrustLevel, event.EnforcementMode, event.Provider, event.ModelAlias, event.ModelResolved, event.GatewayBackend,
+		event.RunID, event.WorkItemID, event.PatchID, event.PatchBufferID, event.PatchDecision, event.PatchFileCount,
+		event.Runtime, event.RuntimeStatus, event.DurationMS, event.EventCount, event.PatchCount, event.ToolCallCount,
+		event.WorkspaceSHA256, event.OpencodeVersion, string(tokenUsageJSON), string(payloadJSON),
 	)
 	if err != nil {
 		return Event{}, fmt.Errorf("insert audit event: %w", err)

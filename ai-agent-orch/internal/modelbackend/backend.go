@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"ai-agent-orch/internal/copilot"
 	"ai-agent-orch/internal/openrouter"
 )
 
@@ -28,6 +29,31 @@ type Backend interface {
 	ChatCompletionStream(context.Context, openrouter.ChatCompletionRequest) (io.ReadCloser, error)
 }
 
+// RawRequest carries an OpenAI-compatible request body that should be forwarded
+// without narrowing provider-specific fields such as tools, tool calls,
+// response_format, reasoning metadata, or multimodal content arrays.
+type RawRequest struct {
+	Provider     string
+	ModelAlias   string
+	Model        string
+	Body         []byte
+	ActorSubject string
+}
+
+// RawChatBackend is implemented by backends that can forward chat completions
+// while preserving the caller's OpenAI-compatible JSON payload.
+type RawChatBackend interface {
+	ChatCompletionRaw(context.Context, RawRequest) ([]byte, error)
+	ChatCompletionStreamRaw(context.Context, RawRequest) (io.ReadCloser, error)
+}
+
+// RawResponsesBackend is implemented by backends that can forward the OpenAI
+// Responses API while preserving the caller's JSON payload and event stream.
+type RawResponsesBackend interface {
+	ResponsesRaw(context.Context, RawRequest) ([]byte, error)
+	ResponsesStreamRaw(context.Context, RawRequest) (io.ReadCloser, error)
+}
+
 type BackendConfig struct {
 	Name                     string
 	OpenRouterClient         openrouter.ChatClient
@@ -36,6 +62,7 @@ type BackendConfig struct {
 	AgentGatewayBaseURL      string
 	AgentGatewayAPIKey       string
 	AgentGatewayReadinessURL string
+	CopilotTokenResolver     CopilotTokenResolver
 	HTTPClient               *http.Client
 }
 
@@ -65,6 +92,13 @@ func New(cfg BackendConfig) (Backend, error) {
 			ReadinessURL: cfg.AgentGatewayReadinessURL,
 			HTTPClient:   cfg.HTTPClient,
 		}), nil
+	case BackendCopilotUser:
+		if cfg.CopilotTokenResolver == nil {
+			return nil, errors.New("copilot-user backend requires a token resolver")
+		}
+		client := copilot.NewClient()
+		client.HTTPClient = cfg.HTTPClient
+		return NewCopilotUserBackend(client, cfg.CopilotTokenResolver), nil
 	default:
 		return nil, fmt.Errorf("unknown model backend %q", cfg.Name)
 	}
@@ -104,6 +138,81 @@ func (b *OpenRouterBackend) ChatCompletionStream(ctx context.Context, req openro
 		return nil, errors.New("native OpenRouter backend unavailable")
 	}
 	return b.client.ChatCompletionStream(ctx, req)
+}
+
+func (b *OpenRouterBackend) ChatCompletionRaw(ctx context.Context, req RawRequest) ([]byte, error) {
+	if req.Provider != "" && req.Provider != "openrouter" {
+		return nil, fmt.Errorf("native OpenRouter backend cannot handle provider %q", req.Provider)
+	}
+	if rawClient, ok := b.client.(interface {
+		ChatCompletionRaw(context.Context, []byte) ([]byte, error)
+	}); ok {
+		body, err := withRawModel(req.Body, req.Model)
+		if err != nil {
+			return nil, err
+		}
+		return rawClient.ChatCompletionRaw(ctx, body)
+	}
+	chatReq, err := chatRequestFromRaw(req)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := b.ChatCompletion(ctx, chatReq)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(resp)
+}
+
+func (b *OpenRouterBackend) ChatCompletionStreamRaw(ctx context.Context, req RawRequest) (io.ReadCloser, error) {
+	if req.Provider != "" && req.Provider != "openrouter" {
+		return nil, fmt.Errorf("native OpenRouter backend cannot handle provider %q", req.Provider)
+	}
+	if rawClient, ok := b.client.(interface {
+		ChatCompletionStreamRaw(context.Context, []byte) (io.ReadCloser, error)
+	}); ok {
+		body, err := withRawModel(req.Body, req.Model)
+		if err != nil {
+			return nil, err
+		}
+		return rawClient.ChatCompletionStreamRaw(ctx, body)
+	}
+	chatReq, err := chatRequestFromRaw(req)
+	if err != nil {
+		return nil, err
+	}
+	return b.ChatCompletionStream(ctx, chatReq)
+}
+
+func chatRequestFromRaw(req RawRequest) (openrouter.ChatCompletionRequest, error) {
+	var chatReq openrouter.ChatCompletionRequest
+	if err := json.Unmarshal(req.Body, &chatReq); err != nil {
+		return openrouter.ChatCompletionRequest{}, fmt.Errorf("decode raw chat request: %w", err)
+	}
+	chatReq.Provider = req.Provider
+	chatReq.ModelAlias = req.ModelAlias
+	chatReq.Model = req.Model
+	if len(chatReq.Messages) == 0 {
+		return openrouter.ChatCompletionRequest{}, errors.New("at least one message is required")
+	}
+	return chatReq, nil
+}
+
+func withRawModel(body []byte, model string) ([]byte, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil, fmt.Errorf("decode raw chat request: %w", err)
+	}
+	modelJSON, err := json.Marshal(model)
+	if err != nil {
+		return nil, fmt.Errorf("encode raw model: %w", err)
+	}
+	obj["model"] = modelJSON
+	encoded, err := json.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("encode raw chat request: %w", err)
+	}
+	return encoded, nil
 }
 
 type BifrostConfig struct {
@@ -302,6 +411,22 @@ func (b *openAICompatibleBackend) ChatCompletionStream(ctx context.Context, req 
 	return resp.Body, nil
 }
 
+func (b *openAICompatibleBackend) ChatCompletionRaw(ctx context.Context, req RawRequest) ([]byte, error) {
+	return b.postRaw(ctx, "/v1/chat/completions", req)
+}
+
+func (b *openAICompatibleBackend) ChatCompletionStreamRaw(ctx context.Context, req RawRequest) (io.ReadCloser, error) {
+	return b.streamRaw(ctx, "/v1/chat/completions", req)
+}
+
+func (b *openAICompatibleBackend) ResponsesRaw(ctx context.Context, req RawRequest) ([]byte, error) {
+	return b.postRaw(ctx, "/v1/responses", req)
+}
+
+func (b *openAICompatibleBackend) ResponsesStreamRaw(ctx context.Context, req RawRequest) (io.ReadCloser, error) {
+	return b.streamRaw(ctx, "/v1/responses", req)
+}
+
 func (b *openAICompatibleBackend) Health(ctx context.Context) error {
 	if b == nil || b.healthURL == "" {
 		return nil
@@ -328,6 +453,76 @@ func (b *openAICompatibleBackend) encodeRequest(req openrouter.ChatCompletionReq
 		return nil, fmt.Errorf("encode %s request: %w", b.backendLabel(), err)
 	}
 	return body, nil
+}
+
+func (b *openAICompatibleBackend) encodeRawRequest(req RawRequest) ([]byte, error) {
+	if b == nil || b.baseURL == "" {
+		return nil, fmt.Errorf("%s backend base URL is required", b.backendLabel())
+	}
+	if req.Model == "" {
+		return nil, errors.New("model is required")
+	}
+	if len(req.Body) == 0 {
+		return nil, errors.New("request body is required")
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(req.Body, &body); err != nil {
+		return nil, fmt.Errorf("decode %s request body: %w", b.backendLabel(), err)
+	}
+	resolved := b.ResolvedModel(req.Provider, req.Model)
+	modelJSON, err := json.Marshal(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("encode %s model: %w", b.backendLabel(), err)
+	}
+	body["model"] = modelJSON
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("encode %s request: %w", b.backendLabel(), err)
+	}
+	return encoded, nil
+}
+
+func (b *openAICompatibleBackend) postRaw(ctx context.Context, path string, req RawRequest) ([]byte, error) {
+	body, err := b.encodeRawRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := b.newRequest(ctx, http.MethodPost, b.baseURL+path, bytes.NewReader(body), req.Provider)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := b.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("call %s%s: %w", b.backendLabel(), path, err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("%s returned %d: %s", b.backendLabel(), resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
+	return bodyBytes, nil
+}
+
+func (b *openAICompatibleBackend) streamRaw(ctx context.Context, path string, req RawRequest) (io.ReadCloser, error) {
+	body, err := b.encodeRawRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := b.newRequest(ctx, http.MethodPost, b.baseURL+path, bytes.NewReader(body), req.Provider)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Accept", "text/event-stream")
+	resp, err := b.streamHTTP.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("call %s%s stream: %w", b.backendLabel(), path, err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		return nil, fmt.Errorf("%s returned %d: %s", b.backendLabel(), resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return resp.Body, nil
 }
 
 func (b *openAICompatibleBackend) newRequest(ctx context.Context, method string, url string, body io.Reader, provider string) (*http.Request, error) {

@@ -17,6 +17,7 @@ import (
 	"ai-agent-orch/internal/catalog"
 	"ai-agent-orch/internal/composition"
 	"ai-agent-orch/internal/contextresolver"
+	"ai-agent-orch/internal/copilot"
 	"ai-agent-orch/internal/governance"
 	"ai-agent-orch/internal/governanceui"
 	"ai-agent-orch/internal/httpauth"
@@ -111,6 +112,7 @@ func main() {
 		ToolLoopMax:        cfg.ToolLoopMax,
 		Metrics:            metricsHandler,
 		ContextResolver:    sessionContextResolver,
+		RequireWorkItem:    cfg.RequireWorkItem,
 		TrustedClientToken: cfg.TrustedClientToken,
 	})
 	eventStore := governance.NewEventStore()
@@ -140,6 +142,16 @@ func main() {
 		Referer:  os.Getenv("OPENROUTER_HTTP_REFERER"),
 		AppTitle: envOrDefault("OPENROUTER_APP_TITLE", "ai-agent-orch-local"),
 	})
+	var copilotStore *copilot.Store
+	var copilotResolver modelbackend.CopilotTokenResolver
+	if os.Getenv("AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY") != "" {
+		store, err := copilot.OpenStore(os.Getenv("AI_ORCH_COPILOT_TOKEN_DB"), os.Getenv("AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY"))
+		if err != nil {
+			log.Fatalf("copilot token store init failed: %v", err)
+		}
+		copilotStore = store
+		copilotResolver = copilotStoreResolver{store: store}
+	}
 	modelBackend, err := modelbackend.New(modelbackend.BackendConfig{
 		Name:                     cfg.ModelBackend,
 		OpenRouterClient:         openRouterClient,
@@ -148,9 +160,16 @@ func main() {
 		AgentGatewayBaseURL:      cfg.AgentGatewayBaseURL,
 		AgentGatewayAPIKey:       cfg.AgentGatewayAPIKey,
 		AgentGatewayReadinessURL: cfg.AgentGatewayReadinessURL,
+		CopilotTokenResolver:     copilotResolver,
 	})
 	if err != nil {
 		log.Fatalf("model backend init failed: %v", err)
+	}
+	if modelBackend.Name() != modelbackend.BackendCopilotUser && copilotResolver != nil {
+		copilotBackend := modelbackend.NewCopilotUserBackend(copilot.NewClient(), copilotResolver)
+		modelBackend = modelbackend.NewRoutedBackend(modelBackend, map[string]modelbackend.Backend{
+			modelbackend.BackendCopilotUser: copilotBackend,
+		})
 	}
 	if healthBackend, ok := modelBackend.(interface{ Health(context.Context) error }); ok {
 		healthCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -166,6 +185,12 @@ func main() {
 	handler.Handle("/ui", governanceui.Redirect())
 	handler.Handle("/ui/", http.StripPrefix("/ui/", governanceui.Handler()))
 	handler.Handle("/", baseHandler)
+	gatewayOptions := []governance.GatewayOption{
+		{ID: "bifrost", Label: "Bifrost", Mode: "sidecar", Default: true},
+		{ID: "agentgateway", Label: "AgentGateway", Mode: "sidecar", ComposeFile: "docker-compose.agentgateway.yml"},
+		{ID: "native-openrouter", Label: "OpenRouter", Mode: "direct", ComposeFile: "docker-compose.openrouter.yml"},
+		{ID: "copilot-user", Label: "GitHub Copilot", Mode: "per-user", ComposeFile: "docker-compose.copilot.yml"},
+	}
 	handler.Handle("/v1/system/status", governance.NewSystemStatusHandler(governance.SystemStatusConfig{
 		Service:               "governance-shell",
 		Version:               appversion.Version,
@@ -174,12 +199,18 @@ func main() {
 		RuntimeGatewayEnabled: cfg.RuntimeToken != "",
 		ClassificationMax:     cfg.ClassificationMax,
 		PolicyEngine:          cfg.PolicyEngine,
-		Gateways: []governance.GatewayOption{
-			{ID: "bifrost", Label: "Bifrost", Mode: "sidecar", Default: true},
-			{ID: "agentgateway", Label: "AgentGateway", Mode: "sidecar", ComposeFile: "docker-compose.agentgateway.yml"},
-			{ID: "native-openrouter", Label: "OpenRouter", Mode: "direct", ComposeFile: "docker-compose.openrouter.yml"},
-		},
+		Gateways:              gatewayOptions,
 	}))
+	handler.Handle("/v1/backends", governance.NewBackendHandler(governance.BackendHandlerConfig{
+		CurrentBackend: modelBackend.Name(),
+		GatewayOptions: gatewayOptions,
+		AdminToken:     cfg.AdminToken,
+		ControlEnabled: cfg.BackendControlEnabled,
+		WorkDir:        cfg.BackendControlWorkDir,
+	}))
+	if copilotStore != nil {
+		handler.Handle("/v1/copilot/", governance.NewCopilotHandler(governance.CopilotHandlerConfig{DevToken: cfg.DevToken, Authorizer: requestAuthorizer, Store: copilotStore}))
+	}
 	handler.Handle("/v1/agents", governance.NewAgentListHandler(cfg.CatalogRoot))
 	handler.Handle("/v1/runs", governance.NewRunHandler(sessionService, orchClient))
 	handler.Handle("/v1/sessions", governance.NewSessionHandler(sessionService))
@@ -193,6 +224,7 @@ func main() {
 		Authorizer:   requestAuthorizer,
 		Audit:        auditStore,
 		ModelPricing: modelPricingStore,
+		Sessions:     sessionStore,
 	}))
 	handler.Handle("/v1/admin/killswitch", governance.NewAdminHandler(killSwitchStore, sessionService))
 	handler.Handle("/v1/admin/killswitch/", governance.NewAdminHandler(killSwitchStore, sessionService))
@@ -266,7 +298,22 @@ func main() {
 					if err != nil {
 						return modelgateway.SessionInfo{}, err
 					}
-					return modelgateway.SessionInfo{Classification: record.Classification}, nil
+					return modelgateway.SessionInfo{
+						Classification: record.Classification,
+						ActorSubject:   record.ActorSubject,
+						Agent:          record.Agent,
+						RunID:          record.RunID,
+						WorkItemID:     record.WorkItemID,
+						WorkItemType:   record.WorkItemType,
+						RepoURL:        record.RepoURL,
+						Branch:         record.Branch,
+						CommitSHA:      record.CommitSHA,
+						ActorHint:      record.ActorHint,
+						SourceSystem:   record.SourceSystem,
+						PermissionMode: record.PermissionMode,
+						ApprovalMode:   record.ApprovalMode,
+						WorkspaceMode:  record.WorkspaceMode,
+					}, nil
 				},
 			})
 			gatewaySrv = &http.Server{
@@ -321,7 +368,20 @@ func main() {
 			log.Printf("model pricing store close error: %v", err)
 		}
 	}
+	if copilotStore != nil {
+		if err := copilotStore.Close(); err != nil {
+			log.Printf("copilot token store close error: %v", err)
+		}
+	}
 	log.Println("shutdown complete")
+}
+
+type copilotStoreResolver struct {
+	store *copilot.Store
+}
+
+func (r copilotStoreResolver) TokenForActor(ctx context.Context, actorSubject string) (copilot.TokenRecord, error) {
+	return r.store.Load(ctx, actorSubject)
 }
 
 func registerRegistryHandlers(mux *http.ServeMux, registryHandler http.Handler) {

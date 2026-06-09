@@ -47,7 +47,7 @@ func SummarizeSessionUsageWithPricing(ctx context.Context, events []audit.Event,
 				summary.CostSource = mergeCostSource(summary.CostSource, "pricing_table")
 			} else if event.EstimatedCostUSD > 0 {
 				summary.EstimatedCostUSD += event.EstimatedCostUSD
-				summary.CostSource = mergeCostSource(summary.CostSource, "provider_reported")
+				summary.CostSource = mergeCostSource(summary.CostSource, "caller_estimated")
 			} else if event.TokenUsage != nil && summary.CostSource == "" {
 				summary.CostSource = "unavailable"
 			}
@@ -110,8 +110,19 @@ func addTokenUsage(summary *SessionUsageSummary, usage map[string]any) {
 		return
 	}
 	summary.TotalTokens += intFromAny(usage["total_tokens"])
-	summary.PromptTokens += intFromAny(usage["prompt_tokens"])
-	summary.CompletionTokens += intFromAny(usage["completion_tokens"])
+	prompt := intFromAny(usage["prompt_tokens"])
+	if prompt == 0 {
+		prompt = intFromAny(usage["input_tokens"])
+	}
+	completion := intFromAny(usage["completion_tokens"])
+	if completion == 0 {
+		completion = intFromAny(usage["output_tokens"])
+	}
+	summary.PromptTokens += prompt
+	summary.CompletionTokens += completion
+	if intFromAny(usage["total_tokens"]) == 0 {
+		summary.TotalTokens += prompt + completion
+	}
 }
 
 func mergeCostSource(current string, next string) string {

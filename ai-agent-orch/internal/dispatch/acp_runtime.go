@@ -3,11 +3,14 @@ package dispatch
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -57,19 +60,28 @@ func (r *ACPRuntime) StartSession(ctx context.Context, cfg SessionConfig) (Sessi
 		done:   make(chan struct{}),
 	}
 
+	configPath, err := writeOpenCodeACPConfig(cfg)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	cmd := exec.CommandContext(runCtx, path, "acp")
+	cmd.Env = acpEnvironment(configPath, cfg.SessionID)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		_ = os.Remove(configPath)
 		cancel()
 		return nil, fmt.Errorf("stdin pipe: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		_ = os.Remove(configPath)
 		cancel()
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		_ = os.Remove(configPath)
 		cancel()
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
@@ -78,8 +90,10 @@ func (r *ACPRuntime) StartSession(ctx context.Context, cfg SessionConfig) (Sessi
 	handle.stdout = stdout
 	handle.cmd = cmd
 	handle.cancel = cancel
+	handle.configPath = configPath
 
 	if err := cmd.Start(); err != nil {
+		_ = os.Remove(configPath)
 		cancel()
 		return nil, fmt.Errorf("start opencode acp: %w", err)
 	}
@@ -91,22 +105,23 @@ func (r *ACPRuntime) StartSession(ctx context.Context, cfg SessionConfig) (Sessi
 }
 
 type acpHandle struct {
-	ctx       context.Context
-	config    SessionConfig
-	stdin     io.WriteCloser
-	stdout    io.ReadCloser
-	cmd       *exec.Cmd
-	cancel    func()
-	events    chan RuntimeEvent
-	done      chan struct{}
-	err       error
-	mu        sync.Mutex
-	eventMu   sync.Mutex
-	closed    bool
-	nextID    int
-	pending   map[int]chan *jsonRPCMessage
-	pendingMu sync.Mutex
-	sessionID string
+	ctx        context.Context
+	config     SessionConfig
+	stdin      io.WriteCloser
+	stdout     io.ReadCloser
+	cmd        *exec.Cmd
+	cancel     func()
+	events     chan RuntimeEvent
+	done       chan struct{}
+	err        error
+	mu         sync.Mutex
+	eventMu    sync.Mutex
+	closed     bool
+	nextID     int
+	pending    map[int]chan *jsonRPCMessage
+	pendingMu  sync.Mutex
+	sessionID  string
+	configPath string
 	// Accumulates text content from agent_message_chunk for patch extraction.
 	accumulatedText strings.Builder
 	accumulatedMu   sync.Mutex
@@ -119,6 +134,7 @@ func (h *acpHandle) runSession() {
 	defer close(h.done)
 	defer h.closeEvents()
 	defer h.stdin.Close()
+	defer os.Remove(h.configPath)
 	defer h.cancel()
 
 	// 1. Initialize
@@ -128,11 +144,12 @@ func (h *acpHandle) runSession() {
 		"method":  "initialize",
 		"params": map[string]any{
 			"protocolVersion": 1,
-			"capabilities": map[string]any{
+			"clientCapabilities": map[string]any{
 				"fs": map[string]any{
 					"readTextFile":  true,
-					"writeTextFile": false,
+					"writeTextFile": true,
 				},
+				"terminal": true,
 			},
 			"clientInfo": map[string]string{
 				"name":    "ai-agent-orch",
@@ -155,6 +172,10 @@ func (h *acpHandle) runSession() {
 		h.emitError(err.Error())
 		return
 	}
+	beforeSnapshot, snapshotErr := captureACPWorkspaceSnapshot(workspace)
+	if snapshotErr != nil {
+		h.emitEvent(RuntimeEvent{Type: "stream", Payload: fmt.Sprintf("ACP workspace snapshot skipped: %v", snapshotErr)})
+	}
 
 	// 2. Create session
 	newSessionReq := map[string]any{
@@ -163,7 +184,7 @@ func (h *acpHandle) runSession() {
 		"method":  "session/new",
 		"params": map[string]any{
 			"cwd":        workspace,
-			"mcpServers": acpMCPServers(h.config.MCPEndpoints, os.Getenv("AI_ORCH_SERVICE_TOKEN"), h.config.SessionID),
+			"mcpServers": []map[string]any{},
 		},
 	}
 	newSessionResp, err := h.sendRequest(newSessionReq)
@@ -183,7 +204,7 @@ func (h *acpHandle) runSession() {
 	}
 
 	// 3. Send prompt
-	prompt := defaultUserPrompt(h.config.UserPrompt)
+	prompt := defaultACPUserPrompt(h.config.UserPrompt)
 	promptReq := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      h.allocID(),
@@ -217,6 +238,11 @@ func (h *acpHandle) runSession() {
 	}
 	if patchPayload := extractPatchFromResult(promptResp.Result); patchPayload != "" {
 		h.emitEvent(RuntimeEvent{Type: "patch", Payload: patchPayload})
+	}
+	if beforeSnapshot != nil {
+		if patchPayload := h.workspacePatchSince(workspace, beforeSnapshot); patchPayload != "" {
+			h.emitEvent(RuntimeEvent{Type: "patch", Payload: patchPayload})
+		}
 	}
 
 	// 5. Close session
@@ -363,28 +389,58 @@ func (h *acpHandle) handleNotification(msg *jsonRPCMessage) {
 func (h *acpHandle) handleAgentRequest(msg *jsonRPCMessage) {
 	switch msg.Method {
 	case "session/request_permission":
-		// Fail closed until permission requests are wired through the governed tool broker.
-		reqID := ""
-		if p, ok := msg.Params["requestId"].(string); ok {
-			reqID = p
-		}
 		toolName := "unknown"
 		if toolCall, ok := msg.Params["toolCall"].(map[string]any); ok {
 			if name, ok := toolCall["name"].(string); ok && name != "" {
 				toolName = name
 			}
+			if title, ok := toolCall["title"].(string); ok && title != "" && toolName == "unknown" {
+				toolName = title
+			}
 		}
-		h.emitEvent(RuntimeEvent{Type: "tool_call", Payload: fmt.Sprintf("ACP permission requested for %s", toolName)})
+		optionID := selectedACPOptionID(msg.Params)
+		h.emitEvent(RuntimeEvent{Type: "tool_call", Payload: fmt.Sprintf("ACP permission requested for %s: %s", toolName, optionID)})
+		permissionPayload, _ := json.Marshal(map[string]string{"tool": toolName, "option_id": optionID})
+		h.emitEvent(RuntimeEvent{Type: "acp_permission", Payload: string(permissionPayload)})
 		resp := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      msg.ID,
 			"result": map[string]any{
-				"requestId": reqID,
-				"outcome":   "denied",
-				"message":   "permission requests must pass through the Governance Shell tool broker",
+				"outcome": map[string]any{
+					"outcome":  "selected",
+					"optionId": optionID,
+				},
 			},
 		}
 		_ = h.sendJSON(resp)
+	case "fs/write_text_file":
+		if err := h.handleWriteTextFile(msg.Params); err != nil {
+			h.emitEvent(RuntimeEvent{Type: "error", Payload: err.Error()})
+			_ = h.sendJSON(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg.ID,
+				"error": map[string]any{
+					"code":    -32000,
+					"message": err.Error(),
+				},
+			})
+			return
+		}
+		_ = h.sendJSON(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{}})
+	case "fs/read_text_file":
+		content, err := h.handleReadTextFile(msg.Params)
+		if err != nil {
+			_ = h.sendJSON(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg.ID,
+				"error": map[string]any{
+					"code":    -32000,
+					"message": err.Error(),
+				},
+			})
+			return
+		}
+		_ = h.sendJSON(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{"content": content}})
 	default:
 		h.emitEvent(RuntimeEvent{Type: "error", Payload: fmt.Sprintf("unsupported ACP request: %s", msg.Method)})
 		resp := map[string]any{
@@ -449,6 +505,9 @@ func (h *acpHandle) emitError(msg string) {
 }
 
 func (h *acpHandle) emitEvent(event RuntimeEvent) {
+	if h == nil || h.events == nil {
+		return
+	}
 	h.eventMu.Lock()
 	defer h.eventMu.Unlock()
 	if h.closed {
@@ -512,6 +571,248 @@ func (h *acpHandle) Stop() error {
 	return nil
 }
 
+func selectedACPOptionID(params map[string]any) string {
+	if options, ok := params["options"].([]any); ok {
+		for _, option := range options {
+			item, ok := option.(map[string]any)
+			if !ok {
+				continue
+			}
+			kind, _ := item["kind"].(string)
+			id, _ := item["optionId"].(string)
+			if id == "" {
+				continue
+			}
+			if kind == "allow_always" {
+				return id
+			}
+		}
+		for _, option := range options {
+			item, ok := option.(map[string]any)
+			if !ok {
+				continue
+			}
+			kind, _ := item["kind"].(string)
+			id, _ := item["optionId"].(string)
+			if id != "" && kind == "allow_once" {
+				return id
+			}
+		}
+	}
+	return "always"
+}
+
+func (h *acpHandle) handleWriteTextFile(params map[string]any) error {
+	path, _ := params["path"].(string)
+	if path == "" {
+		path, _ = params["filePath"].(string)
+	}
+	content, _ := params["content"].(string)
+	if path == "" {
+		return fmt.Errorf("ACP write missing path")
+	}
+	fullPath, err := h.workspaceFilePath(path)
+	if err != nil {
+		return err
+	}
+	action := "create"
+	if _, err := os.Stat(fullPath); err == nil {
+		action = "modify"
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat ACP file: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		return fmt.Errorf("create ACP write directory: %w", err)
+	}
+	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write ACP file: %w", err)
+	}
+	patchID := acpPatchID(h.config.SessionID, path)
+	writePayload, _ := json.Marshal(map[string]any{"path": path, "action": action, "patch_id": patchID})
+	h.emitEvent(RuntimeEvent{Type: "stream", Payload: fmt.Sprintf("ACP wrote file %s", path)})
+	h.emitEvent(RuntimeEvent{Type: "acp_file_write", Payload: string(writePayload)})
+	h.emitEvent(RuntimeEvent{Type: "patch", Payload: h.patchEnvelopeForWrite(path, action, content)})
+	return nil
+}
+
+func (h *acpHandle) patchEnvelopeForWrite(path string, action string, content string) string {
+	patchID := acpPatchID(h.config.SessionID, path)
+	envelope := map[string]any{
+		"protocolVersion": 1,
+		"patchId":         patchID,
+		"sessionId":       h.config.SessionID,
+		"summary":         "ACP file write",
+		"rationale":       "OpenCode ACP requested a governed workspace file write.",
+		"files": []map[string]string{
+			{
+				"path":       path,
+				"action":     action,
+				"newContent": content,
+			},
+		},
+	}
+	data, _ := json.Marshal(envelope)
+	return string(data)
+}
+
+type acpWorkspaceFile struct {
+	Hash    string
+	Content string
+}
+
+type acpWorkspaceSnapshot map[string]acpWorkspaceFile
+
+func captureACPWorkspaceSnapshot(root string) (acpWorkspaceSnapshot, error) {
+	root = filepath.Clean(root)
+	snapshot := acpWorkspaceSnapshot{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name := entry.Name()
+		if entry.IsDir() {
+			switch name {
+			case ".git", "node_modules", "dist", "dist-paper", ".next", ".turbo", ".wrangler", ".opencode":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Size() > 512*1024 {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !isLikelyText(data) {
+			return nil
+		}
+		snapshot[filepath.ToSlash(rel)] = acpWorkspaceFile{Hash: sha256HexBytes(data), Content: string(data)}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
+func (h *acpHandle) workspacePatchSince(root string, before acpWorkspaceSnapshot) string {
+	after, err := captureACPWorkspaceSnapshot(root)
+	if err != nil {
+		h.emitEvent(RuntimeEvent{Type: "stream", Payload: fmt.Sprintf("ACP workspace diff skipped: %v", err)})
+		return ""
+	}
+	paths := make(map[string]struct{}, len(before)+len(after))
+	for path := range before {
+		paths[path] = struct{}{}
+	}
+	for path := range after {
+		paths[path] = struct{}{}
+	}
+	ordered := make([]string, 0, len(paths))
+	for path := range paths {
+		ordered = append(ordered, path)
+	}
+	sort.Strings(ordered)
+	files := make([]map[string]string, 0)
+	for _, path := range ordered {
+		beforeFile, hadBefore := before[path]
+		afterFile, hasAfter := after[path]
+		switch {
+		case !hadBefore && hasAfter:
+			files = append(files, map[string]string{"path": path, "action": "create", "newContent": afterFile.Content})
+		case hadBefore && !hasAfter:
+			files = append(files, map[string]string{"path": path, "action": "delete", "originalContentHash": beforeFile.Hash})
+		case hadBefore && hasAfter && beforeFile.Hash != afterFile.Hash:
+			files = append(files, map[string]string{"path": path, "action": "modify", "originalContentHash": beforeFile.Hash, "newContent": afterFile.Content})
+		}
+	}
+	if len(files) == 0 {
+		return ""
+	}
+	envelope := map[string]any{
+		"protocolVersion": 1,
+		"patchId":         acpPatchID(h.config.SessionID, "workspace-diff"),
+		"sessionId":       h.config.SessionID,
+		"summary":         "ACP workspace diff",
+		"rationale":       "OpenCode ACP changed workspace files during the governed run.",
+		"files":           files,
+	}
+	data, _ := json.Marshal(envelope)
+	return string(data)
+}
+
+func sha256HexBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func isLikelyText(data []byte) bool {
+	for _, b := range data {
+		if b == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func acpPatchID(sessionID string, path string) string {
+	sum := sha256.Sum256([]byte(sessionID + "|" + path))
+	return "acp_write_" + hex.EncodeToString(sum[:8])
+}
+
+func (h *acpHandle) handleReadTextFile(params map[string]any) (string, error) {
+	path, _ := params["path"].(string)
+	if path == "" {
+		path, _ = params["filePath"].(string)
+	}
+	if path == "" {
+		return "", fmt.Errorf("ACP read missing path")
+	}
+	fullPath, err := h.workspaceFilePath(path)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return "", fmt.Errorf("read ACP file: %w", err)
+	}
+	return string(data), nil
+}
+
+func (h *acpHandle) workspaceFilePath(path string) (string, error) {
+	workspace, err := h.workspacePath()
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	var fullPath string
+	if filepath.IsAbs(path) {
+		fullPath = filepath.Clean(path)
+	} else {
+		fullPath = filepath.Clean(filepath.Join(workspace, path))
+	}
+	workspaceClean := filepath.Clean(workspace)
+	rel, err := filepath.Rel(workspaceClean, fullPath)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("ACP file path escapes workspace: %s", path)
+	}
+	return fullPath, nil
+}
+
 // extractPatchFromResult attempts to extract a patch envelope JSON string from an ACP result.
 func extractPatchFromResult(result map[string]any) string {
 	if result == nil {
@@ -573,37 +874,88 @@ func (h *acpHandle) workspacePath() (string, error) {
 	return "", fmt.Errorf("ACP workspace path is required")
 }
 
-func acpMCPServers(endpoints map[string]string, serviceToken string, sessionID string) []map[string]any {
-	if len(endpoints) == 0 {
-		return []map[string]any{}
+func defaultACPUserPrompt(prompt string) string {
+	base := strings.TrimSpace(prompt)
+	if base == "" {
+		base = "Please help with the requested task."
 	}
-	names := make([]string, 0, len(endpoints))
-	for name := range endpoints {
-		names = append(names, name)
+	return base + `
+
+ACP workspace instructions:
+- Use normal workspace file editing capabilities when asked to create or modify files.
+- Do not return a JSON patch envelope when file editing is available.
+- Do not include passwords, tokens, API keys, credentials, private URLs, or other secrets.`
+}
+
+func writeOpenCodeACPConfig(cfg SessionConfig) (string, error) {
+	baseURL := strings.TrimRight(os.Getenv("AI_ORCH_MODEL_GATEWAY_URL"), "/")
+	if baseURL == "" {
+		baseURL = "http://127.0.0.1:18082"
 	}
-	sort.Strings(names)
-	servers := make([]map[string]any, 0, len(names))
-	for _, name := range names {
-		if endpoints[name] == "" {
-			continue
-		}
-		server := map[string]any{
-			"name": name,
-			"url":  endpoints[name],
-		}
-		headers := map[string]string{}
-		if serviceToken != "" {
-			headers["Authorization"] = "Bearer " + serviceToken
-		}
-		if sessionID != "" {
-			headers["X-AI-Orch-Session-ID"] = sessionID
-		}
-		if len(headers) > 0 {
-			server["headers"] = headers
-		}
-		servers = append(servers, server)
+	if !strings.HasSuffix(baseURL, "/v1") {
+		baseURL += "/v1"
 	}
-	return servers
+	model := cfg.ModelID
+	if !strings.Contains(model, "/") {
+		model = "ai-orch/" + model
+	}
+	modelID := strings.TrimPrefix(model, "ai-orch/")
+	config := map[string]any{
+		"$schema":           "https://opencode.ai/config.json",
+		"enabled_providers": []string{"ai-orch"},
+		"model":             model,
+		"small_model":       model,
+		"provider": map[string]any{
+			"ai-orch": map[string]any{
+				"npm":  "@ai-sdk/openai-compatible",
+				"name": "AI Orch Governed Router",
+				"options": map[string]any{
+					"baseURL": baseURL,
+					"apiKey":  "{env:AI_ORCH_RUNTIME_TOKEN}",
+					"headers": map[string]any{
+						"X-AI-Orch-Session-ID": "{env:AI_ORCH_SESSION_ID}",
+					},
+				},
+				"models": map[string]any{
+					modelID: map[string]any{"name": "Governed " + modelID},
+				},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("encode ACP OpenCode config: %w", err)
+	}
+	file, err := os.CreateTemp("", "ai-orch-acp-opencode-*.json")
+	if err != nil {
+		return "", fmt.Errorf("create ACP OpenCode config: %w", err)
+	}
+	path := file.Name()
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		os.Remove(path)
+		return "", fmt.Errorf("write ACP OpenCode config: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(path)
+		return "", fmt.Errorf("close ACP OpenCode config: %w", err)
+	}
+	return path, nil
+}
+
+func acpEnvironment(configPath string, sessionID string) []string {
+	env := append([]string{}, os.Environ()...)
+	env = append(env, "OPENCODE_CONFIG="+configPath)
+	if sessionID != "" {
+		env = append(env, "AI_ORCH_SESSION_ID="+sessionID)
+	}
+	if os.Getenv("AI_ORCH_RUNTIME_TOKEN") == "" {
+		env = append(env, "AI_ORCH_RUNTIME_TOKEN=local-runtime-token")
+	}
+	if os.Getenv("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX") == "" {
+		env = append(env, "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=2048")
+	}
+	return env
 }
 
 func (h *acpHandle) failPending(err error) {

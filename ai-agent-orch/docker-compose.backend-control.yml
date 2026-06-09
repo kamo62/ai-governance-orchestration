@@ -1,0 +1,15 @@
+# Enables Governance UI backend controls by giving governance-shell access to
+# the host Docker daemon. Use only for local or trusted admin deployments.
+
+services:
+  governance-shell:
+    user: root
+    environment:
+      AI_ORCH_BACKEND_CONTROL_ENABLED: "true"
+      AI_ORCH_BACKEND_CONTROL_WORKDIR: /app
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./docker-compose.openrouter.yml:/app/docker-compose.openrouter.yml:ro
+      - ./docker-compose.agentgateway.yml:/app/docker-compose.agentgateway.yml:ro
+      - ./docker-compose.copilot.yml:/app/docker-compose.copilot.yml:ro

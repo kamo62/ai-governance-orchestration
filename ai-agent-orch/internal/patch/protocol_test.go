@@ -52,3 +52,13 @@ func TestPatchDecisionJSON(t *testing.T) {
 		t.Fatal("expected valid JSON")
 	}
 }
+
+func TestPatchEnvelopeAcceptsStringProtocolVersion(t *testing.T) {
+	var out PatchEnvelope
+	if err := json.Unmarshal([]byte(`{"protocolVersion":"1","patchId":"patch_123","sessionId":"sess_123","files":[{"path":"AI_ORCH_REVIEW_FINDINGS.md","action":"create","newContent":"findings"}]}`), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.ProtocolVersion != 1 {
+		t.Fatalf("expected protocol version 1, got %d", out.ProtocolVersion)
+	}
+}

@@ -61,6 +61,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.EnableServerContextResolver {
 		t.Fatalf("expected server context resolver disabled by default")
 	}
+	if cfg.RequireWorkItem {
+		t.Fatalf("expected work item requirement disabled by default")
+	}
 }
 
 func TestLoadUsesEnvAndFlags(t *testing.T) {
@@ -82,8 +85,9 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	t.Setenv("AI_ORCH_AGENTGATEWAY_API_KEY", "env-agentgateway-token")
 	t.Setenv("AI_ORCH_AGENTGATEWAY_READINESS_URL", "http://agentgateway:15021/healthz/ready")
 	t.Setenv("AI_ORCH_ENABLE_SERVER_CONTEXT_RESOLVER", "true")
+	t.Setenv("AI_ORCH_REQUIRE_WORK_ITEM", "true")
 
-	cfg, err := Load([]string{"-addr", ":7777", "-audit-path", "/tmp/flag-audit.jsonl", "-dev-token", "flag-token", "-service-token", "flag-service-token", "-classification-max", "restricted", "-kill-switch=false", "-cost-cap-enabled=false", "-session-cost-cap-usd", "0.75", "-policy-engine", "native", "-consecutive-tool-call-max", "11", "-model-backend", "native-openrouter", "-bifrost-base-url", "http://flag-bifrost:8080", "-bifrost-api-key", "flag-bifrost-token", "-agentgateway-base-url", "http://flag-agentgateway:3000", "-agentgateway-api-key", "flag-agentgateway-token", "-agentgateway-readiness-url", "http://flag-agentgateway:15021/healthz/ready", "-enable-server-context-resolver=false"})
+	cfg, err := Load([]string{"-addr", ":7777", "-audit-path", "/tmp/flag-audit.jsonl", "-dev-token", "flag-token", "-service-token", "flag-service-token", "-classification-max", "restricted", "-kill-switch=false", "-cost-cap-enabled=false", "-session-cost-cap-usd", "0.75", "-policy-engine", "native", "-consecutive-tool-call-max", "11", "-model-backend", "native-openrouter", "-bifrost-base-url", "http://flag-bifrost:8080", "-bifrost-api-key", "flag-bifrost-token", "-agentgateway-base-url", "http://flag-agentgateway:3000", "-agentgateway-api-key", "flag-agentgateway-token", "-agentgateway-readiness-url", "http://flag-agentgateway:15021/healthz/ready", "-enable-server-context-resolver=false", "-require-work-item=false"})
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -140,5 +144,8 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	}
 	if cfg.EnableServerContextResolver {
 		t.Fatalf("expected flag server context resolver setting to win")
+	}
+	if cfg.RequireWorkItem {
+		t.Fatalf("expected flag work item requirement setting to win")
 	}
 }
