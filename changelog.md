@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.18.4-beta - 2026-06-11 (Patch)
+
+Release impact: Patch because this fixes CI beta smoke port wiring without changing public contracts, model routing behaviour, or deployment compatibility.
+
+- **Fixed GitHub Actions beta smoke readiness**: the beta smoke workflow now publishes Governance Shell on the same host port that the readiness probe checks.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.18.4-beta.
+
 ## v0.18.3-beta - 2026-06-11 (Patch)
 
 Release impact: Patch because this fixes local hardening, module identity, and documentation drift without changing public API contracts, session payloads, model routing behaviour, or deployment compatibility.

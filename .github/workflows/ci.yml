@@ -65,6 +65,8 @@ jobs:
           persist-credentials: false
 
       - name: Compose beta smoke
+        env:
+          GOVERNANCE_SHELL_PORT: "18081"
         run: |
           docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta up -d --build bifrost orchestrator governance-shell
           ./scripts/wait-readyz.sh
