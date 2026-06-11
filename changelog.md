@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.18.1-beta - 2026-06-11 (Patch)
+
+Release impact: Patch because this hardens beta verification, SQLite contention handling, audit failure guidance, and removes unused prototype code without changing public APIs or model/session contracts.
+
+- **Hardened beta smoke startup**: CI and local beta verification now rebuild the beta services, wait for Governance Shell readiness, and clean Docker volumes after smoke runs.
+- **Improved SQLite local-store resilience**: Copilot, OAuth, and kill-switch SQLite stores now enable WAL, a busy timeout, and normal synchronous mode for local beta contention.
+- **Added audit failure guidance**: patch-decision audit write failures now return targeted hints for locked SQLite databases, stale audit-chain volumes, and generic persistence failures.
+- **Removed unused prototype code**: deleted the unused assembly-line package and the obsolete OpenCode runtime stub while keeping the active ACP/direct runtime paths.
+- **Preserved router compatibility**: restored `Router.Resolve` as a compatibility helper over the current route-selection logic.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, and changelog now agree on `v0.18.1-beta`.
+
 ## v0.18.0-beta - 2026-06-11 (Minor)
 
 Release impact: Minor because this adds backwards-compatible model route metadata, reasoning-effort governance, audit fields, and OpenCode agent defaults without breaking existing session or gateway APIs.

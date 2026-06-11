@@ -52,7 +52,7 @@ This repo is an attempt to answer those questions without rebuilding the whole d
 
 ## Current State
 
-Current version: `v0.18.0-beta`.
+Current version: `v0.18.1-beta`.
 
 This is a **local beta** for the Governance Shell vertical slice. It is useful for team-local evaluation and demos, but it is not a production deployment.
 

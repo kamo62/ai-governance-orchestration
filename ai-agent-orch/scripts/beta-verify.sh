@@ -40,7 +40,8 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
   # Shell environment wins over --env-file in compose interpolation.
   GOVERNANCE_SHELL_PORT="$BETA_PORT" MODEL_GATEWAY_PORT="$BETA_GATEWAY_PORT" \
     AI_ORCH_MODEL_BACKEND=bifrost AI_ORCH_MODEL_ALIAS_OVERRIDE= \
-    "${COMPOSE[@]}" --profile beta up -d bifrost orchestrator governance-shell
+    "${COMPOSE[@]}" --profile beta up -d --build bifrost orchestrator governance-shell
+  GOVERNANCE_SHELL_PORT="$BETA_PORT" "${ROOT}/scripts/wait-readyz.sh" "http://127.0.0.1:${BETA_PORT}"
   "${COMPOSE[@]}" --profile beta run --rm beta-catalog
   "${COMPOSE[@]}" --profile beta run --rm --no-deps beta-smoke
   cleanup_beta_compose

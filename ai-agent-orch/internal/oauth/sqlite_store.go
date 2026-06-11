@@ -37,6 +37,14 @@ func NewSQLiteTokenStore(dbPath string, key string) (*SQLiteTokenStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open oauth token db: %w", err)
 	}
+	if _, err := db.Exec(`
+		PRAGMA journal_mode = WAL;
+		PRAGMA busy_timeout = 10000;
+		PRAGMA synchronous = NORMAL;
+	`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("configure oauth token db: %w", err)
+	}
 	store := &SQLiteTokenStore{db: db, key: deriveKey(key)}
 	if err := store.migrate(); err != nil {
 		db.Close()

@@ -108,7 +108,7 @@ func (h *PatchDecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		log.Printf("patch decision audit append failed for session %s: %v", sessionID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"error": "audit write failed",
-			"hint":  "if running locally against an old Docker volume, the audit hash chain may be stale; reset with: docker compose down -v",
+			"hint":  audit.FailureHint(err),
 		})
 		return
 	}

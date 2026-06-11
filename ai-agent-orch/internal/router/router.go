@@ -139,13 +139,14 @@ func (r *Router) Route(ctx context.Context, req Request) (Decision, error) {
 // Resolve returns the concrete provider model ID for a given alias.
 func (r *Router) Resolve(alias string) (modelID string, provider string, err error) {
 	for _, m := range r.registry.Models {
-		if m.Alias == alias {
-			route, ok := r.firstRoute(m, Request{})
-			if !ok || route.ModelID == "" {
-				return "", "", fmt.Errorf("alias %q has no model_id", alias)
-			}
-			return route.ModelID, route.Provider, nil
+		if m.Alias != alias {
+			continue
 		}
+		route, ok := r.selectRoute(context.Background(), m, Request{})
+		if !ok || route.ModelID == "" {
+			return "", "", fmt.Errorf("alias %q has no model_id", alias)
+		}
+		return route.ModelID, route.Provider, nil
 	}
 	return "", "", fmt.Errorf("alias %q not found", alias)
 }
@@ -209,10 +210,6 @@ func (r *Router) selectRoute(ctx context.Context, model catalog.ModelDefinition,
 		return route, true
 	}
 	return catalog.ModelRoute{}, false
-}
-
-func (r *Router) firstRoute(model catalog.ModelDefinition, req Request) (catalog.ModelRoute, bool) {
-	return r.selectRoute(context.Background(), model, req)
 }
 
 func selectBestCandidate(candidates []catalog.ModelDefinition, req Request) catalog.ModelDefinition {

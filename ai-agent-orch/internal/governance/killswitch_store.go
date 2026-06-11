@@ -20,6 +20,14 @@ func NewSQLiteKillSwitch(dbPath string) (*SQLiteKillSwitch, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open kill switch db: %w", err)
 	}
+	if _, err := db.Exec(`
+		PRAGMA journal_mode = WAL;
+		PRAGMA busy_timeout = 10000;
+		PRAGMA synchronous = NORMAL;
+	`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("configure kill switch db: %w", err)
+	}
 	store := &SQLiteKillSwitch{db: db, mem: NewMemoryKillSwitch()}
 	if err := store.migrate(); err != nil {
 		db.Close()

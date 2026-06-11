@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/governance-shell-beta]
   pull_request:
     branches: [main]
 
@@ -66,10 +66,11 @@ jobs:
 
       - name: Compose beta smoke
         run: |
-          docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta up -d bifrost orchestrator governance-shell
+          docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta up -d --build bifrost orchestrator governance-shell
+          ./scripts/wait-readyz.sh
           docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta run --rm beta-catalog
           docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta run --rm --no-deps beta-smoke
-          docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta down --remove-orphans
+          docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta down -v --remove-orphans
 
   bridge:
     runs-on: ubuntu-latest

@@ -70,6 +70,14 @@ func OpenStore(path string, key string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open copilot token db: %w", err)
 	}
+	if _, err := db.Exec(`
+		PRAGMA journal_mode = WAL;
+		PRAGMA busy_timeout = 10000;
+		PRAGMA synchronous = NORMAL;
+	`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("configure copilot token db: %w", err)
+	}
 	store := &Store{db: db, key: normalizeKey(key)}
 	if err := store.migrate(); err != nil {
 		db.Close()
