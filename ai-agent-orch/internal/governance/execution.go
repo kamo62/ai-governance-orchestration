@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"ai-agent-orch/internal/audit"
-	patchproto "ai-agent-orch/internal/patch"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	patchproto "github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/patch"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/policyengine"
 )
 
 // SessionExecutor runs governed runtime dispatch and publishes SSE events.
@@ -107,7 +108,7 @@ func (e *SessionExecutor) Run(ctx context.Context, sessionID, agent, prompt stri
 		return
 	}
 
-	toolLoop := NewToolLoopCounter(e.service.toolLoopMax)
+	toolLoop := policyengine.NewToolLoopCounter(e.service.toolLoopMax)
 	eventCount := 0
 	patchCount := 0
 	toolCallCount := 0

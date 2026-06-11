@@ -30,11 +30,6 @@ type InstallOptions struct {
 	Force bool
 }
 
-// Install generates configuration for a specific client.
-func Install(client ClientType, dir string, gatewayURL string) (*InstallResult, error) {
-	return InstallWithOptions(client, dir, gatewayURL, InstallOptions{})
-}
-
 // InstallWithOptions generates configuration for a specific client.
 func InstallWithOptions(client ClientType, dir string, gatewayURL string, opts InstallOptions) (*InstallResult, error) {
 	switch client {
@@ -205,11 +200,6 @@ func marshalConfig(value any) ([]byte, error) {
 		return nil, err
 	}
 	return append(content, '\n'), nil
-}
-
-// GenerateAGENTSMarkdown creates the AGENTS.md content.
-func GenerateAGENTSMarkdown(gatewayURL string) string {
-	return generateAGENTSMarkdown(gatewayURL)
 }
 
 func generateAGENTSMarkdown(gatewayURL string) string {

@@ -11,6 +11,8 @@ reference/
 .env.*
 !.env.example
 !**/.env.example
+opencode.json
+ai-agent-orch/opencode.json
 
 # Runtime state and logs
 var/
@@ -35,7 +37,6 @@ review_*.md
 ai-agent-orch/ai-orch
 ai-agent-orch/catalog-validator
 ai-agent-orch/governance-shell
-ai-agent-orch/openrouter-smoke
 ai-agent-orch/orchestrator
 ai-agent-orch/mcp-*
 

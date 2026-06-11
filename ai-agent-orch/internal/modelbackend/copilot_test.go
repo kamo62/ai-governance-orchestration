@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"ai-agent-orch/internal/copilot"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/copilot"
 )
 
 type fakeCopilotResolver struct {

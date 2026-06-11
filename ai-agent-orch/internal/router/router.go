@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"ai-agent-orch/internal/catalog"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/catalog"
 )
 
 // Request is the input to a routing decision.

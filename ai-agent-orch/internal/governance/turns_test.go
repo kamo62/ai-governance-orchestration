@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 )
 
 func TestTurnsHandlerFollowUpOnDoneSession(t *testing.T) {

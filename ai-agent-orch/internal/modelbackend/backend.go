@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"ai-agent-orch/internal/copilot"
-	"ai-agent-orch/internal/openrouter"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/copilot"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
 )
 
 const (

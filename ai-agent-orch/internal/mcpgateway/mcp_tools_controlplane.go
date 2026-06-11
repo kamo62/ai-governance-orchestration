@@ -10,8 +10,10 @@ import (
 	"net/url"
 )
 
-// RegisterPhase1ITools registers Phase 1I (Governed Delegation) and 1K (Self-Reported Audit) tools.
-func RegisterPhase1ITools(s *Server, cfg *GatewayConfig) {
+// RegisterControlPlaneTools registers the governed-delegation and
+// self-reported audit tools (context manifests, use-case/workflow bindings,
+// delegated work, patch decisions, audit lookups, external call records).
+func RegisterControlPlaneTools(s *Server, cfg *GatewayConfig) {
 	s.RegisterTool(Tool{
 		Name:        "create_context_manifest",
 		Title:       "Create Context Manifest",

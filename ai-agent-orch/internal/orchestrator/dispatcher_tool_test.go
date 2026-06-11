@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"ai-agent-orch/internal/dispatch"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/dispatch"
 )
 
 func mustToolBroker(t *testing.T) *dispatch.ToolBroker {

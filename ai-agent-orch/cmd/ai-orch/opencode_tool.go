@@ -14,7 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"ai-agent-orch/internal/betasmoke"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/betasmoke"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/envx"
 )
 
 const (
@@ -68,7 +69,7 @@ func installOpenCodeConfig(gatewayURL string, args []string) error {
 	force := fs.Bool("force", false, "replace an existing ai-orch provider block")
 	runtimeToken := fs.String("runtime-token", defaultRuntimeTokenForInstall(), "ai-orch runtime token to write into OpenCode config")
 	actorSubject := fs.String("actor-subject", defaultActorSubjectForInstall(), "actor subject to write into OpenCode config")
-	classification := fs.String("classification", envOrDefault("AI_ORCH_GATEWAY_CLASSIFICATION", "internal"), "classification header to write into OpenCode config")
+	classification := fs.String("classification", envx.OrDefault("AI_ORCH_GATEWAY_CLASSIFICATION", "internal"), "classification header to write into OpenCode config")
 	envPlaceholders := fs.Bool("env-placeholders", false, "write {env:...} placeholders instead of concrete runtime token and actor headers")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -104,7 +105,8 @@ func installOpenCodeConfig(gatewayURL string, args []string) error {
 		return nil
 	}
 
-	backupPath, err := writeOpenCodeConfig(target, merged, existingMode)
+	writeMode := openCodeConfigMode(existingMode, !*envPlaceholders)
+	backupPath, err := writeOpenCodeConfig(target, merged, writeMode)
 	if err != nil {
 		return err
 	}
@@ -126,7 +128,7 @@ func installOpenCodeConfig(gatewayURL string, args []string) error {
 }
 
 func defaultRuntimeTokenForInstall() string {
-	return envOrDefault("AI_ORCH_RUNTIME_TOKEN", "local-runtime-token")
+	return envx.OrDefault("AI_ORCH_RUNTIME_TOKEN", "local-runtime-token")
 }
 
 func defaultActorSubjectForInstall() string {
@@ -210,8 +212,14 @@ func readOpenCodeConfig(path string) (map[string]any, os.FileMode, error) {
 	return config, info.Mode().Perm(), nil
 }
 
-func mergeOpenCodeConfig(config map[string]any, gatewayURL string, force bool) (map[string]any, bool, error) {
-	return mergeOpenCodeConfigWithOptions(config, OpenCodeConfigOptions{GatewayURL: gatewayURL, UseEnvPlaceholders: true}, force)
+func openCodeConfigMode(existing os.FileMode, containsConcreteRuntimeToken bool) os.FileMode {
+	if containsConcreteRuntimeToken {
+		return 0o600
+	}
+	if existing == 0 {
+		return 0o644
+	}
+	return existing
 }
 
 func mergeOpenCodeConfigWithOptions(config map[string]any, opts OpenCodeConfigOptions, force bool) (map[string]any, bool, error) {
@@ -578,9 +586,21 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	return out.Close()
 }
 
-func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: opencode-smoke <generate-config|install-config|verify|run|e2e|gateway-smoke>")
+// openCodeToolSubcommands lists the OpenCode setup/verification subcommands
+// served by handleOpenCodeTool; anything else under "ai-orch opencode" is the
+// governed launch wrapper.
+var openCodeToolSubcommands = map[string]bool{
+	"generate-config": true,
+	"install-config":  true,
+	"verify":          true,
+	"run":             true,
+	"e2e":             true,
+	"gateway-smoke":   true,
+}
+
+func handleOpenCodeTool(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: ai-orch opencode <generate-config|install-config|verify|run|e2e|gateway-smoke>")
 		os.Exit(1)
 	}
 
@@ -589,7 +609,7 @@ func main() {
 		gatewayURL = defaultGatewayURL
 	}
 
-	switch os.Args[1] {
+	switch args[0] {
 	case "gateway-smoke":
 		if err := runGatewaySmoke(gatewayURL); err != nil {
 			fmt.Fprintf(os.Stderr, "gateway smoke failed: %v\n", err)
@@ -606,7 +626,7 @@ func main() {
 		fmt.Println(string(out))
 
 	case "install-config":
-		if err := installOpenCodeConfig(gatewayURL, os.Args[2:]); err != nil {
+		if err := installOpenCodeConfig(gatewayURL, args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "install OpenCode config failed: %v\n", err)
 			os.Exit(2)
 		}
@@ -626,7 +646,7 @@ func main() {
 			fmt.Println("Session ID configured: yes")
 		}
 		fmt.Println("\nTo configure OpenCode:")
-		fmt.Println("1. Install config with: opencode-smoke install-config --scope project")
+		fmt.Println("1. Install config with: ai-orch opencode install-config --scope project")
 		fmt.Println("2. Or set OPENCODE_CONFIG to a generated file")
 		fmt.Println("3. Set AI_ORCH_RUNTIME_TOKEN, AI_ORCH_SESSION_ID, and AI_ORCH_SESSION_TOKEN for manual runs")
 		fmt.Println("4. Run OpenCode with model 'ai-orch/coding-balanced'")
@@ -639,7 +659,7 @@ func main() {
 		}
 
 	case "e2e":
-		if err := runOpenCodeE2E(gatewayURL, os.Args[2:]); err != nil {
+		if err := runOpenCodeE2E(gatewayURL, args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "opencode e2e failed: %v\n", err)
 			os.Exit(2)
 		}
@@ -675,10 +695,10 @@ func runOpenCode(gatewayURL string) error {
 		return fmt.Errorf("close temporary OpenCode config: %w", err)
 	}
 
-	targetDir := envOrDefault("OPENCODE_TARGET_DIR", ".")
-	model := envOrDefault("OPENCODE_MODEL", defaultModel)
-	agent := envOrDefault("OPENCODE_AGENT", "governance-lead")
-	prompt := envOrDefault("OPENCODE_PROMPT", "Review this workspace briefly without editing files.")
+	targetDir := envx.OrDefault("OPENCODE_TARGET_DIR", ".")
+	model := envx.OrDefault("OPENCODE_MODEL", defaultModel)
+	agent := envx.OrDefault("OPENCODE_AGENT", "governance-lead")
+	prompt := envx.OrDefault("OPENCODE_PROMPT", "Review this workspace briefly without editing files.")
 
 	cmd := exec.Command("opencode", "run", "--dir", targetDir, "--model", model, "--agent", agent, prompt)
 	cmd.Env = append(os.Environ(), "OPENCODE_CONFIG="+configFile.Name())
@@ -686,13 +706,6 @@ func runOpenCode(gatewayURL string) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
-}
-
-func envOrDefault(key string, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
-	}
-	return fallback
 }
 
 func runGatewaySmoke(gatewayURL string) error {

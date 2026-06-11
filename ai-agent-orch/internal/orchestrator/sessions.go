@@ -10,7 +10,8 @@ import (
 	"io"
 	"net/http"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 type AuditStore interface {
@@ -57,27 +58,27 @@ func NewSessionIntakeHandler(service *SessionIntake) http.Handler {
 
 func (s *SessionIntake) acceptSession(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	if s == nil || s.audit == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session intake unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session intake unavailable"})
 		return
 	}
 
 	sessionID := r.Header.Get("X-AI-Orch-Session-ID")
 	if sessionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
 		return
 	}
 
 	var request AcceptSessionRequest
 	if err := readJSON(w, r, &request); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
 	if err := request.validate(); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 
@@ -93,11 +94,11 @@ func (s *SessionIntake) acceptSession(w http.ResponseWriter, r *http.Request) {
 		CorrelationSubject: "orchestrator",
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
 	}
 
-	writeJSON(w, http.StatusAccepted, AcceptSessionResponse{
+	httpx.WriteJSON(w, http.StatusAccepted, AcceptSessionResponse{
 		SessionID:    sessionID,
 		Status:       "accepted",
 		Agent:        request.Agent,
@@ -110,12 +111,6 @@ func (r AcceptSessionRequest) validate() error {
 		return errors.New("agent is required")
 	}
 	return nil
-}
-
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
 }
 
 const maxRequestBodyBytes = 1 << 20

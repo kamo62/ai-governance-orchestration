@@ -16,7 +16,7 @@ services:
     profiles: ["provider"]
     build:
       context: .
-    command: ["beta-gateway-smoke", "gateway"]
+    command: ["ai-orch", "smoke", "gateway"]
     environment:
       AI_ORCH_GOVERNANCE_URL: http://governance-shell:8080
       AI_ORCH_MODEL_GATEWAY_URL: http://governance-shell:18082
@@ -30,7 +30,7 @@ services:
     profiles: ["provider"]
     build:
       context: .
-    command: ["beta-gateway-smoke", "provider"]
+    command: ["ai-orch", "smoke", "provider"]
     environment:
       AI_ORCH_GOVERNANCE_URL: http://governance-shell:8080
       AI_ORCH_DEV_TOKEN: ${AI_ORCH_DEV_TOKEN:-local-dev}

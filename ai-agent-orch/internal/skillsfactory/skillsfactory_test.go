@@ -9,7 +9,7 @@ import (
 
 func TestInstallVSCode(t *testing.T) {
 	dir := t.TempDir()
-	res, err := Install(ClientVSCode, dir, "http://127.0.0.1:18081")
+	res, err := InstallWithOptions(ClientVSCode, dir, "http://127.0.0.1:18081", InstallOptions{})
 	if err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestInstallVSCode(t *testing.T) {
 
 func TestInstallCLine(t *testing.T) {
 	dir := t.TempDir()
-	_, err := Install(ClientCLine, dir, "http://127.0.0.1:18081")
+	_, err := InstallWithOptions(ClientCLine, dir, "http://127.0.0.1:18081", InstallOptions{})
 	if err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestInstallCLine(t *testing.T) {
 
 func TestInstallClaudeCode(t *testing.T) {
 	dir := t.TempDir()
-	result, err := Install(ClientClaudeCode, dir, "http://127.0.0.1:18081")
+	result, err := InstallWithOptions(ClientClaudeCode, dir, "http://127.0.0.1:18081", InstallOptions{})
 	if err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestInstallClaudeCode(t *testing.T) {
 
 func TestInstallCodex(t *testing.T) {
 	dir := t.TempDir()
-	_, err := Install(ClientCodex, dir, "http://127.0.0.1:18081")
+	_, err := InstallWithOptions(ClientCodex, dir, "http://127.0.0.1:18081", InstallOptions{})
 	if err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestInstallCodex(t *testing.T) {
 }
 
 func TestInstallUnknownClient(t *testing.T) {
-	_, err := Install("unknown", t.TempDir(), "http://127.0.0.1:18081")
+	_, err := InstallWithOptions("unknown", t.TempDir(), "http://127.0.0.1:18081", InstallOptions{})
 	if err == nil {
 		t.Fatal("expected error for unknown client")
 	}
@@ -100,7 +100,7 @@ func TestInstallRefusesToOverwriteExistingFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := Install(ClientCodex, dir, "http://127.0.0.1:18081")
+	_, err := InstallWithOptions(ClientCodex, dir, "http://127.0.0.1:18081", InstallOptions{})
 	if err == nil {
 		t.Fatal("expected install to refuse overwriting AGENTS.md")
 	}
@@ -197,7 +197,7 @@ func TestParseClientType(t *testing.T) {
 }
 
 func TestGenerateAGENTSMarkdown(t *testing.T) {
-	md := GenerateAGENTSMarkdown("http://localhost:18081")
+	md := generateAGENTSMarkdown("http://localhost:18081")
 	if !strings.Contains(md, "http://localhost:18081") {
 		t.Fatal("expected gateway URL in markdown")
 	}

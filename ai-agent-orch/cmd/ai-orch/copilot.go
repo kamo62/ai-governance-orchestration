@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"ai-agent-orch/internal/copilot"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/copilot"
 )
 
 // handleCopilot enrolls and inspects per-user Copilot credentials. By default

@@ -14,7 +14,7 @@ if ($env:AI_ORCH_OPENCODE_SCOPE -and -not $PSBoundParameters.ContainsKey("Scope"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Push-Location $Root
 try {
-  $ArgsList = @("run", "./cmd/opencode-smoke", "install-config", "--scope", $Scope)
+  $ArgsList = @("run", "./cmd/ai-orch", "opencode", "install-config", "--scope", $Scope)
   if ($Path) {
     $ArgsList += @("--path", $Path)
   }

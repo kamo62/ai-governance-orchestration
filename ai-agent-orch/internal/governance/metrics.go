@@ -3,6 +3,8 @@ package governance
 import (
 	"net/http"
 	"sync/atomic"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 // MetricsHandler serves GET /metrics with basic Prometheus-compatible counters.
@@ -29,11 +31,11 @@ func NewMetricsHandler() *MetricsHandler {
 
 func (h *MetricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"sessions_created":       h.sessionsCreated.Load(),
 		"sessions_denied":        h.sessionsDenied.Load(),
 		"patches_applied":        h.patchesApplied.Load(),

@@ -1,6 +1,10 @@
 package governance
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
+)
 
 // NewAdminRegistryHandler serves cross-actor registry and reporting views for
 // governance operators. The ordinary registry endpoints remain actor-scoped.
@@ -15,14 +19,14 @@ type AdminRegistryHandler struct {
 
 func (h *AdminRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.store == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "registry store unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "registry store unavailable"})
 		return
 	}
 	if h.service == nil || !h.service.RequireAdminRequest(w, r) {
 		return
 	}
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 
@@ -34,33 +38,33 @@ func (h *AdminRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	case "/v1/admin/reporting/maturity-governance":
 		h.listMaturityExports(w, r)
 	default:
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+		httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 	}
 }
 
 func (h *AdminRegistryHandler) listEvidence(w http.ResponseWriter, _ *http.Request) {
 	evidence, err := h.store.Evidence()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "list evidence failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "list evidence failed"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"evidence": evidence, "count": len(evidence)})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"evidence": evidence, "count": len(evidence)})
 }
 
 func (h *AdminRegistryHandler) listCacheOutcomes(w http.ResponseWriter, _ *http.Request) {
 	outcomes, err := h.store.CacheOutcomes()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "list cache outcomes failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "list cache outcomes failed"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"outcomes": outcomes, "count": len(outcomes)})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"outcomes": outcomes, "count": len(outcomes)})
 }
 
 func (h *AdminRegistryHandler) listMaturityExports(w http.ResponseWriter, _ *http.Request) {
 	exports, err := h.store.Exports()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "list maturity exports failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "list maturity exports failed"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"exports": exports, "count": len(exports)})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"exports": exports, "count": len(exports)})
 }

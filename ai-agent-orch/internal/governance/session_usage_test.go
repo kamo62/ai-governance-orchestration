@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 )
 
 func TestSummarizeSessionUsageAggregatesModelAndMCPEvents(t *testing.T) {
@@ -26,7 +26,7 @@ func TestSummarizeSessionUsageAggregatesModelAndMCPEvents(t *testing.T) {
 			EventType: "session.turn.requested",
 		},
 	}
-	summary := SummarizeSessionUsage(events)
+	summary := SummarizeSessionUsageWithPricing(context.Background(), events, nil)
 	if summary.TotalTokens != 100 {
 		t.Fatalf("expected 100 total tokens, got %d", summary.TotalTokens)
 	}
@@ -59,7 +59,7 @@ func TestSummarizeSessionUsageAggregatesModelGatewayEvents(t *testing.T) {
 		},
 	}
 
-	summary := SummarizeSessionUsage(events)
+	summary := SummarizeSessionUsageWithPricing(context.Background(), events, nil)
 
 	if summary.TotalTokens != 16 || summary.PromptTokens != 12 || summary.CompletionTokens != 4 {
 		t.Fatalf("unexpected token summary: %#v", summary)
@@ -127,7 +127,7 @@ func TestSummarizeSessionUsageIncludesResponsesGatewayEvents(t *testing.T) {
 		},
 	}
 
-	summary := SummarizeSessionUsage(events)
+	summary := SummarizeSessionUsageWithPricing(context.Background(), events, nil)
 
 	if summary.ModelProxyCalls != 1 || summary.TotalTokens != 50 || summary.EstimatedCostUSD != 0.003 {
 		t.Fatalf("expected responses gateway usage in summary, got %#v", summary)

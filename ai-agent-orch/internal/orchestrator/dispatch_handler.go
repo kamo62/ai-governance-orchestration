@@ -6,8 +6,9 @@ import (
 	"net/http"
 	"time"
 
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/dispatch"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/dispatch"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 // DispatchRequest is the request to start a specialist runtime.
@@ -33,35 +34,35 @@ func NewDispatchHandler(dispatcher *Dispatcher, audit AuditStore) http.Handler {
 
 func (h *DispatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	if h.dispatcher == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "dispatcher unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "dispatcher unavailable"})
 		return
 	}
 	if h.audit == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "audit store unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "audit store unavailable"})
 		return
 	}
 
 	sessionID := r.Header.Get("X-AI-Orch-Session-ID")
 	if sessionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
 		return
 	}
 
 	var req DispatchRequest
 	if err := readJSON(w, r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
 	if req.Agent == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "agent is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "agent is required"})
 		return
 	}
 	if req.Prompt == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "prompt is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "prompt is required"})
 		return
 	}
 
@@ -73,7 +74,7 @@ func (h *DispatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	gatewayToken := r.Header.Get("X-AI-Orch-Session-Token")
 	handle, err := h.dispatcher.Dispatch(runtimeCtx, sessionID, req.Agent, req.Prompt, gatewayToken)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("dispatch failed: %v", err)})
+		httpx.WriteJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("dispatch failed: %v", err)})
 		return
 	}
 
@@ -97,7 +98,7 @@ func (h *DispatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := handle.Wait(); err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{
+		httpx.WriteJSON(w, http.StatusBadGateway, map[string]any{
 			"error":      fmt.Sprintf("runtime failed: %v", err),
 			"session_id": sessionID,
 			"agent":      req.Agent,
@@ -106,7 +107,7 @@ func (h *DispatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if runtimeError != "" {
-		writeJSON(w, http.StatusBadGateway, map[string]any{
+		httpx.WriteJSON(w, http.StatusBadGateway, map[string]any{
 			"error":      runtimeError,
 			"session_id": sessionID,
 			"agent":      req.Agent,
@@ -132,11 +133,11 @@ func (h *DispatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		RawResponseStored:  false,
 		CorrelationSubject: "orchestrator",
 	}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"session_id": sessionID,
 		"status":     "completed",
 		"agent":      req.Agent,

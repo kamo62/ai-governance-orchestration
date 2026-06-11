@@ -10,8 +10,17 @@ import (
 	"testing"
 	"time"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 )
+
+// StaticUserTokenStore is a fixed-token UserTokenStore for tests, keyed by
+// "userID|serverID".
+type StaticUserTokenStore map[string]string
+
+func (s StaticUserTokenStore) Token(_ context.Context, userID string, serverID string) (string, bool) {
+	token, ok := s[userID+"|"+serverID]
+	return token, ok
+}
 
 func TestMCPProxyOAuthUserMissingTokenFailsClosedWithoutPlatformFallback(t *testing.T) {
 	var backendCalled bool

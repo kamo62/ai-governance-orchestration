@@ -16,9 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/httpauth"
-	"ai-agent-orch/internal/policyengine"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpauth"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/policyengine"
 )
 
 type AuditAppender interface {
@@ -432,9 +433,7 @@ type CreateSessionRequest struct {
 	PermissionMode   string  `json:"permission_mode,omitempty"`
 	ApprovalMode     string  `json:"approval_mode,omitempty"`
 	WorkspaceMode    string  `json:"workspace_mode,omitempty"`
-	// Deprecated local identity hint. Authoritative actor identity comes from auth context.
-	RequestedBy string `json:"requested_by,omitempty"`
-	// Phase 1F control-plane bindings.
+	// Control-plane bindings.
 	UseCaseID    string `json:"use_case_id,omitempty"`
 	WorkflowID   string `json:"workflow_id,omitempty"`
 	WorkItemID   string `json:"work_item_id,omitempty"`
@@ -445,7 +444,7 @@ type CreateSessionRequest struct {
 	Intent       string `json:"intent,omitempty"`
 	ActorHint    string `json:"actor_hint,omitempty"`
 	SourceSystem string `json:"source_system,omitempty"`
-	// Phase 1F cost/value sizing.
+	// Cost/value sizing.
 	StoryPoints         int     `json:"story_points,omitempty"`
 	EstimatedDevDays    float64 `json:"estimated_dev_days,omitempty"`
 	BlendedDayRateUSD   float64 `json:"blended_day_rate_usd,omitempty"`
@@ -592,13 +591,13 @@ func (s *SessionService) sessionsCollection(w http.ResponseWriter, r *http.Reque
 	case http.MethodGet:
 		s.listSessions(w, r)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 	}
 }
 
 func (s *SessionService) listSessions(w http.ResponseWriter, r *http.Request) {
 	if s == nil || s.sessions == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session store unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session store unavailable"})
 		return
 	}
 	authReq, ok := s.RequireAuthorizedRequest(w, r)
@@ -608,7 +607,7 @@ func (s *SessionService) listSessions(w http.ResponseWriter, r *http.Request) {
 	limit := parseSessionListLimit(authReq.URL.Query().Get("limit"))
 	records, err := s.sessions.ListRecent(authReq.Context(), actorFromContext(authReq.Context()), limit)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "session list failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "session list failed"})
 		return
 	}
 	summaries := make([]SessionSummary, 0, len(records))
@@ -617,7 +616,7 @@ func (s *SessionService) listSessions(w http.ResponseWriter, r *http.Request) {
 		if s.auditReader != nil {
 			events, err := s.auditReader.EventsBySession(authReq.Context(), record.SessionID)
 			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "session usage lookup failed"})
+				httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "session usage lookup failed"})
 				return
 			}
 			summary.UsageSummary = SummarizeSessionUsageWithPricing(authReq.Context(), events, s.modelPricing)
@@ -625,7 +624,7 @@ func (s *SessionService) listSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		summaries = append(summaries, summary)
 	}
-	writeJSON(w, http.StatusOK, ListSessionsResponse{Sessions: summaries})
+	httpx.WriteJSON(w, http.StatusOK, ListSessionsResponse{Sessions: summaries})
 }
 
 func applyLedgerFields(summary *SessionSummary, events []audit.Event) {
@@ -732,7 +731,7 @@ func sessionSummaryFromRecord(record SessionRecord) SessionSummary {
 
 func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 	if s == nil || s.audit == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return
 	}
 	authReq, ok := s.RequireAuthorizedRequest(w, r)
@@ -742,38 +741,38 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 	r = authReq
 	if blocked, reason := s.blockedByKillSwitch(""); blocked {
 		if err := s.appendDenied(r.Context(), reason, nil, ""); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
-		writeJSON(w, http.StatusLocked, map[string]any{"error": reason})
+		httpx.WriteJSON(w, http.StatusLocked, map[string]any{"error": reason})
 		return
 	}
 
 	var request CreateSessionRequest
 	if err := readJSON(w, r, &request); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
 	request.normalizeRuntimeModes()
 	if err := request.validate(); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 	s.resolveSessionContext(&request)
 	if err := s.enforceWorkItemContext(&request); err != nil {
 		if auditErr := s.appendDenied(r.Context(), err.Error(), nil, request.Classification); auditErr != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
-		writeJSON(w, http.StatusPreconditionRequired, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, http.StatusPreconditionRequired, map[string]any{"error": err.Error()})
 		return
 	}
 	if blocked, reason := s.blockedByKillSwitch(request.Agent); blocked {
 		if err := s.appendDenied(r.Context(), reason, nil, request.Classification); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
-		writeJSON(w, http.StatusLocked, map[string]any{"error": reason})
+		httpx.WriteJSON(w, http.StatusLocked, map[string]any{"error": reason})
 		return
 	}
 	decision, err := s.evaluatePolicy(r.Context(), policyengine.Request{
@@ -791,10 +790,10 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if auditErr := s.appendDenied(r.Context(), "policy engine unavailable", nil, request.Classification); auditErr != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "policy engine unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "policy engine unavailable"})
 		return
 	}
 	if !decision.Allowed {
@@ -805,19 +804,19 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		findings := decision.Findings
 		if reason == "cost cap exceeded" {
 			if err := s.appendDeniedWithCost(r.Context(), reason, request.Classification, request.EstimatedCostUSD, s.sessionCostCapUSD); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+				httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 				return
 			}
 			s.recordCostCapped()
-			writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": reason})
+			httpx.WriteJSON(w, http.StatusPaymentRequired, map[string]any{"error": reason})
 			return
 		}
 		if err := s.appendDenied(r.Context(), reason, findings, request.Classification); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
 		s.recordPolicyDenial(reason)
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": reason})
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": reason})
 		return
 	}
 
@@ -854,7 +853,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		EnforcementMode:    trust.EnforcementMode,
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
 	}
 
@@ -905,7 +904,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 			VerificationCostUSD: request.VerificationCostUSD,
 			RetryCount:          request.RetryCount,
 		}); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "session store failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "session store failed"})
 			return
 		}
 	}
@@ -913,7 +912,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 	s.rememberPrompt(sessionID, request.Prompt)
 	s.rememberEventID(sessionID, event.EventID)
 
-	writeJSON(w, http.StatusCreated, CreateSessionResponse{
+	httpx.WriteJSON(w, http.StatusCreated, CreateSessionResponse{
 		SessionID:      sessionID,
 		RunID:          request.RunID,
 		Status:         "created",
@@ -1173,7 +1172,7 @@ func (s *SessionService) authorized(header string) bool {
 // Callers must use the returned *http.Request to access the authenticated subject.
 func (s *SessionService) RequireAuthorizedRequest(w http.ResponseWriter, r *http.Request) (*http.Request, bool) {
 	if s == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return r, false
 	}
 	// The auth middleware may already have established identity (including the
@@ -1188,26 +1187,26 @@ func (s *SessionService) RequireAuthorizedRequest(w http.ResponseWriter, r *http
 			return r, true
 		}
 		if err := s.appendDenied(r.Context(), "invalid bearer token", nil, ""); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return r, false
 		}
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return r, false
 	}
 	if s.devToken == "" {
 		if err := s.appendDenied(r.Context(), "dev token not configured", nil, ""); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return r, false
 		}
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "dev token not configured"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "dev token not configured"})
 		return r, false
 	}
 	if !s.authorized(r.Header.Get("Authorization")) {
 		if err := s.appendDenied(r.Context(), "invalid dev token", nil, ""); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return r, false
 		}
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return r, false
 	}
 	subject := "local-dev"
@@ -1217,10 +1216,10 @@ func (s *SessionService) RequireAuthorizedRequest(w http.ResponseWriter, r *http
 	if localIdentity := r.Header.Get("X-AI-Orch-Local-Identity"); localIdentity != "" {
 		if !validActorLabel(localIdentity) {
 			if err := s.appendDenied(r.Context(), "invalid local identity", nil, ""); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+				httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 				return r, false
 			}
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid local identity"})
+			httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid local identity"})
 			return r, false
 		}
 		subject = localIdentity
@@ -1234,20 +1233,20 @@ func (s *SessionService) RequireAuthorizedRequest(w http.ResponseWriter, r *http
 // ordinary session auth. If no admin token is configured, admin endpoints are disabled.
 func (s *SessionService) RequireAdminRequest(w http.ResponseWriter, r *http.Request) bool {
 	if s == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return false
 	}
 	if s.adminToken == "" {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "admin not configured"})
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "admin not configured"})
 		return false
 	}
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return false
 	}
 	if subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(auth, "Bearer ")), []byte(s.adminToken)) != 1 {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "admin access required"})
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "admin access required"})
 		return false
 	}
 	return true
@@ -1418,9 +1417,6 @@ func (r CreateSessionRequest) validate() error {
 	if r.Prompt == "" {
 		return errors.New("prompt is required")
 	}
-	if r.RequestedBy != "" && !validActorLabel(r.RequestedBy) {
-		return errors.New("requested_by may only contain letters, numbers, '.', '_', '@', ':' and '-'")
-	}
 	if !validPermissionMode(r.PermissionMode) {
 		return errors.New("permission_mode must be one of read_only, reviewed, auto_apply or full_access")
 	}
@@ -1482,12 +1478,6 @@ func validActorLabel(value string) bool {
 		}
 	}
 	return true
-}
-
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
 }
 
 func randomID(prefix string) string {

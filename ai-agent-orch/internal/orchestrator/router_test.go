@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 )
 
 func TestRouterSelectsSpecialistsForGoldenPrompts(t *testing.T) {

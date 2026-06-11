@@ -3,6 +3,8 @@ package governance
 import (
 	"net/http"
 	"strings"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 // PatchFetchHandler serves GET /v1/sessions/{id}/patches/{patch_id}.
@@ -16,11 +18,11 @@ func NewPatchFetchHandler(service *SessionService) http.Handler {
 
 func (h *PatchFetchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	if h.service == nil || h.service.patchBuffer == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "patch buffer unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "patch buffer unavailable"})
 		return
 	}
 	authReq, ok := h.service.RequireAuthorizedRequest(w, r)
@@ -31,7 +33,7 @@ func (h *PatchFetchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	sessionID, patchID := extractPatchFetchIDs(r.URL.Path)
 	if sessionID == "" || patchID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID and patch ID are required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID and patch ID are required"})
 		return
 	}
 
@@ -39,22 +41,22 @@ func (h *PatchFetchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.service.sessions != nil {
 		record, err := h.service.sessions.Get(r.Context(), sessionID)
 		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
 			return
 		}
 		if record.ActorSubject != actor {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
+			httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
 			return
 		}
 	}
 	if !h.service.patchKnown(sessionID, patchID) {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "patch not found"})
+		httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "patch not found"})
 		return
 	}
 
 	payload, err := h.service.patchBuffer.Get(r.Context(), sessionID, patchID)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "patch not found"})
+		httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "patch not found"})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

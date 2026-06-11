@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"ai-agent-orch/internal/dispatch"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/dispatch"
 )
 
 func TestDispatcherUsesModelAliasOverride(t *testing.T) {

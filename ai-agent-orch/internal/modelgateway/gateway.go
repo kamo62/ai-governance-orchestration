@@ -19,11 +19,12 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/copilot"
-	"ai-agent-orch/internal/modelbackend"
-	"ai-agent-orch/internal/openrouter"
-	"ai-agent-orch/internal/router"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/copilot"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/modelbackend"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/router"
 )
 
 // GatewayConfig holds the configuration for the model compatibility gateway.
@@ -140,15 +141,15 @@ func (g *Gateway) Handler() http.Handler {
 
 func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	if !g.authorized(r) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
 	if g.router == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "router unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "router unavailable"})
 		return
 	}
 
@@ -177,7 +178,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
 		"data":   data,
 	})
@@ -191,34 +192,34 @@ type modelListEntry struct {
 
 func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	if !g.authorized(r) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
 	if g.router == nil || g.backend == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "gateway unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "gateway unavailable"})
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, g.maxRequestBytes))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "read body: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "read body: " + err.Error()})
 		return
 	}
 
 	var req openAIChatCompletionRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + err.Error()})
 		return
 	}
 	if req.Model == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "model is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "model is required"})
 		return
 	}
 	if len(req.Messages) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "messages are required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "messages are required"})
 		return
 	}
 	sessionID, session, ok := g.resolveSession(w, r, req.Model, body, "chat.completions")
@@ -233,12 +234,12 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		ActorSubject:   session.ActorSubject,
 	})
 	if err != nil {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
 		return
 	}
 	body, decision, err = applyGovernedReasoning(body, decision, session)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 
@@ -257,7 +258,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		})
 		if err != nil {
 			g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, nil, nil, err.Error())
-			writeJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
+			httpx.WriteJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 			return
 		}
 		respBody = rewriteTopLevelModel(respBody, decision.SelectedAlias)
@@ -284,7 +285,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	resp, err := g.backend.ChatCompletion(r.Context(), upstream)
 	if err != nil {
 		g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, nil, nil, err.Error())
-		writeJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
+		httpx.WriteJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 		return
 	}
 
@@ -303,7 +304,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		},
 	}
 
-	writeJSON(w, http.StatusOK, openAIResp)
+	httpx.WriteJSON(w, http.StatusOK, openAIResp)
 }
 
 func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, req openAIChatCompletionRequest, decision router.Decision, session SessionInfo, sessionID string, reqBody []byte) {
@@ -312,7 +313,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, req openA
 	streamReader, err := startChatStream(r.Context(), g.backend, decision, req, session.ActorSubject, streamBody)
 	if err != nil {
 		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", err.Error())
-		writeJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("stream start failed: %v", err)})
+		httpx.WriteJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("stream start failed: %v", err)})
 		return
 	}
 	defer streamReader.Close()
@@ -320,7 +321,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, req openA
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", "streaming not supported")
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "streaming not supported"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "streaming not supported"})
 		return
 	}
 
@@ -374,34 +375,34 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, req openA
 
 func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	if !g.authorized(r) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
 	if g.router == nil || g.backend == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "gateway unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "gateway unavailable"})
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, g.maxRequestBytes))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "read body: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "read body: " + err.Error()})
 		return
 	}
 
 	var req openAIResponsesRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + err.Error()})
 		return
 	}
 	if req.Model == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "model is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "model is required"})
 		return
 	}
 	if len(req.Input) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "input is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "input is required"})
 		return
 	}
 	sessionID, session, ok := g.resolveSession(w, r, req.Model, body, "responses")
@@ -416,12 +417,12 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		ActorSubject:   session.ActorSubject,
 	})
 	if err != nil {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
 		return
 	}
 	body, decision, err = applyGovernedReasoning(body, decision, session)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 
@@ -439,7 +440,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_responses", body, nil, nil, err.Error())
-			writeJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
+			httpx.WriteJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 			return
 		}
 		respBody = rewriteTopLevelModel(respBody, decision.SelectedAlias)
@@ -452,7 +453,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Stream {
-		writeJSON(w, http.StatusNotImplemented, map[string]any{"error": "responses streaming is not supported by the selected backend"})
+		httpx.WriteJSON(w, http.StatusNotImplemented, map[string]any{"error": "responses streaming is not supported by the selected backend"})
 		return
 	}
 
@@ -469,7 +470,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 	resp, err := g.backend.ChatCompletion(r.Context(), upstream)
 	if err != nil {
 		g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_responses", body, nil, nil, err.Error())
-		writeJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
+		httpx.WriteJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 		return
 	}
 
@@ -495,7 +496,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	writeJSON(w, http.StatusOK, openAIResp)
+	httpx.WriteJSON(w, http.StatusOK, openAIResp)
 }
 
 func (g *Gateway) handleResponsesStream(w http.ResponseWriter, r *http.Request, backend modelbackend.RawResponsesBackend, decision router.Decision, session SessionInfo, sessionID string, reqBody []byte) {
@@ -510,7 +511,7 @@ func (g *Gateway) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 	})
 	if err != nil {
 		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.failed", reqHash, "", err.Error())
-		writeJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("responses stream start failed: %v", err)})
+		httpx.WriteJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("responses stream start failed: %v", err)})
 		return
 	}
 	defer streamReader.Close()
@@ -518,7 +519,7 @@ func (g *Gateway) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.failed", reqHash, "", "streaming not supported")
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "streaming not supported"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "streaming not supported"})
 		return
 	}
 
@@ -576,7 +577,7 @@ func (g *Gateway) resolveSession(w http.ResponseWriter, r *http.Request, modelAl
 		return sessionID, info, ok
 	}
 	if g.autoSession == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
 		return "", SessionInfo{}, false
 	}
 	actor := strings.TrimSpace(r.Header.Get("X-AI-Orch-Actor-Subject"))
@@ -589,7 +590,7 @@ func (g *Gateway) resolveSession(w http.ResponseWriter, r *http.Request, modelAl
 		actor, _ = g.runtimeAuth(r)
 	}
 	if actor == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "actor identity is required for auto sessions: send X-AI-Orch-Actor-Subject or use the composite API key <runtime-token>.<actor>"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "actor identity is required for auto sessions: send X-AI-Orch-Actor-Subject or use the composite API key <runtime-token>.<actor>"})
 		return "", SessionInfo{}, false
 	}
 	classification := strings.TrimSpace(r.Header.Get("X-AI-Orch-Classification"))
@@ -618,11 +619,11 @@ func (g *Gateway) resolveSession(w http.ResponseWriter, r *http.Request, modelAl
 		EstimatedCostUSD:   parseOptionalFloatHeader(r.Header.Get("X-AI-Orch-Estimated-Cost-USD")),
 	})
 	if err != nil {
-		writeJSON(w, statusCodeFromAutoSessionError(err), map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, statusCodeFromAutoSessionError(err), map[string]any{"error": err.Error()})
 		return "", SessionInfo{}, false
 	}
 	if info.SessionID == "" {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "auto session missing session ID"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "auto session missing session ID"})
 		return "", SessionInfo{}, false
 	}
 	if strings.TrimSpace(info.Classification) == "" {
@@ -642,15 +643,15 @@ func (g *Gateway) sessionInfo(w http.ResponseWriter, r *http.Request, sessionID 
 	if g.lookupSession != nil {
 		info, err := g.lookupSession(r.Context(), sessionID)
 		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
 			return SessionInfo{}, false
 		}
 		if !sessionTokenMatches(r, info.GatewayTokenSHA256, info.RuntimeGatewayTokenSHA256) {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "X-AI-Orch-Session-Token missing or invalid for this session"})
+			httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "X-AI-Orch-Session-Token missing or invalid for this session"})
 			return SessionInfo{}, false
 		}
 		if !sessionStatusAllowsModelCalls(info.Status) {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "session is not active for model calls"})
+			httpx.WriteJSON(w, http.StatusConflict, map[string]any{"error": "session is not active for model calls"})
 			return SessionInfo{}, false
 		}
 		if strings.TrimSpace(info.Classification) == "" {
@@ -660,7 +661,7 @@ func (g *Gateway) sessionInfo(w http.ResponseWriter, r *http.Request, sessionID 
 	}
 	if g.validateSession != nil {
 		if err := g.validateSession(r.Context(), sessionID); err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
 			return SessionInfo{}, false
 		}
 	}
@@ -1281,12 +1282,6 @@ func numericValue(value any) (float64, bool) {
 func sha256Hex(body []byte) string {
 	sum := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
 }
 
 func inferTaskType(messages []openAIRequestMessage) string {

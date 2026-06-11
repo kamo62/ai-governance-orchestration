@@ -329,36 +329,3 @@ func (c *Client) setHeaders(req *http.Request) {
 		req.Header.Set("X-Title", c.appTitle)
 	}
 }
-
-// StreamChunk is a single SSE chunk from a streaming chat completion.
-type StreamChunk struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role    string `json:"role,omitempty"`
-			Content string `json:"content,omitempty"`
-		} `json:"delta"`
-		FinishReason *string `json:"finish_reason,omitempty"`
-	} `json:"choices"`
-	Usage *Usage `json:"usage,omitempty"`
-}
-
-// DecodeStreamChunk parses a single SSE data line into a StreamChunk.
-func DecodeStreamChunk(line string) (StreamChunk, error) {
-	const prefix = "data:"
-	if !strings.HasPrefix(line, prefix) {
-		return StreamChunk{}, fmt.Errorf("not a data line")
-	}
-	data := strings.TrimSpace(strings.TrimPrefix(line, prefix))
-	if data == "[DONE]" {
-		return StreamChunk{}, io.EOF
-	}
-	var chunk StreamChunk
-	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-		return StreamChunk{}, fmt.Errorf("decode chunk: %w", err)
-	}
-	return chunk, nil
-}

@@ -1,6 +1,10 @@
 package governance
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
+)
 
 type GatewayOption struct {
 	ID          string `json:"id"`
@@ -32,10 +36,10 @@ func NewSystemStatusHandler(cfg SystemStatusConfig) http.Handler {
 
 func (h *SystemStatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"service":                 h.cfg.Service,
 		"version":                 h.cfg.Version,
 		"environment":             h.cfg.Environment,

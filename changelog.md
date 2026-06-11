@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.18.3-beta - 2026-06-11 (Patch)
+
+Release impact: Patch because this fixes local hardening, module identity, and documentation drift without changing public API contracts, session payloads, model routing behaviour, or deployment compatibility.
+
+- **Restored the canonical Go module identity**: the Go module and imports now use `github.com/kamo62/ai-governance-orchestration/ai-agent-orch`, matching the actual GitHub repository path.
+- **Hardened OpenCode config installation**: project or global `opencode.json` files that store a concrete ai-orch runtime token are now written with private `0600` permissions, and local OpenCode config files are ignored by git.
+- **Added regression coverage for repo identity and OpenCode file modes**: focused tests now catch module-path drift and token-bearing config files that are not private.
+- **Updated stale consolidation docs**: the roadmap and MCP README now refer to `ai-orch smoke gateway|provider` and the consolidated `mcp-stub` shape instead of deleted prototype binaries.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.18.3-beta.
+
+## v0.18.2-beta - 2026-06-11 (Patch)
+
+Release impact: Patch because this hardens local verification and test reliability without changing public APIs, model routing, session contracts, or deployment compatibility.
+
+- **Pinned the local Go toolchain to the patched standard library**: root Go commands now request Go 1.26.4, matching CI and Docker, so govulncheck no longer reports reachable standard-library vulnerabilities from Go 1.26.3.
+- **Isolated Bridge dependencies from Go package discovery**: the VS Code Bridge now has a nested module boundary so Go package discovery, tests, and vulnerability scans do not traverse Bun-installed node_modules.
+- **Added repo-health regression coverage**: a focused Go test now fails if root package discovery starts walking node_modules again.
+- **Fixed stale skillsfactory tests**: updated the Doctor test call sites to match the current Doctor(dir, gatewayURL) API.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, deployment prerequisites, and changelog now agree on v0.18.2-beta.
+
 ## v0.18.1-beta - 2026-06-11 (Patch)
 
 Release impact: Patch because this hardens beta verification, SQLite contention handling, audit failure guidance, and removes unused prototype code without changing public APIs or model/session contracts.

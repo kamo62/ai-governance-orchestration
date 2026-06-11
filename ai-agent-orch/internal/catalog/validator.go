@@ -186,13 +186,10 @@ func validateAgentDir(root string, dir string, aliases map[string]struct{}, mcpR
 		return AgentConfig{}, fmt.Errorf("%s: %w", rel(root, cfgPath), err)
 	}
 
-	// Combine legacy tools_allowed and new governance_profile.mcp_tools for validation.
-	allTools := append([]string{}, cfg.ToolsAllowed...)
-	allTools = append(allTools, cfg.GovernanceProfile.MCPTools...)
-	if cfg.Permissions.WorkspaceWrite == "deny" && contains(allTools, "write_file") {
+	if cfg.Permissions.WorkspaceWrite == "deny" && contains(cfg.ToolsAllowed, "write_file") {
 		return AgentConfig{}, fmt.Errorf("%s: read-only agent cannot allow write_file", rel(root, cfgPath))
 	}
-	if cfg.Name != "unit-tests" && contains(allTools, "run_command:playwright") {
+	if cfg.Name != "unit-tests" && contains(cfg.ToolsAllowed, "run_command:playwright") {
 		return AgentConfig{}, fmt.Errorf("%s: only unit-tests can run Playwright", rel(root, cfgPath))
 	}
 
@@ -384,7 +381,7 @@ type AgentConfig struct {
 	Runtime      string   `yaml:"runtime"`
 	Model        modelRef `yaml:"model"`
 	MCPServers   []string `yaml:"mcp_servers"`
-	ToolsAllowed []string `yaml:"tools_allowed"` // Deprecated: use GovernanceProfile.MCPTools
+	ToolsAllowed []string `yaml:"tools_allowed"`
 	Permissions  struct {
 		Network               string `yaml:"network"`
 		WorkspaceWrite        string `yaml:"workspace_write"`
@@ -401,13 +398,6 @@ type AgentConfig struct {
 		Path              string `yaml:"path"`
 		RequiredForPhase0 bool   `yaml:"required_for_phase0"`
 	} `yaml:"evals"`
-	GovernanceProfile struct {
-		RoutingHints          []string `yaml:"routing_hints"`
-		ModelPolicy           string   `yaml:"model_policy"`
-		EvidenceExpectations  []string `yaml:"evidence_expectations"`
-		MCPTools              []string `yaml:"mcp_tools"`
-		ReportingRequirements []string `yaml:"reporting_requirements"`
-	} `yaml:"governance_profile"`
 }
 
 type modelRef struct {

@@ -56,7 +56,7 @@ func TestPhase1EndToEnd(t *testing.T) {
 	cfg := &GatewayConfig{GovernanceURL: mockGov.URL, DevToken: "tok"}
 	s := NewServer("test", "1.0")
 	RegisterPhase1GTools(s, cfg)
-	RegisterPhase1ITools(s, cfg)
+	RegisterControlPlaneTools(s, cfg)
 	RegisterPhase1JTools(s, cfg)
 
 	ctx := context.Background()

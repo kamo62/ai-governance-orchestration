@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"ai-agent-orch/internal/skillsfactory"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/skillsfactory"
 )
 
 func handleMCPInstall(cfg Config, args []string) {

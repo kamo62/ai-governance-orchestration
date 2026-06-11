@@ -12,9 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/catalog"
-	"ai-agent-orch/internal/classifier"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/catalog"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/classifier"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 type RouterConfig struct {
@@ -204,16 +205,16 @@ func (r *Router) cachedCatalog() (catalog.Report, error) {
 
 func (r *Router) route(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	if r == nil || r.audit == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "router unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "router unavailable"})
 		return
 	}
 	sessionID := req.Header.Get("X-AI-Orch-Session-ID")
 	if sessionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
 		return
 	}
 
@@ -221,12 +222,12 @@ func (r *Router) route(w http.ResponseWriter, req *http.Request) {
 	dec := json.NewDecoder(req.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&request); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
 		return
 	}
 	decision, err := r.SelectSpecialist(request.Prompt, request.Context)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 
@@ -245,11 +246,11 @@ func (r *Router) route(w http.ResponseWriter, req *http.Request) {
 		CorrelationSubject: "orchestrator",
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, RouteResponse{
+	httpx.WriteJSON(w, http.StatusOK, RouteResponse{
 		SessionID:      sessionID,
 		Status:         "selected",
 		Specialist:     decision.Specialist,

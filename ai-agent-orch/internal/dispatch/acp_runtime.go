@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"ai-agent-orch/internal/appversion"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/appversion"
 )
 
 // ACPRuntime implements Runtime using OpenCode ACP JSON-RPC over stdio.

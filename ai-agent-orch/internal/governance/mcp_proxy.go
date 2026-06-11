@@ -8,8 +8,9 @@ import (
 	"net/http"
 	"strings"
 
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/policyengine"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/policyengine"
 )
 
 type MCPProxyRegistration struct {
@@ -24,13 +25,6 @@ type MCPProxyRegistration struct {
 
 type UserTokenStore interface {
 	Token(ctx context.Context, userID string, serverID string) (string, bool)
-}
-
-type StaticUserTokenStore map[string]string
-
-func (s StaticUserTokenStore) Token(_ context.Context, userID string, serverID string) (string, bool) {
-	token, ok := s[userID+"|"+serverID]
-	return token, ok
 }
 
 type MCPProxyConfig struct {
@@ -107,18 +101,18 @@ func (h *MCPProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 
 	serverID, toolName := parseMCPProxyPath(r.URL.Path)
 	if serverID == "" || toolName == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "path must be /internal/v1/mcp/{server_id}/tools/{tool_name}"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "path must be /internal/v1/mcp/{server_id}/tools/{tool_name}"})
 		return
 	}
 	reg, ok := h.registrations[serverID]
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "unknown mcp server"})
+		httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "unknown mcp server"})
 		return
 	}
 
@@ -128,36 +122,36 @@ func (h *MCPProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	decision, err := h.authorizeTool(r.Context(), record, serverID, toolName, reg)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "policy evaluation failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "policy evaluation failed"})
 		return
 	}
 	if !decision.Allowed {
 		if err := h.auditMCP(r.Context(), record, serverID, toolName, reg.AuthMode, "tool_call_denied", decision.DecisionID); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "tool_call_denied", "reason": decision.Reason, "decision_id": decision.DecisionID})
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "tool_call_denied", "reason": decision.Reason, "decision_id": decision.DecisionID})
 		return
 	}
 
 	authHeader, ok := h.authHeaderFor(r.Context(), reg, record.ActorSubject, serverID)
 	if !ok {
 		if err := h.auditMCP(r.Context(), record, serverID, toolName, reg.AuthMode, "oauth_user_token_missing", decision.DecisionID); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "oauth_user_token_missing"})
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "oauth_user_token_missing"})
 		return
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "read request body: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "read request body: " + err.Error()})
 		return
 	}
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(reg.Endpoint, "/")+"/"+toolName, bytes.NewReader(body))
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "create backend request failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "create backend request failed"})
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -166,13 +160,13 @@ func (h *MCPProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.auditMCP(r.Context(), record, serverID, toolName, reg.AuthMode, "forwarded", decision.DecisionID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
 	}
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("mcp backend failed: %v", err)})
+		httpx.WriteJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("mcp backend failed: %v", err)})
 		return
 	}
 	defer resp.Body.Close()
@@ -202,26 +196,26 @@ func (h *MCPProxyHandler) handleCatalog(w http.ResponseWriter, r *http.Request, 
 			"tools":     allowedTools,
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"servers": servers})
 }
 
 func (h *MCPProxyHandler) requireSessionRecord(w http.ResponseWriter, r *http.Request, auth mcpProxyAuth) (SessionRecord, bool) {
 	sessionID := r.Header.Get("X-AI-Orch-Session-ID")
 	if sessionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id is required"})
 		return SessionRecord{}, false
 	}
 	if h.sessions == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "durable session store is required for mcp proxy"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "durable session store is required for mcp proxy"})
 		return SessionRecord{}, false
 	}
 	record, err := h.sessions.Get(r.Context(), sessionID)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+		httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
 		return SessionRecord{}, false
 	}
 	if !auth.Service && record.ActorSubject != auth.Subject {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
 		return SessionRecord{}, false
 	}
 	return record, true
@@ -315,7 +309,7 @@ func (h *MCPProxyHandler) requireAuthorizedRequest(w http.ResponseWriter, r *htt
 	if h.authorizer != nil {
 		subject, ok := h.authorizer.Validate(r.Context(), auth)
 		if !ok {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+			httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 			return r, mcpProxyAuth{}, false
 		}
 		r = r.WithContext(WithAuthInfo(r.Context(), AuthInfo{Subject: subject, Method: "oidc"}))
@@ -325,7 +319,7 @@ func (h *MCPProxyHandler) requireAuthorizedRequest(w http.ResponseWriter, r *htt
 		subject := "local-dev"
 		if localIdentity := r.Header.Get("X-AI-Orch-Local-Identity"); localIdentity != "" {
 			if !validActorLabel(localIdentity) {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid local identity"})
+				httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid local identity"})
 				return r, mcpProxyAuth{}, false
 			}
 			subject = localIdentity
@@ -333,7 +327,7 @@ func (h *MCPProxyHandler) requireAuthorizedRequest(w http.ResponseWriter, r *htt
 		r = r.WithContext(WithAuthInfo(r.Context(), AuthInfo{Subject: subject, Method: "dev"}))
 		return r, mcpProxyAuth{Subject: subject}, true
 	}
-	writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+	httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 	return r, mcpProxyAuth{}, false
 }
 

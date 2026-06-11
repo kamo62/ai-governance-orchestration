@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"sync"
 	"time"
 
-	"ai-agent-orch/internal/copilot"
-	"ai-agent-orch/internal/openrouter"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/copilot"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/logx"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
 )
 
 const BackendCopilotUser = "copilot-user"
@@ -140,7 +140,7 @@ func (b *CopilotUserBackend) bearerForRecord(ctx context.Context, rec copilot.To
 	}
 	exchanged, err := b.client.ExchangeSessionToken(ctx, rec.AccessToken)
 	if err != nil {
-		log.Printf("copilot session token exchange failed for actor %s; using OAuth token directly: %v", rec.ActorSubject, err)
+		logx.Warnf("copilot session token exchange failed for actor %s; using OAuth token directly: %v", rec.ActorSubject, err)
 		return rec.AccessToken
 	}
 	b.mu.Lock()

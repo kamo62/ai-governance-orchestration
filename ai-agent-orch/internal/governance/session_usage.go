@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 )
 
 // SessionUsageSummary aggregates token and cost signals for a governed session.
@@ -25,10 +25,6 @@ type SessionUsageSummary struct {
 	ReasoningSource          string  `json:"reasoning_source,omitempty"`
 	GatewayBackend           string  `json:"gateway_backend,omitempty"`
 	CostSource               string  `json:"cost_source,omitempty"`
-}
-
-func SummarizeSessionUsage(events []audit.Event) SessionUsageSummary {
-	return SummarizeSessionUsageWithPricing(context.Background(), events, nil)
 }
 
 func SummarizeSessionUsageWithPricing(ctx context.Context, events []audit.Event, pricing ModelPricingStore) SessionUsageSummary {

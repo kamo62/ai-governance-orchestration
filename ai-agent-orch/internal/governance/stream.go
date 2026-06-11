@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 const maxClosedSessionHistory = 256
@@ -237,40 +239,40 @@ func NewEventsHandler(store *EventStore, service ...*SessionService) http.Handle
 
 func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	if h == nil || h.store == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "event store unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "event store unavailable"})
 		return
 	}
 
 	if err := acquireSSE(r.Context()); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "server busy"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "server busy"})
 		return
 	}
 	defer releaseSSE()
 
 	sessionID := extractSessionID(r.URL.Path, "/v1/sessions/", "/events")
 	if sessionID == "" || strings.Contains(sessionID, "/") {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
 		return
 	}
 	if h.service != nil && h.service.sessions != nil {
 		record, err := h.service.sessions.Get(r.Context(), sessionID)
 		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
 			return
 		}
 		if record.ActorSubject != actorFromContext(r.Context()) {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
+			httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
 			return
 		}
 	}
 
 	sse, err := NewSSEWriter(w)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "streaming unsupported"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "streaming unsupported"})
 		return
 	}
 

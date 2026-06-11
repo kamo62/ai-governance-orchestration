@@ -5,7 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 // ConfirmHandler serves POST /v1/sessions/{id}/confirm.
@@ -14,14 +15,6 @@ type ConfirmHandler struct {
 	orch    OrchestratorClient
 	events  *EventStore
 	newID   func(prefix string) string
-}
-
-func NewConfirmHandler(service *SessionService, orch OrchestratorClient) http.Handler {
-	return &ConfirmHandler{
-		service: service,
-		orch:    orch,
-		newID:   randomID,
-	}
 }
 
 func NewConfirmHandlerWithEvents(service *SessionService, orch OrchestratorClient, events *EventStore) http.Handler {
@@ -35,11 +28,11 @@ func NewConfirmHandlerWithEvents(service *SessionService, orch OrchestratorClien
 
 func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	if h.service == nil || h.service.audit == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return
 	}
 	authReq, ok := h.service.RequireAuthorizedRequest(w, r)
@@ -50,7 +43,7 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := extractSessionID(r.URL.Path, "/v1/sessions/", "/confirm")
 	if sessionID == "" || strings.Contains(sessionID, "/") {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
 		return
 	}
 
@@ -58,19 +51,19 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Agent string `json:"agent"`
 	}
 	if err := readJSON(w, r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
 	if req.Agent == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "agent is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "agent is required"})
 		return
 	}
 	if blocked, reason := h.service.blockedByKillSwitch(req.Agent); blocked {
 		if err := h.service.appendDenied(r.Context(), reason, nil, ""); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
-		writeJSON(w, http.StatusLocked, map[string]any{"error": reason})
+		httpx.WriteJSON(w, http.StatusLocked, map[string]any{"error": reason})
 		return
 	}
 
@@ -79,7 +72,7 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var ok bool
 		prompt, ok = h.service.promptForSession(sessionID)
 		if !ok {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "session prompt unavailable"})
+			httpx.WriteJSON(w, http.StatusConflict, map[string]any{"error": "session prompt unavailable"})
 			return
 		}
 	}
@@ -89,19 +82,19 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.service.sessions != nil {
 		record, err := h.service.sessions.Get(r.Context(), sessionID)
 		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
 			return
 		}
 		if record.ActorSubject != actor {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
+			httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
 			return
 		}
 		if record.RoutedAgent != "" && record.RoutedAgent != req.Agent {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "confirmed agent does not match routed specialist"})
+			httpx.WriteJSON(w, http.StatusConflict, map[string]any{"error": "confirmed agent does not match routed specialist"})
 			return
 		}
 		if err := h.service.sessions.CompareAndSwapStatus(r.Context(), sessionID, "awaiting_confirmation", "confirming"); err != nil {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "session state transition failed"})
+			httpx.WriteJSON(w, http.StatusConflict, map[string]any{"error": "session state transition failed"})
 			return
 		}
 	}
@@ -109,7 +102,7 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Call Orchestrator to accept the specialist session.
 	if err := h.orch.AcceptSession(r.Context(), sessionID, req.Agent); err != nil {
 		h.service.setSessionStatus(r.Context(), sessionID, "awaiting_confirmation")
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("orchestrator accept failed: %v", err)})
+		httpx.WriteJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("orchestrator accept failed: %v", err)})
 		return
 	}
 
@@ -131,18 +124,18 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.service.setSessionStatus(r.Context(), sessionID, "awaiting_confirmation")
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
 	}
 	h.service.rememberEventID(sessionID, eventID)
 	if h.service.sessions != nil {
 		if err := h.service.sessions.CompareAndSwapStatus(r.Context(), sessionID, "confirming", "confirmed"); err != nil {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "session state transition failed"})
+			httpx.WriteJSON(w, http.StatusConflict, map[string]any{"error": "session state transition failed"})
 			return
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"session_id":     sessionID,
 		"status":         "confirmed",
 		"agent":          req.Agent,

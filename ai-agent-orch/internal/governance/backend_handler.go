@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 type BackendHandlerConfig struct {
@@ -37,19 +39,19 @@ func (ShellBackendCommandExecutor) Run(ctx context.Context, name string, args []
 func NewBackendHandler(cfg BackendHandlerConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			writeJSON(w, http.StatusOK, map[string]any{"current_backend": cfg.CurrentBackend, "options": cfg.GatewayOptions, "commands": backendCommands(), "control_enabled": cfg.ControlEnabled})
+			httpx.WriteJSON(w, http.StatusOK, map[string]any{"current_backend": cfg.CurrentBackend, "options": cfg.GatewayOptions, "commands": backendCommands(), "control_enabled": cfg.ControlEnabled})
 			return
 		}
 		if r.Method != http.MethodPost {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+			httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 			return
 		}
 		if cfg.AdminToken == "" || !authorizedBearer(r.Header.Get("Authorization"), cfg.AdminToken) {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "admin access required"})
+			httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "admin access required"})
 			return
 		}
 		if !cfg.ControlEnabled {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "backend control is disabled"})
+			httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "backend control is disabled"})
 			return
 		}
 		var req struct {
@@ -57,12 +59,12 @@ func NewBackendHandler(cfg BackendHandlerConfig) http.Handler {
 			Action  string `json:"action"`
 		}
 		if err := readJSON(w, r, &req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+			httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 			return
 		}
 		name, args, err := backendCommand(req.Backend, req.Action)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
 		exec := cfg.Executor
@@ -73,10 +75,10 @@ func NewBackendHandler(cfg BackendHandlerConfig) http.Handler {
 		defer cancel()
 		out, err := exec.Run(ctx, name, args, cfg.WorkDir)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "output": out})
+			httpx.WriteJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "output": out})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"backend": req.Backend, "action": req.Action, "output": out})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"backend": req.Backend, "action": req.Action, "output": out})
 	})
 }
 

@@ -143,7 +143,7 @@ func TestMergeOpenCodeConfigPreservesExistingSettings(t *testing.T) {
 		},
 	}
 
-	merged, changed, err := mergeOpenCodeConfig(existing, "http://127.0.0.1:18083", false)
+	merged, changed, err := mergeOpenCodeConfigWithOptions(existing, OpenCodeConfigOptions{GatewayURL: "http://127.0.0.1:18083", UseEnvPlaceholders: true}, false)
 	if err != nil {
 		t.Fatalf("merge config: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestMergeOpenCodeConfigPreservesExistingAgentDefinitions(t *testing.T) {
 			},
 		},
 	}
-	merged, changed, err := mergeOpenCodeConfig(existing, "http://127.0.0.1:18082", false)
+	merged, changed, err := mergeOpenCodeConfigWithOptions(existing, OpenCodeConfigOptions{GatewayURL: "http://127.0.0.1:18082", UseEnvPlaceholders: true}, false)
 	if err != nil {
 		t.Fatalf("merge config: %v", err)
 	}
@@ -234,10 +234,10 @@ func TestMergeOpenCodeConfigRequiresForceForDifferentProvider(t *testing.T) {
 			"ai-orch": map[string]any{"name": "old"},
 		},
 	}
-	if _, _, err := mergeOpenCodeConfig(existing, "http://127.0.0.1:18082", false); err == nil {
+	if _, _, err := mergeOpenCodeConfigWithOptions(existing, OpenCodeConfigOptions{GatewayURL: "http://127.0.0.1:18082", UseEnvPlaceholders: true}, false); err == nil {
 		t.Fatal("expected differing ai-orch provider to require force")
 	}
-	if _, _, err := mergeOpenCodeConfig(existing, "http://127.0.0.1:18082", true); err != nil {
+	if _, _, err := mergeOpenCodeConfigWithOptions(existing, OpenCodeConfigOptions{GatewayURL: "http://127.0.0.1:18082", UseEnvPlaceholders: true}, true); err != nil {
 		t.Fatalf("expected force to update provider: %v", err)
 	}
 }
@@ -257,6 +257,26 @@ func TestWriteOpenCodeConfigCreatesBackup(t *testing.T) {
 	}
 	if _, err := os.Stat(backup); err != nil {
 		t.Fatalf("expected backup to exist: %v", err)
+	}
+}
+
+func TestInstallOpenCodeConfigWithConcreteTokenUsesPrivateFileMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "opencode.json")
+	if err := installOpenCodeConfig("http://127.0.0.1:18082", []string{
+		"--path", path,
+		"--runtime-token", "runtime-token",
+		"--actor-subject", "dev-user",
+	}); err != nil {
+		t.Fatalf("install config: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat installed config: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("expected concrete-token config mode 0600, got %o", got)
 	}
 }
 

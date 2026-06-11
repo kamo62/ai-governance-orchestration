@@ -5,7 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 // AdminAuditHandler serves audit administration endpoints.
@@ -20,11 +21,11 @@ func NewAdminAuditHandler(auditStore audit.Store, service *SessionService) http.
 
 func (h *AdminAuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.audit == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "audit store unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "audit store unavailable"})
 		return
 	}
 	if h.service == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return
 	}
 	if !h.service.RequireAdminRequest(w, r) {
@@ -38,7 +39,7 @@ func (h *AdminAuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+	httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 }
 
 func (h *AdminAuditHandler) applyRetention(w http.ResponseWriter, r *http.Request) {
@@ -46,11 +47,11 @@ func (h *AdminAuditHandler) applyRetention(w http.ResponseWriter, r *http.Reques
 		MaxAgeHours int `json:"max_age_hours"`
 	}
 	if err := readJSON(w, r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
 	if req.MaxAgeHours <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "max_age_hours must be > 0"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "max_age_hours must be > 0"})
 		return
 	}
 
@@ -59,7 +60,7 @@ func (h *AdminAuditHandler) applyRetention(w http.ResponseWriter, r *http.Reques
 		SupportsRetentionPolicy() bool
 	}
 	if capable, ok := h.audit.(retentionCapability); ok && !capable.SupportsRetentionPolicy() {
-		writeJSON(w, http.StatusNotImplemented, map[string]any{"error": "retention not supported by current audit backend"})
+		httpx.WriteJSON(w, http.StatusNotImplemented, map[string]any{"error": "retention not supported by current audit backend"})
 		return
 	}
 	type retentionPurger interface {
@@ -67,17 +68,17 @@ func (h *AdminAuditHandler) applyRetention(w http.ResponseWriter, r *http.Reques
 	}
 	purger, ok := h.audit.(retentionPurger)
 	if !ok {
-		writeJSON(w, http.StatusNotImplemented, map[string]any{"error": "retention not supported by current audit backend"})
+		httpx.WriteJSON(w, http.StatusNotImplemented, map[string]any{"error": "retention not supported by current audit backend"})
 		return
 	}
 
 	n, err := purger.RetentionPolicy(r.Context(), time.Duration(req.MaxAgeHours)*time.Hour)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "retention failed: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "retention failed: " + err.Error()})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"purged":        n,
 		"max_age_hours": req.MaxAgeHours,
 	})

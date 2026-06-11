@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/envx"
 )
 
 // RunProviderSmoke runs the full governed-run path with real orchestrator dispatch (no EchoRuntime).
@@ -33,10 +35,10 @@ func RunProviderSmoke(ctx context.Context, cfg Config) error {
 	}
 	fmt.Println("   OK")
 
-	prompt := envOrDefault("AI_ORCH_PROVIDER_PROMPT", `Write unit tests for login.
+	prompt := envx.OrDefault("AI_ORCH_PROVIDER_PROMPT", `Write unit tests for login.
 Return only one JSON object that creates SMOKE_SOURCE_CONTEXT.md with safe, non-sensitive placeholder content.
 Do not include passwords, tokens, API keys, credentials, private URLs, or external service calls.`)
-	specialist := envOrDefault("AI_ORCH_PROVIDER_AGENT", "unit-tests")
+	specialist := envx.OrDefault("AI_ORCH_PROVIDER_AGENT", "unit-tests")
 
 	fmt.Println("\n2. Starting governed run...")
 	runBody, _ := json.Marshal(map[string]any{

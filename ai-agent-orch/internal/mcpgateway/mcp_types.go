@@ -150,11 +150,6 @@ func TextContent(text string) ContentItem {
 	return ContentItem{Type: "text", Text: text}
 }
 
-// ErrorContent returns an error content item.
-func ErrorContent(msg string) ContentItem {
-	return ContentItem{Type: "text", Text: msg, Annotations: &Annotations{Title: "error"}}
-}
-
 // ToolHandler is the signature for a tool implementation.
 type ToolHandler func(ctx context.Context, args json.RawMessage) (*ToolsCallResult, error)
 

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"ai-agent-orch/internal/catalog"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/catalog"
 )
 
 func TestRouterSelectsPreferredAlias(t *testing.T) {

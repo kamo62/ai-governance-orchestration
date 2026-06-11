@@ -9,9 +9,10 @@ import (
 	"io"
 	"net/http"
 
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/modelbackend"
-	"ai-agent-orch/internal/openrouter"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/modelbackend"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
 )
 
 type ModelProxyConfig struct {
@@ -46,35 +47,35 @@ func NewModelProxyHandler(cfg ModelProxyConfig) http.Handler {
 
 func (h *ModelProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	if r.URL.Path != "/internal/v1/model/chat" {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+		httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
 	if h.serviceToken == "" || !authorizedBearer(r.Header.Get("Authorization"), h.serviceToken) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
 	if h.backend == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "model proxy unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "model proxy unavailable"})
 		return
 	}
 	sessionID := r.Header.Get("X-AI-Orch-Session-ID")
 	if sessionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
 		return
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "read request body: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "read request body: " + err.Error()})
 		return
 	}
 	var req openrouter.ChatCompletionRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
 	if provider := r.Header.Get("X-AI-Orch-Provider"); provider != "" {
@@ -85,14 +86,14 @@ func (h *ModelProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var err error
 		record, err = h.lookupSession(r.Context(), sessionID)
 		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
 			return
 		}
 	}
 
 	respBody, resolvedModel, usage, err := h.callBackend(r.Context(), req, body, record)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
+		httpx.WriteJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 		return
 	}
 
@@ -119,7 +120,7 @@ func (h *ModelProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			RawResponseStored:  false,
 			CorrelationSubject: "governance-shell",
 		}); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
 	}

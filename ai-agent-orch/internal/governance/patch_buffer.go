@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	patchproto "ai-agent-orch/internal/patch"
-	"ai-agent-orch/internal/policyengine"
+	patchproto "github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/patch"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/policyengine"
 )
 
 // defaultPatchBufferTTL is the TTL for buffered patch entries.

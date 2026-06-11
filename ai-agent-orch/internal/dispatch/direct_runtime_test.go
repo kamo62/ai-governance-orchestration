@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"ai-agent-orch/internal/openrouter"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
 )
 
 func TestOpenRouterReasoningConfigUsesHighEffortFromProviderEnvironment(t *testing.T) {
@@ -264,5 +264,48 @@ func writeRegistry(t *testing.T, root string, contents string) {
 	}
 	if err := os.WriteFile(filepath.Join(modelsDir, "registry.yaml"), []byte(contents), 0o644); err != nil {
 		t.Fatalf("write registry: %v", err)
+	}
+}
+
+func TestDirectRuntimeFailsRunWhenPerInvocationCostCapExceeded(t *testing.T) {
+	client := fakeChatClient{
+		response: openrouter.ChatCompletionResponse{
+			ID:    "gen_cap",
+			Model: "test-provider/model",
+			Choices: []struct {
+				Message openrouter.Message `json:"message"`
+			}{
+				{Message: openrouter.Message{Role: "assistant", Content: `{"protocolVersion":1,"patchId":"patch_cap","files":[{"path":"a.md","action":"create","content":"x"}]}`}},
+			},
+			Usage: openrouter.Usage{TotalTokens: 100, Cost: 0.5},
+		},
+	}
+	runtime := NewDirectRuntime(client, filepath.Join("..", ".."))
+	handle, err := runtime.StartSession(context.Background(), SessionConfig{
+		SessionID:  "sess_cap",
+		ModelID:    "coding-balanced",
+		CostCapUSD: 0.1,
+	})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	var sawCapError, sawPatch bool
+	for event := range handle.Events() {
+		if event.Type == "error" && strings.Contains(event.Payload, "cost cap exceeded") {
+			sawCapError = true
+		}
+		if event.Type == "patch" {
+			sawPatch = true
+		}
+	}
+	if !sawCapError {
+		t.Fatal("expected cost cap error event")
+	}
+	if sawPatch {
+		t.Fatal("expected patch to be withheld after cost cap overrun")
+	}
+	if err := handle.Wait(); err == nil {
+		t.Fatal("expected Wait to report cost cap error")
 	}
 }

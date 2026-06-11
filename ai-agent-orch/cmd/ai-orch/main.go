@@ -15,8 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"ai-agent-orch/internal/contextresolver"
-	"ai-agent-orch/internal/workspace"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/contextresolver"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/envx"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/workspace"
 )
 
 const (
@@ -62,21 +63,14 @@ type openCodeWrapperOptions struct {
 
 func loadConfig() Config {
 	return Config{
-		GovernanceURL:      envOrDefault("AI_ORCH_GOVERNANCE_URL", defaultGovernanceURL),
-		OrchestratorURL:    envOrDefault("AI_ORCH_ORCHESTRATOR_URL", defaultOrchestratorURL),
-		ModelGatewayURL:    envOrDefault("AI_ORCH_MODEL_GATEWAY_URL", defaultModelGatewayURL),
-		Token:              envOrDefault("AI_ORCH_DEV_TOKEN", ""),
-		AdminToken:         envOrDefault("AI_ORCH_ADMIN_TOKEN", ""),
-		RuntimeToken:       envOrDefault("AI_ORCH_RUNTIME_TOKEN", ""),
-		TrustedClientToken: envOrDefault("AI_ORCH_TRUSTED_CLIENT_TOKEN", ""),
+		GovernanceURL:      envx.OrDefault("AI_ORCH_GOVERNANCE_URL", defaultGovernanceURL),
+		OrchestratorURL:    envx.OrDefault("AI_ORCH_ORCHESTRATOR_URL", defaultOrchestratorURL),
+		ModelGatewayURL:    envx.OrDefault("AI_ORCH_MODEL_GATEWAY_URL", defaultModelGatewayURL),
+		Token:              envx.OrDefault("AI_ORCH_DEV_TOKEN", ""),
+		AdminToken:         envx.OrDefault("AI_ORCH_ADMIN_TOKEN", ""),
+		RuntimeToken:       envx.OrDefault("AI_ORCH_RUNTIME_TOKEN", ""),
+		TrustedClientToken: envx.OrDefault("AI_ORCH_TRUSTED_CLIENT_TOKEN", ""),
 	}
-}
-
-func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 // localIdentity is the actor label asserted on dev-token requests so sessions
@@ -162,6 +156,10 @@ func main() {
 	case "copilot":
 		handleCopilot(ctx, cfg, os.Args[2:])
 	case "opencode":
+		if len(os.Args) > 2 && openCodeToolSubcommands[os.Args[2]] {
+			handleOpenCodeTool(os.Args[2:])
+			return
+		}
 		handleOpenCode(ctx, cfg, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
@@ -179,6 +177,7 @@ Usage:
   ai-orch session confirm --session-id <id> --agent <name>
   ai-orch session events --session-id <id>
   ai-orch audit lookup --session-id <id>
+  ai-orch audit verify --session-id <id>
   ai-orch killswitch status
   ai-orch killswitch toggle --scope <scope> --id <id> [--enable|--disable]
   ai-orch smoke [--prompt <text>]
@@ -438,9 +437,15 @@ func openCodeArgsHaveAgent(args []string) bool {
 func printSmokeUsage() {
 	fmt.Println(`Usage:
   ai-orch smoke [--prompt <text>]
+  ai-orch smoke openrouter [flags]
+  ai-orch smoke gateway|provider
 
-Runs the local end-to-end smoke path:
+The default form runs the local end-to-end smoke path:
   health -> catalog -> governed run -> confirmation -> events -> patch decision -> audit -> metrics
+
+"openrouter" sends one direct OpenRouter completion to verify the provider
+key and model alias. "gateway" and "provider" run the beta gateway and
+provider-backed smoke suites against a running stack.
 
 Environment:
   AI_ORCH_GOVERNANCE_URL    Governance Shell base URL (default: http://127.0.0.1:18080)
@@ -618,7 +623,7 @@ func streamEvents(ctx context.Context, cfg Config, args []string) {
 
 func handleAudit(ctx context.Context, cfg Config, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: ai-orch audit lookup --session-id <id>")
+		fmt.Fprintln(os.Stderr, "usage: ai-orch audit lookup|verify --session-id <id>")
 		os.Exit(1)
 	}
 	switch args[0] {
@@ -634,6 +639,24 @@ func handleAudit(ctx context.Context, cfg Config, args []string) {
 			os.Exit(1)
 		}
 		prettyPrintJSON(resp)
+	case "verify":
+		sessionID := flagValue(args[1:], "--session-id")
+		if sessionID == "" {
+			fmt.Fprintln(os.Stderr, "usage: ai-orch audit verify --session-id <id>")
+			os.Exit(1)
+		}
+		resp, err := doGet(ctx, cfg, fmt.Sprintf("%s/v1/audit/sessions/%s/verify", cfg.GovernanceURL, sessionID))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "audit verify failed: %v\n", err)
+			os.Exit(1)
+		}
+		prettyPrintJSON(resp)
+		var result struct {
+			ChainValid bool `json:"chain_valid"`
+		}
+		if err := json.Unmarshal([]byte(resp), &result); err == nil && !result.ChainValid {
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown audit subcommand: %s\n", args[0])
 		os.Exit(1)
@@ -808,6 +831,16 @@ func testNegativeCost(ctx context.Context, cfg Config) {
 }
 
 func handleSmoke(ctx context.Context, cfg Config, args []string) {
+	if len(args) > 0 {
+		switch args[0] {
+		case "openrouter":
+			handleOpenRouterSmoke(args[1:])
+			return
+		case "gateway", "provider":
+			handleBetaSmoke(args[0])
+			return
+		}
+	}
 	prompt := flagValue(args, "--prompt")
 	if prompt == "" {
 		prompt = `Create a smoke test patch envelope for the orchestration path.

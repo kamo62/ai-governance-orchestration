@@ -60,7 +60,7 @@ echo "Verifying Copilot models through ai-orch"
 go run ./cmd/ai-orch copilot models >/dev/null
 
 echo "Installing OpenCode ai-orch provider config ($SCOPE)"
-go run ./cmd/opencode-smoke install-config --scope "$SCOPE" --force --runtime-token "$AI_ORCH_RUNTIME_TOKEN" --actor-subject "$AI_ORCH_ACTOR_SUBJECT"
+go run ./cmd/ai-orch opencode install-config --scope "$SCOPE" --force --runtime-token "$AI_ORCH_RUNTIME_TOKEN" --actor-subject "$AI_ORCH_ACTOR_SUBJECT"
 
 cat <<EOF
 

@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/envx"
 )
 
 // Config drives beta provider and gateway smoke checks against a running stack.
@@ -34,27 +36,20 @@ const (
 
 func LoadConfigFromEnv() Config {
 	cfg := Config{
-		GovernanceURL:  envOrDefault("AI_ORCH_GOVERNANCE_URL", DefaultGovernanceURL),
-		GatewayURL:     envOrDefault("AI_ORCH_MODEL_GATEWAY_URL", DefaultGatewayURL),
-		DevToken:       envOrDefault("AI_ORCH_DEV_TOKEN", "local-dev"),
-		RuntimeToken:   envOrDefault("AI_ORCH_RUNTIME_TOKEN", "local-runtime-token"),
-		ModelAlias:     envOrDefault("AI_ORCH_GATEWAY_MODEL", "coding-fast"),
-		Classification: envOrDefault("AI_ORCH_GATEWAY_CLASSIFICATION", "internal"),
-		Prompt:         envOrDefault("AI_ORCH_GATEWAY_PROMPT", ""),
-		Expected:       envOrDefault("AI_ORCH_GATEWAY_EXPECT", "gateway-smoke-ok"),
+		GovernanceURL:  envx.OrDefault("AI_ORCH_GOVERNANCE_URL", DefaultGovernanceURL),
+		GatewayURL:     envx.OrDefault("AI_ORCH_MODEL_GATEWAY_URL", DefaultGatewayURL),
+		DevToken:       envx.OrDefault("AI_ORCH_DEV_TOKEN", "local-dev"),
+		RuntimeToken:   envx.OrDefault("AI_ORCH_RUNTIME_TOKEN", "local-runtime-token"),
+		ModelAlias:     envx.OrDefault("AI_ORCH_GATEWAY_MODEL", "coding-fast"),
+		Classification: envx.OrDefault("AI_ORCH_GATEWAY_CLASSIFICATION", "internal"),
+		Prompt:         envx.OrDefault("AI_ORCH_GATEWAY_PROMPT", ""),
+		Expected:       envx.OrDefault("AI_ORCH_GATEWAY_EXPECT", "gateway-smoke-ok"),
 		HTTPTimeout:    durationEnv("AI_ORCH_SMOKE_HTTP_TIMEOUT", 45*time.Second),
 		SSETimeout:     durationEnv("AI_ORCH_SMOKE_SSE_TIMEOUT", 30*time.Second),
 		MaxTokens:      intEnv("AI_ORCH_GATEWAY_MAX_TOKENS", 256),
-		ActorSubject:   envOrDefault("AI_ORCH_ACTOR_SUBJECT", ""),
+		ActorSubject:   envx.OrDefault("AI_ORCH_ACTOR_SUBJECT", ""),
 	}
 	return cfg
-}
-
-func envOrDefault(key, fallback string) string {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-		return v
-	}
-	return fallback
 }
 
 func durationEnv(key string, fallback time.Duration) time.Duration {

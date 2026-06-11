@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 )
 
 func TestRegistryHandler_CreateAndListCacheOutcome(t *testing.T) {
@@ -19,7 +19,7 @@ func TestRegistryHandler_CreateAndListCacheOutcome(t *testing.T) {
 		"sess_1":     "local-dev",
 		"sess_other": "other-user",
 	})
-	h := NewRegistryHandler(store, svc)
+	h := NewRegistryHandlerWithMetrics(store, svc, nil)
 
 	body, _ := json.Marshal(map[string]any{
 		"session_id":            "sess_1",
@@ -80,7 +80,7 @@ func TestRegistryHandler_CreateAndListEvidence(t *testing.T) {
 		"sess_1":     "local-dev",
 		"sess_other": "other-user",
 	})
-	h := NewRegistryHandler(store, svc)
+	h := NewRegistryHandlerWithMetrics(store, svc, nil)
 
 	body, _ := json.Marshal(map[string]any{
 		"session_id":    "sess_1",
@@ -139,7 +139,7 @@ func TestRegistryHandler_CreateAndListEvidence(t *testing.T) {
 func TestRegistryHandler_DerivesExternalEvidenceTrustFields(t *testing.T) {
 	store := NewRegistryStore()
 	svc := registryTestService(t, "sess_1", "local-dev")
-	h := NewRegistryHandler(store, svc)
+	h := NewRegistryHandlerWithMetrics(store, svc, nil)
 
 	body, _ := json.Marshal(map[string]any{
 		"session_id":       "sess_1",
@@ -171,7 +171,7 @@ func TestRegistryHandler_DerivesExternalEvidenceTrustFields(t *testing.T) {
 func TestRegistryHandler_EvidenceRequiresSessionOwnership(t *testing.T) {
 	store := NewRegistryStore()
 	svc := registryTestService(t, "sess_other", "other-user")
-	h := NewRegistryHandler(store, svc)
+	h := NewRegistryHandlerWithMetrics(store, svc, nil)
 
 	body, _ := json.Marshal(map[string]any{
 		"session_id":    "sess_other",
@@ -193,7 +193,7 @@ func TestRegistryHandler_EvidenceFailsClosedWithoutSessionStore(t *testing.T) {
 		DevToken: "test",
 		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
 	})
-	h := NewRegistryHandler(store, svc)
+	h := NewRegistryHandlerWithMetrics(store, svc, nil)
 
 	body, _ := json.Marshal(map[string]any{
 		"session_id":    "sess_1",

@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 )
 
 func TestCreateSessionAcceptsDevTokenAndWritesAuditWithoutRawPrompt(t *testing.T) {
@@ -784,7 +784,7 @@ func TestCreateSessionLocalIdentityHeaderOverridesDevTokenActorOnly(t *testing.T
 	}
 }
 
-func TestCreateSessionRequestedByCannotOverrideOIDCSubject(t *testing.T) {
+func TestCreateSessionRejectsRemovedRequestedByField(t *testing.T) {
 	store := &recordingSessionStore{}
 	service := NewSessionService(SessionConfig{
 		Authorizer: fixedAuthorizer{subject: "oidc-user"},
@@ -797,6 +797,8 @@ func TestCreateSessionRequestedByCannotOverrideOIDCSubject(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
+	// requested_by was a local identity hint; actor identity comes from the
+	// auth context, so the field is gone and requests still sending it fail.
 	body := []byte(`{"agent":"unit-tests","classification":"internal","prompt":"ordinary prompt","requested_by":"spoofed-user"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer oidc-token")
@@ -804,14 +806,11 @@ func TestCreateSessionRequestedByCannotOverrideOIDCSubject(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if len(store.created) != 1 {
-		t.Fatalf("expected session to persist once, got %d", len(store.created))
-	}
-	if store.created[0].ActorSubject != "oidc-user" {
-		t.Fatalf("expected OIDC subject to win, got %q", store.created[0].ActorSubject)
+	if len(store.created) != 0 {
+		t.Fatalf("expected no session to persist, got %d", len(store.created))
 	}
 }
 
@@ -824,22 +823,6 @@ func TestCreateSessionRejectsInvalidLocalIdentityHeader(t *testing.T) {
 
 	req := authorizedSessionRequest(`{"agent":"unit-tests","classification":"internal","prompt":"ordinary prompt"}`)
 	req.Header.Set("X-AI-Orch-Local-Identity", "bad actor")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestCreateSessionRejectsInvalidRequestedBy(t *testing.T) {
-	service := NewSessionService(SessionConfig{
-		DevToken: "local-test-token",
-		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
-	})
-	handler := NewSessionHandler(service)
-
-	req := authorizedSessionRequest("{\"agent\":\"unit-tests\",\"classification\":\"internal\",\"prompt\":\"ordinary prompt\",\"requested_by\":\"bad actor\"}")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

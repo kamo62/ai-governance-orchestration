@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/composition"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/composition"
 )
 
 type noopAudit struct{}

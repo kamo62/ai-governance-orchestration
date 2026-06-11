@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"ai-agent-orch/internal/openrouter"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
 )
 
 func TestBifrostModelNamePrefixesProvider(t *testing.T) {

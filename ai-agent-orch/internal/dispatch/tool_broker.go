@@ -1,7 +1,7 @@
 package dispatch
 
 import (
-	"ai-agent-orch/internal/policyengine"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/policyengine"
 )
 
 // CommandAllowlist is an alias for the consolidated policy engine type.

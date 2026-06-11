@@ -6,11 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/sqlitex"
 )
 
 // DurableRegistryStore is a SQLite-backed store for use-cases, workflows,
@@ -28,23 +27,9 @@ func NewDurableRegistryStore(dbPath string) (*DurableRegistryStore, error) {
 	if dbPath == "" {
 		return nil, errors.New("registry db path is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return nil, fmt.Errorf("create registry db directory: %w", err)
-	}
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sqlitex.Open(dbPath, "registry")
 	if err != nil {
-		return nil, fmt.Errorf("open registry db: %w", err)
-	}
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
-	db.SetConnMaxLifetime(30 * time.Minute)
-	if _, err := db.Exec(`
-		PRAGMA journal_mode = WAL;
-		PRAGMA busy_timeout = 10000;
-		PRAGMA synchronous = NORMAL;
-	`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("configure registry db: %w", err)
+		return nil, err
 	}
 	s := &DurableRegistryStore{
 		dbPath: dbPath,

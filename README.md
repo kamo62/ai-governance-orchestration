@@ -52,7 +52,7 @@ This repo is an attempt to answer those questions without rebuilding the whole d
 
 ## Current State
 
-Current version: `v0.18.1-beta`.
+Current version: `v0.18.3-beta`.
 
 This is a **local beta** for the Governance Shell vertical slice. It is useful for team-local evaluation and demos, but it is not a production deployment.
 
@@ -139,7 +139,7 @@ AI_ORCH_GOVERNANCE_URL=http://127.0.0.1:18080 \
 AI_ORCH_MODEL_GATEWAY_URL=http://127.0.0.1:18082 \
 AI_ORCH_DEV_TOKEN=local-dev \
 AI_ORCH_RUNTIME_TOKEN=local-runtime-token \
-go run ./cmd/opencode-smoke e2e --dir /tmp/ai-orch-opencode-e2e
+go run ./cmd/ai-orch opencode e2e --dir /tmp/ai-orch-opencode-e2e
 ```
 
 Copilot-backed local enrollment for governed OpenCode:

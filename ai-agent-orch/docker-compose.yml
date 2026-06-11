@@ -117,7 +117,9 @@ services:
     build:
       context: .
     command:
-      - openrouter-smoke
+      - ai-orch
+      - smoke
+      - openrouter
       - -catalog-root
       - /app
       - -model-alias
@@ -160,7 +162,7 @@ services:
   mcp-repo-classification:
     build:
       context: .
-    command: ["mcp-repo-classification"]
+    command: ["mcp-stub", "repo-classification"]
     environment:
       <<: *mcp-environment
     ports:
@@ -174,7 +176,7 @@ services:
   mcp-engineering-standards-kb:
     build:
       context: .
-    command: ["mcp-engineering-standards-kb"]
+    command: ["mcp-stub", "engineering-standards-kb"]
     environment:
       <<: *mcp-environment
     ports:
@@ -188,7 +190,7 @@ services:
   mcp-catalog-introspection:
     build:
       context: .
-    command: ["mcp-catalog-introspection"]
+    command: ["mcp-stub", "catalog-introspection"]
     environment:
       <<: *mcp-environment
     ports:
@@ -202,7 +204,7 @@ services:
   mcp-playwright-cli:
     build:
       context: .
-    command: ["mcp-playwright-cli"]
+    command: ["mcp-stub", "playwright-cli"]
     environment:
       <<: *mcp-environment
     ports:
@@ -217,7 +219,7 @@ services:
     profiles: ["phase2"]
     build:
       context: .
-    command: ["mcp-issue-tracker"]
+    command: ["mcp-stub", "issue-tracker"]
     environment:
       <<: *mcp-environment
     ports:
@@ -232,7 +234,7 @@ services:
     profiles: ["phase2"]
     build:
       context: .
-    command: ["mcp-documentation"]
+    command: ["mcp-stub", "documentation"]
     environment:
       <<: *mcp-environment
     ports:
@@ -247,7 +249,7 @@ services:
     profiles: ["phase2"]
     build:
       context: .
-    command: ["mcp-test-management"]
+    command: ["mcp-stub", "test-management"]
     environment:
       <<: *mcp-environment
     ports:

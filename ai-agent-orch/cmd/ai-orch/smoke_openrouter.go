@@ -8,19 +8,23 @@ import (
 	"strings"
 	"time"
 
-	"ai-agent-orch/internal/catalog"
-	"ai-agent-orch/internal/openrouter"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/catalog"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/envx"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
 )
 
-func main() {
-	catalogRoot := flag.String("catalog-root", envOrDefault("AI_ORCH_CATALOG_ROOT", "."), "catalog root directory")
-	modelAlias := flag.String("model-alias", envOrDefault("OPENROUTER_MODEL_ALIAS", "smoke-deepseek-v4-flash"), "model registry alias to smoke test")
-	modelID := flag.String("model-id", envOrDefault("OPENROUTER_MODEL", ""), "explicit OpenRouter model ID; overrides model alias")
-	prompt := flag.String("prompt", "Reply with exactly: smoke-ok", "smoke-test prompt")
-	expected := flag.String("expect", "smoke-ok", "expected assistant response; set empty to skip content assertion")
-	maxTokens := flag.Int("max-tokens", 64, "maximum response tokens")
-	baseURL := flag.String("base-url", envOrDefault("OPENROUTER_BASE_URL", openrouter.DefaultBaseURL), "OpenRouter API base URL")
-	flag.Parse()
+// handleOpenRouterSmoke sends one direct OpenRouter completion to prove the
+// provider key and model alias work. Invoked as: ai-orch smoke openrouter
+func handleOpenRouterSmoke(args []string) {
+	fs := flag.NewFlagSet("smoke openrouter", flag.ExitOnError)
+	catalogRoot := fs.String("catalog-root", envx.OrDefault("AI_ORCH_CATALOG_ROOT", "."), "catalog root directory")
+	modelAlias := fs.String("model-alias", envx.OrDefault("OPENROUTER_MODEL_ALIAS", "smoke-deepseek-v4-flash"), "model registry alias to smoke test")
+	modelID := fs.String("model-id", envx.OrDefault("OPENROUTER_MODEL", ""), "explicit OpenRouter model ID; overrides model alias")
+	prompt := fs.String("prompt", "Reply with exactly: smoke-ok", "smoke-test prompt")
+	expected := fs.String("expect", "smoke-ok", "expected assistant response; set empty to skip content assertion")
+	maxTokens := fs.Int("max-tokens", 64, "maximum response tokens")
+	baseURL := fs.String("base-url", envx.OrDefault("OPENROUTER_BASE_URL", openrouter.DefaultBaseURL), "OpenRouter API base URL")
+	_ = fs.Parse(args)
 
 	resolvedModel := *modelID
 	if resolvedModel == "" {
@@ -36,7 +40,7 @@ func main() {
 		APIKey:   os.Getenv("OPENROUTER_API_KEY"),
 		BaseURL:  *baseURL,
 		Referer:  os.Getenv("OPENROUTER_HTTP_REFERER"),
-		AppTitle: envOrDefault("OPENROUTER_APP_TITLE", "ai-agent-orch-local"),
+		AppTitle: envx.OrDefault("OPENROUTER_APP_TITLE", "ai-agent-orch-local"),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -81,11 +85,4 @@ func validateSmokeResponse(content string, expected string) error {
 		return fmt.Errorf("assistant response mismatch: expected %q, got %q", want, actual)
 	}
 	return nil
-}
-
-func envOrDefault(key string, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
 }

@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "modernc.org/sqlite"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/sqlitex"
 )
 
 // SQLiteKillSwitch persists kill-switch state so an admin block survives
@@ -16,17 +16,9 @@ type SQLiteKillSwitch struct {
 }
 
 func NewSQLiteKillSwitch(dbPath string) (*SQLiteKillSwitch, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sqlitex.Open(dbPath, "kill switch")
 	if err != nil {
-		return nil, fmt.Errorf("open kill switch db: %w", err)
-	}
-	if _, err := db.Exec(`
-		PRAGMA journal_mode = WAL;
-		PRAGMA busy_timeout = 10000;
-		PRAGMA synchronous = NORMAL;
-	`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("configure kill switch db: %w", err)
+		return nil, err
 	}
 	store := &SQLiteKillSwitch{db: db, mem: NewMemoryKillSwitch()}
 	if err := store.migrate(); err != nil {

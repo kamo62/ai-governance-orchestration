@@ -8,7 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"ai-agent-orch/internal/copilot"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/copilot"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 type CopilotHandlerConfig struct {
@@ -66,7 +67,7 @@ func NewCopilotHandler(cfg CopilotHandlerConfig) http.Handler {
 
 func (h *CopilotHandler) status(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	_, actor, ok := h.authorized(w, r)
@@ -74,7 +75,7 @@ func (h *CopilotHandler) status(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.store == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"configured": false, "error": "copilot token store unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"configured": false, "error": "copilot token store unavailable"})
 		return
 	}
 	// Fleet-level enrollment count for operator dashboards: enrollment itself
@@ -85,15 +86,15 @@ func (h *CopilotHandler) status(w http.ResponseWriter, r *http.Request) {
 	}
 	rec, err := h.store.Load(r.Context(), actor)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"configured": false, "actor_subject": actor, "enrollments": enrollments})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"configured": false, "actor_subject": actor, "enrollments": enrollments})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"configured": true, "actor_subject": actor, "github_login": rec.GitHubLogin, "token_fingerprint": rec.Fingerprint, "refresh_configured": rec.RefreshToken != "", "access_expires_at": rec.AccessExpiresAt, "enrollments": enrollments})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"configured": true, "actor_subject": actor, "github_login": rec.GitHubLogin, "token_fingerprint": rec.Fingerprint, "refresh_configured": rec.RefreshToken != "", "access_expires_at": rec.AccessExpiresAt, "enrollments": enrollments})
 }
 
 func (h *CopilotHandler) loginStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	_, actor, ok := h.authorized(w, r)
@@ -101,12 +102,12 @@ func (h *CopilotHandler) loginStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.store == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "copilot token store unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "copilot token store unavailable"})
 		return
 	}
 	device, err := h.client.StartDeviceFlow(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
 	}
 	loginID := h.newID("copilot_login")
@@ -115,7 +116,7 @@ func (h *CopilotHandler) loginStart(w http.ResponseWriter, r *http.Request) {
 	h.logins[loginID] = copilotLoginState{ActorSubject: actor, Device: device, StartedAt: time.Now().UTC()}
 	h.mu.Unlock()
 	go h.completeLogin(loginID)
-	writeJSON(w, http.StatusAccepted, map[string]any{
+	httpx.WriteJSON(w, http.StatusAccepted, map[string]any{
 		"login_id":                  loginID,
 		"actor_subject":             actor,
 		"user_code":                 device.UserCode,
@@ -175,7 +176,7 @@ func (h *CopilotHandler) pruneLoginsLocked() {
 
 func (h *CopilotHandler) loginStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	_, actor, ok := h.authorized(w, r)
@@ -187,15 +188,15 @@ func (h *CopilotHandler) loginStatus(w http.ResponseWriter, r *http.Request) {
 	state, exists := h.logins[loginID]
 	h.mu.Unlock()
 	if !exists || state.ActorSubject != actor {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "login not found"})
+		httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "login not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"login_id": loginID, "done": state.Done, "error": state.Error, "github_login": state.GitHubLogin})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"login_id": loginID, "done": state.Done, "error": state.Error, "github_login": state.GitHubLogin})
 }
 
 func (h *CopilotHandler) models(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	_, actor, ok := h.authorized(w, r)
@@ -204,12 +205,12 @@ func (h *CopilotHandler) models(w http.ResponseWriter, r *http.Request) {
 	}
 	rec, err := h.store.Load(r.Context(), actor)
 	if err != nil {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "copilot token missing"})
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "copilot token missing"})
 		return
 	}
 	body, err := h.client.Models(r.Context(), h.copilotBearer(r.Context(), rec))
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -235,7 +236,7 @@ func (h *CopilotHandler) copilotBearer(ctx context.Context, rec copilot.TokenRec
 
 func (h *CopilotHandler) logout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	_, actor, ok := h.authorized(w, r)
@@ -245,20 +246,20 @@ func (h *CopilotHandler) logout(w http.ResponseWriter, r *http.Request) {
 	if h.store != nil {
 		_ = h.store.Delete(r.Context(), actor)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"actor_subject": actor, "configured": false})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"actor_subject": actor, "configured": false})
 }
 
 func (h *CopilotHandler) authorized(w http.ResponseWriter, r *http.Request) (*http.Request, string, bool) {
 	if h.authorizer != nil {
 		subject, ok := h.authorizer.Validate(r.Context(), r.Header.Get("Authorization"))
 		if !ok {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+			httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 			return r, "", false
 		}
 		return r, subject, true
 	}
 	if h.devToken == "" || !authorizedBearer(r.Header.Get("Authorization"), h.devToken) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return r, "", false
 	}
 	subject := "local-dev"

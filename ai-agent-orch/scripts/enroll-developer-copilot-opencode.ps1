@@ -74,7 +74,7 @@ try {
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   Write-Host "Installing OpenCode ai-orch provider config ($Scope)"
-  $argsList = @("run", "./cmd/opencode-smoke", "install-config", "--scope", $Scope, "--force", "--runtime-token", $env:AI_ORCH_RUNTIME_TOKEN, "--actor-subject", $env:AI_ORCH_ACTOR_SUBJECT)
+  $argsList = @("run", "./cmd/ai-orch", "opencode", "install-config", "--scope", $Scope, "--force", "--runtime-token", $env:AI_ORCH_RUNTIME_TOKEN, "--actor-subject", $env:AI_ORCH_ACTOR_SUBJECT)
   & go @argsList
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

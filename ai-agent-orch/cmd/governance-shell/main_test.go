@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/governance"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/governance"
 )
 
 type testHealthBackend struct {
@@ -123,7 +123,7 @@ func TestRegisterRegistryHandlersIncludesEvidenceAndCacheRoutes(t *testing.T) {
 		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
 		Sessions: sessionStore,
 	})
-	handler := governance.NewRegistryHandler(governance.NewRegistryStore(), service)
+	handler := governance.NewRegistryHandlerWithMetrics(governance.NewRegistryStore(), service, nil)
 	mux := http.NewServeMux()
 	registerRegistryHandlers(mux, handler)
 

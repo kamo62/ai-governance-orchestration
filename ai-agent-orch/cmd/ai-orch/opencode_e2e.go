@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"ai-agent-orch/internal/betasmoke"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/betasmoke"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/envx"
 )
 
 func runOpenCodeE2E(gatewayURL string, args []string) error {
@@ -50,7 +51,7 @@ func runOpenCodeE2E(gatewayURL string, args []string) error {
 		return fmt.Errorf("close temporary OpenCode config: %w", err)
 	}
 
-	agent := envOrDefault("OPENCODE_AGENT", "governance-lead")
+	agent := envx.OrDefault("OPENCODE_AGENT", "governance-lead")
 	cmd := exec.CommandContext(ctx, "opencode", "run", "--dir", targetDir, "--model", model, "--agent", agent, "--format", "json", prompt)
 	cmd.Env = append(os.Environ(),
 		"OPENCODE_CONFIG="+configFile.Name(),
@@ -77,9 +78,9 @@ func runOpenCodeE2E(gatewayURL string, args []string) error {
 }
 
 func openCodeE2EArgs(args []string) (string, string, string) {
-	targetDir := envOrDefault("OPENCODE_TARGET_DIR", ".")
-	model := envOrDefault("OPENCODE_MODEL", defaultModel)
-	prompt := envOrDefault("OPENCODE_PROMPT", "Reply with exactly: opencode-e2e-ok")
+	targetDir := envx.OrDefault("OPENCODE_TARGET_DIR", ".")
+	model := envx.OrDefault("OPENCODE_MODEL", defaultModel)
+	prompt := envx.OrDefault("OPENCODE_PROMPT", "Reply with exactly: opencode-e2e-ok")
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--dir":

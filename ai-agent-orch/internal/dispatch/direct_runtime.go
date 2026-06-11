@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"ai-agent-orch/internal/catalog"
-	"ai-agent-orch/internal/openrouter"
-	patchproto "ai-agent-orch/internal/patch"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/catalog"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
+	patchproto "github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/patch"
 )
 
 // DirectRuntime calls OpenRouter directly without an ACP subprocess.
@@ -119,6 +119,18 @@ func (h *directHandle) run(ctx context.Context) {
 	h.events <- RuntimeEvent{
 		Type:    "model_usage",
 		Payload: string(usagePayload),
+	}
+
+	// Enforce the agent's per-invocation cost cap. Provider cost is only
+	// known after the call, so an overrun fails the run and withholds the
+	// work product instead of letting it flow into patch review.
+	if h.config.CostCapUSD > 0 && resp.Usage.Cost > h.config.CostCapUSD {
+		h.err = fmt.Errorf("per-invocation cost cap exceeded: %.6f USD > %.6f USD cap", resp.Usage.Cost, h.config.CostCapUSD)
+		h.events <- RuntimeEvent{
+			Type:    "error",
+			Payload: h.err.Error(),
+		}
+		return
 	}
 
 	h.events <- RuntimeEvent{

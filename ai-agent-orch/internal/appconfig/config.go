@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/envx"
 )
 
 type Config struct {
@@ -125,29 +127,29 @@ func Load(args []string) (Config, error) {
 		return Config{}, err
 	}
 	cfg := Config{
-		Addr:                        envOrDefault("AI_ORCH_ADDR", ":8080"),
-		CatalogRoot:                 envOrDefault("AI_ORCH_CATALOG_ROOT", "."),
-		AuditPath:                   envOrDefault("AI_ORCH_AUDIT_PATH", "var/audit/audit.jsonl"),
-		DevToken:                    envOrDefault("AI_ORCH_DEV_TOKEN", ""),
-		AdminToken:                  envOrDefault("AI_ORCH_ADMIN_TOKEN", ""),
-		ServiceToken:                envOrDefault("AI_ORCH_SERVICE_TOKEN", ""),
-		RuntimeToken:                envOrDefault("AI_ORCH_RUNTIME_TOKEN", ""),
-		ClassificationMax:           envOrDefault("AI_ORCH_CLASSIFICATION_MAX", "internal"),
+		Addr:                        envx.OrDefault("AI_ORCH_ADDR", ":8080"),
+		CatalogRoot:                 envx.OrDefault("AI_ORCH_CATALOG_ROOT", "."),
+		AuditPath:                   envx.OrDefault("AI_ORCH_AUDIT_PATH", "var/audit/audit.jsonl"),
+		DevToken:                    envx.OrDefault("AI_ORCH_DEV_TOKEN", ""),
+		AdminToken:                  envx.OrDefault("AI_ORCH_ADMIN_TOKEN", ""),
+		ServiceToken:                envx.OrDefault("AI_ORCH_SERVICE_TOKEN", ""),
+		RuntimeToken:                envx.OrDefault("AI_ORCH_RUNTIME_TOKEN", ""),
+		ClassificationMax:           envx.OrDefault("AI_ORCH_CLASSIFICATION_MAX", "internal"),
 		KillSwitch:                  killSwitch,
 		CostCapEnabled:              costCapEnabled,
 		SessionCostCapUSD:           sessionCostCapUSD,
-		PolicyEngine:                envOrDefault("AI_ORCH_POLICY_ENGINE", "native"),
+		PolicyEngine:                envx.OrDefault("AI_ORCH_POLICY_ENGINE", "native"),
 		ToolLoopMax:                 toolLoopMax,
-		GatewayAddr:                 envOrDefault("AI_ORCH_GATEWAY_ADDR", ":18082"),
-		ModelBackend:                envOrDefault("AI_ORCH_MODEL_BACKEND", "bifrost"),
-		BifrostBaseURL:              envOrDefault("AI_ORCH_BIFROST_BASE_URL", ""),
-		BifrostAPIKey:               envOrDefault("AI_ORCH_BIFROST_API_KEY", ""),
+		GatewayAddr:                 envx.OrDefault("AI_ORCH_GATEWAY_ADDR", ":18082"),
+		ModelBackend:                envx.OrDefault("AI_ORCH_MODEL_BACKEND", "bifrost"),
+		BifrostBaseURL:              envx.OrDefault("AI_ORCH_BIFROST_BASE_URL", ""),
+		BifrostAPIKey:               envx.OrDefault("AI_ORCH_BIFROST_API_KEY", ""),
 		EnableServerContextResolver: enableServerContextResolver,
 		RequireWorkItem:             requireWorkItem,
 		BackendControlEnabled:       backendControlEnabled,
-		BackendControlWorkDir:       envOrDefault("AI_ORCH_BACKEND_CONTROL_WORKDIR", "."),
-		TrustedClientToken:          envOrDefault("AI_ORCH_TRUSTED_CLIENT_TOKEN", ""),
-		Environment:                 envOrDefault("AI_ORCH_ENV", "local"),
+		BackendControlWorkDir:       envx.OrDefault("AI_ORCH_BACKEND_CONTROL_WORKDIR", "."),
+		TrustedClientToken:          envx.OrDefault("AI_ORCH_TRUSTED_CLIENT_TOKEN", ""),
+		Environment:                 envx.OrDefault("AI_ORCH_ENV", "local"),
 		GatewayMaxRequestBytes:      gatewayMaxRequestBytes,
 		RequireBackendHealth:        requireBackendHealth,
 		GatewayAutoSession:          gatewayAutoSession,
@@ -192,13 +194,6 @@ func envFloat(key string, fallback float64) (float64, error) {
 		return 0, fmt.Errorf("%s must be a number: %w", key, err)
 	}
 	return parsed, nil
-}
-
-func envOrDefault(key string, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
 }
 
 func envInt(key string, fallback int) (int, error) {

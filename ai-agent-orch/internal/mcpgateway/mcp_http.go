@@ -13,7 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"ai-agent-orch/internal/httpauth"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpauth"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 // HTTPServer wraps an MCP Server with HTTP/SSE transport.
@@ -51,7 +52,7 @@ func (h *HTTPServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "server": h.mcp.info.Name})
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok", "server": h.mcp.info.Name})
 }
 
 func (h *HTTPServer) handleSSE(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +123,7 @@ func (h *HTTPServer) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse(nil, ErrParseError, "parse error"))
+		httpx.WriteJSON(w, http.StatusBadRequest, errorResponse(nil, ErrParseError, "parse error"))
 		return
 	}
 
@@ -150,7 +151,7 @@ func (h *HTTPServer) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Otherwise, return the response directly (for non-SSE clients).
-	writeJSON(w, http.StatusOK, resp)
+	httpx.WriteJSON(w, http.StatusOK, resp)
 }
 
 func (h *HTTPServer) authenticate(w http.ResponseWriter, r *http.Request) bool {
@@ -223,12 +224,6 @@ func isLocalOrigin(origin string) bool {
 	default:
 		return false
 	}
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
 }
 
 func generateSessionID() string {

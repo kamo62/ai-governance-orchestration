@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 )
 
 func TestAgentListHandlerReturnsCatalogAgents(t *testing.T) {
@@ -202,7 +202,7 @@ func TestConfirmHandlerRequiresAgent(t *testing.T) {
 		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
 	})
 	orch := &fakeOrchestrator{}
-	handler := NewConfirmHandler(service, orch)
+	handler := NewConfirmHandlerWithEvents(service, orch, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_123/confirm", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer local-test-token")
@@ -223,7 +223,7 @@ func TestConfirmHandlerBlocksWhenKillSwitchEnabled(t *testing.T) {
 		NewID:      fixedIDs("evt_ks_1"),
 	})
 	orch := &fakeOrchestrator{}
-	handler := NewConfirmHandler(service, orch)
+	handler := NewConfirmHandlerWithEvents(service, orch, nil)
 
 	body := []byte(`{"agent":"unit-tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_123/confirm", bytes.NewReader(body))
@@ -244,7 +244,7 @@ func TestConfirmHandlerAcceptsAndWritesAudit(t *testing.T) {
 		NewID:    fixedIDs("evt_confirm_1"),
 	})
 	orch := &fakeOrchestrator{}
-	handler := NewConfirmHandler(service, orch)
+	handler := NewConfirmHandlerWithEvents(service, orch, nil)
 
 	body := []byte(`{"agent":"unit-tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_123/confirm", bytes.NewReader(body))
@@ -285,7 +285,7 @@ func TestConfirmHandlerRequiresAwaitingConfirmationState(t *testing.T) {
 		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
 		Sessions: store,
 	})
-	handler := NewConfirmHandler(service, &fakeOrchestrator{})
+	handler := NewConfirmHandlerWithEvents(service, &fakeOrchestrator{}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_not_routed/confirm", strings.NewReader(`{"agent":"unit-tests"}`))
 	req.Header.Set("Authorization", "Bearer local-test-token")
@@ -320,7 +320,7 @@ func TestConfirmHandlerConfirmsRoutedSession(t *testing.T) {
 		Sessions: store,
 		NewID:    fixedIDs("evt_confirm_state_1"),
 	})
-	handler := NewConfirmHandler(service, &fakeOrchestrator{})
+	handler := NewConfirmHandlerWithEvents(service, &fakeOrchestrator{}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_routed/confirm", strings.NewReader(`{"agent":"unit-tests"}`))
 	req.Header.Set("Authorization", "Bearer local-test-token")
@@ -362,7 +362,7 @@ func TestConfirmHandlerRejectsAgentMismatch(t *testing.T) {
 		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
 		Sessions: store,
 	})
-	handler := NewConfirmHandler(service, &fakeOrchestrator{})
+	handler := NewConfirmHandlerWithEvents(service, &fakeOrchestrator{}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_routed_mismatch/confirm", strings.NewReader(`{"agent":"code-review"}`))
 	req.Header.Set("Authorization", "Bearer local-test-token")
@@ -450,6 +450,7 @@ func TestConfirmHandlerDispatchSurvivesRequestContextCancellation(t *testing.T) 
 	}
 	events := NewEventStore()
 	handler := NewConfirmHandlerWithEvents(service, orch, events)
+	stream := events.Subscribe("sess_ctx")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	body := []byte(`{"agent":"unit-tests"}`)
@@ -470,6 +471,20 @@ func TestConfirmHandlerDispatchSurvivesRequestContextCancellation(t *testing.T) 
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for dispatch")
+	}
+
+	// Drain until the executor closes the stream so its audit writes finish
+	// before the test's TempDir is cleaned up.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case _, open := <-stream:
+			if !open {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for executor to finish")
+		}
 	}
 }
 
@@ -658,7 +673,7 @@ func TestAgentKillSwitchBlocksConfirmation(t *testing.T) {
 		KillSwitchStore: store,
 	})
 	orch := &fakeOrchestrator{}
-	handler := NewConfirmHandler(service, orch)
+	handler := NewConfirmHandlerWithEvents(service, orch, nil)
 
 	body := []byte(`{"agent":"unit-tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_123/confirm", bytes.NewReader(body))

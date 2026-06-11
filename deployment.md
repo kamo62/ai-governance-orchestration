@@ -14,13 +14,13 @@ The local Compose stack runs:
 - `orchestrator`: internal runtime orchestration service.
 - `bifrost`: internal OSS provider gateway sidecar used by the Governance Shell by default.
 - optional MCP stub services.
-- optional tools such as `catalog-validator`, `openrouter-smoke`, `opencode-sandbox`, and `ai-orch`.
+- optional tools such as `catalog-validator`, `opencode-sandbox`, and `ai-orch` (including `ai-orch smoke openrouter`).
 
 The Orchestrator is intentionally internal to Docker Compose. Provider credentials belong to the Governance Shell or Bifrost, never to Orchestrator, the VS Code Bridge, MCP clients or runtime containers. Runtime model calls go through the ai-orch model gateway; they do not call Bifrost, OpenRouter, or provider APIs directly.
 
 ## Prerequisites
 
-- Go 1.26 or the repo's Docker build.
+- Go 1.26.4 or newer via the repo toolchain directive, or the repo's Docker build.
 - Docker Desktop or compatible Docker Compose.
 - Bun for the VS Code Bridge.
 - VS Code if testing the Bridge.
@@ -190,7 +190,7 @@ When Docker changes are involved, clean old local Compose images first:
 cd ai-agent-orch
 docker compose --env-file ../.env.dev --profile tools --profile phase2 down --remove-orphans --rmi local
 docker compose --env-file ../.env.dev pull bifrost
-docker compose --env-file ../.env.dev --profile tools build governance-shell orchestrator catalog-validator openrouter-smoke ai-orch
+docker compose --env-file ../.env.dev --profile tools build governance-shell orchestrator catalog-validator ai-orch
 ```
 
 Run the containerised catalogue validator:
@@ -203,7 +203,7 @@ Run the direct OpenRouter provider smoke test:
 
 ```sh
 docker compose --env-file ../.env.dev --profile tools run --rm openrouter-smoke \
-  openrouter-smoke -catalog-root /app \
+  ai-orch smoke openrouter -catalog-root /app \
   -model-alias smoke-deepseek-v4-flash \
   -prompt 'Reply with exactly: docker-smoke-ok'
 ```
@@ -446,7 +446,7 @@ cd ai-agent-orch
 ./scripts/install-opencode-ai-orch.sh --scope project
 
 # Explicit path
-go run ./cmd/opencode-smoke install-config --path /tmp/opencode-ai-orch.json
+go run ./cmd/ai-orch opencode install-config --path /tmp/opencode-ai-orch.json
 ```
 
 Windows PowerShell:
@@ -472,7 +472,7 @@ AI_ORCH_MODEL_GATEWAY_URL=http://127.0.0.1:18083 \
 AI_ORCH_DEV_TOKEN=local-dev \
 AI_ORCH_RUNTIME_TOKEN=local-runtime-token \
 OPENCODE_EXPECT=opencode-e2e-ok \
-go run ./cmd/opencode-smoke e2e --dir /tmp/ai-orch-opencode-e2e
+go run ./cmd/ai-orch opencode e2e --dir /tmp/ai-orch-opencode-e2e
 ```
 
 The E2E creates a governed `governance-lead` session, runs the local `opencode` binary with `OPENCODE_CONFIG`, `AI_ORCH_RUNTIME_TOKEN`, `AI_ORCH_SESSION_ID` and `AI_ORCH_SESSION_TOKEN`, then verifies the session audit contains `model.gateway` events. Direct model-only launches can also provide `AI_ORCH_ACTOR_SUBJECT` and `AI_ORCH_INTENT` so auto-created sessions carry the actor and reason. ACP runs additionally emit durable runtime events and patch evidence from file-write hooks or before/after workspace diffs.
@@ -485,7 +485,7 @@ The implemented E2E verifies model routing, audit evidence and ACP patch/diff ev
 2. **Patch evidence.** OpenCode changes a disposable file or worktree. ai-orch records patch/diff metadata, buffers patch content where available and records the human patch decision.
 3. **ACP permissions.** OpenCode ACP permissions are accepted in the ACP lane by default. MCP is not injected through ACP; MCP calls must use the MCP gateway route.
 
-The generated OpenCode config should point at the ai-orch model gateway, not Bifrost or a provider directly. `opencode-smoke generate-config` emits the local config shape, including the required runtime token, session, actor and intent header placeholders, plus OpenCode agent definitions for a `governance-lead` primary agent and specialist subagents:
+The generated OpenCode config should point at the ai-orch model gateway, not Bifrost or a provider directly. `ai-orch opencode generate-config` emits the local config shape, including the required runtime token, session, actor and intent header placeholders, plus OpenCode agent definitions for a `governance-lead` primary agent and specialist subagents:
 
 ```json
 {
@@ -691,7 +691,7 @@ Use this checklist when validating the local agent experience. These are the wor
 | Patch review | Bridge `Review Diff` prompt | Fetches full buffered patch content from the Governance Shell, validates paths, and opens native VS Code diffs. |
 | Patch decision | Bridge `Apply`, `Mark Partially Applied`, or `Reject`; CLI smoke auto-decision | Records an explicit patch decision against `/v1/sessions/{id}/patch-decision`. Bridge `Apply` mutates the local workspace; CLI `applied` only records the decision. |
 | Audit lookup | `AI Agent: Show Audit Link` or CLI audit step | Fetches the governed session audit trail without exposing the raw prompt or provider secrets. |
-| Provider health | `openrouter-smoke` | Tests OpenRouter availability directly; this is provider health, not the full governed orchestration path. |
+| Provider health | `ai-orch smoke openrouter` | Tests OpenRouter availability directly; this is provider health, not the full governed orchestration path. |
 | Bifrost health | Compose `bifrost` health check | Confirms the internal provider-plumbing sidecar is reachable by the Governance Shell. |
 
 Current context shape: the Bridge packages the current workspace name, git branch and origin remote where available, active file metadata, and either the selected text or a capped active-file excerpt. It does not scan the whole repo or automatically fill the model context window with every file.

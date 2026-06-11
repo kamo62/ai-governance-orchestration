@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 // RunResponse is returned by POST /v1/runs after the Shell creates a session
@@ -41,11 +42,11 @@ func NewRunHandler(service *SessionService, orch OrchestratorClient) http.Handle
 
 func (h *RunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	if h.service == nil || h.service.audit == nil || h.orch == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "run service unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "run service unavailable"})
 		return
 	}
 	authReq, ok := h.service.RequireAuthorizedRequest(w, r)
@@ -56,7 +57,7 @@ func (h *RunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var request CreateSessionRequest
 	if err := readJSON(w, r, &request); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
 	if request.RunID == "" {
@@ -67,12 +68,12 @@ func (h *RunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	sessionBody, err := json.Marshal(request)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "encode run request failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "encode run request failed"})
 		return
 	}
 	sessionReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "/v1/sessions", bytes.NewReader(sessionBody))
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "session request failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "session request failed"})
 		return
 	}
 	sessionReq.Header = r.Header.Clone()
@@ -86,7 +87,7 @@ func (h *RunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var sessionResp CreateSessionResponse
 	if err := json.Unmarshal(sessionRec.body.Bytes(), &sessionResp); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "parse session response failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "parse session response failed"})
 		return
 	}
 
@@ -118,16 +119,16 @@ func (h *RunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	decision, err := h.orch.Route(r.Context(), sessionResp.SessionID, request.Prompt, routeCtx)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
+		httpx.WriteJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
 		return
 	}
 	if h.service.sessions != nil {
 		if err := h.service.setRoutedAgent(r.Context(), sessionResp.SessionID, decision.Specialist); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "routed agent update failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "routed agent update failed"})
 			return
 		}
 		if err := h.service.sessions.UpdateStatus(r.Context(), sessionResp.SessionID, "awaiting_confirmation"); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "session status update failed"})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "session status update failed"})
 			return
 		}
 	}
@@ -158,13 +159,13 @@ func (h *RunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		EnforcementMode:    trust.EnforcementMode,
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
 	}
 	h.service.rememberEventID(sessionResp.SessionID, eventID)
 	h.service.rememberPrompt(sessionResp.SessionID, request.Prompt)
 
-	writeJSON(w, http.StatusCreated, RunResponse{
+	httpx.WriteJSON(w, http.StatusCreated, RunResponse{
 		RunID:             request.RunID,
 		SessionID:         sessionResp.SessionID,
 		Status:            "awaiting_confirmation",

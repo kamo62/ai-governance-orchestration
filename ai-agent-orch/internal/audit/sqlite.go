@@ -7,10 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/sqlitex"
 )
 
 // SQLiteStore is a durable audit backend backed by SQLite.
@@ -27,29 +26,9 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, errors.New("sqlite audit db path is required")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return nil, fmt.Errorf("create audit db directory: %w", err)
-	}
-
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sqlitex.Open(dbPath, "audit")
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite audit db: %w", err)
-	}
-	// WAL mode supports multiple readers and one writer concurrently.
-	// MaxOpenConns > 1 allows concurrent reads. Cap at 8 to avoid
-	// excessive connection churn while still permitting parallelism.
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
-	db.SetConnMaxLifetime(30 * time.Minute)
-
-	// WAL mode for better concurrent read/write performance.
-	if _, err := db.Exec(`
-		PRAGMA journal_mode = WAL;
-		PRAGMA busy_timeout = 10000;
-		PRAGMA synchronous = NORMAL;
-	`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("configure sqlite audit db: %w", err)
+		return nil, err
 	}
 
 	store := &SQLiteStore{

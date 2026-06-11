@@ -741,7 +741,7 @@ Acceptance criteria:
 Generate an OpenCode config that points only at ai-orch:
 
 ```sh
-go run ./cmd/opencode-smoke install-config --scope global
+go run ./cmd/ai-orch opencode install-config --scope global
 ```
 
 Run:

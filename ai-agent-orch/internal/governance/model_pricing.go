@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/sqlitex"
 )
 
 var ErrModelPricingNotFound = errors.New("model pricing not found")
@@ -36,20 +38,9 @@ func NewSQLiteModelPricingStore(dbPath string) (*SQLiteModelPricingStore, error)
 	if dbPath == "" {
 		return nil, errors.New("sqlite model pricing db path is required")
 	}
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sqlitex.Open(dbPath, "model pricing")
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite model pricing db: %w", err)
-	}
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(2)
-	db.SetConnMaxLifetime(30 * time.Minute)
-	if _, err := db.Exec(`
-		PRAGMA journal_mode = WAL;
-		PRAGMA busy_timeout = 10000;
-		PRAGMA synchronous = NORMAL;
-	`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("configure sqlite model pricing db: %w", err)
+		return nil, err
 	}
 	store := &SQLiteModelPricingStore{db: db}
 	if err := store.migrate(); err != nil {

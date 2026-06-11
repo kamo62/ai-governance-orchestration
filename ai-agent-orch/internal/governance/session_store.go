@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/sqlitex"
 )
 
 // SessionRecord is the durable representation of a user session.
@@ -34,7 +36,7 @@ type SessionRecord struct {
 	PermissionMode string
 	ApprovalMode   string
 	WorkspaceMode  string
-	// Phase 1F control-plane binding fields.
+	// Control-plane binding fields.
 	UseCaseID    string
 	WorkflowID   string
 	WorkItemID   string
@@ -45,7 +47,7 @@ type SessionRecord struct {
 	Intent       string
 	ActorHint    string
 	SourceSystem string
-	// Phase 1F cost/value sizing.
+	// Cost/value sizing.
 	StoryPoints         int
 	EstimatedDevDays    float64
 	BlendedDayRateUSD   float64
@@ -81,20 +83,9 @@ func NewSQLiteSessionStore(dbPath string) (*SQLiteSessionStore, error) {
 			return nil, fmt.Errorf("create session db directory: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sqlitex.Open(dbPath, "session")
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite session db: %w", err)
-	}
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
-	db.SetConnMaxLifetime(30 * time.Minute)
-	if _, err := db.Exec(`
-		PRAGMA journal_mode = WAL;
-		PRAGMA busy_timeout = 10000;
-		PRAGMA synchronous = NORMAL;
-	`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("configure sqlite session db: %w", err)
+		return nil, err
 	}
 	store := &SQLiteSessionStore{db: db}
 	if err := store.migrate(); err != nil {
@@ -127,7 +118,7 @@ func (s *SQLiteSessionStore) migrate() error {
 	if err != nil {
 		return err
 	}
-	// Phase 1F migrations: add control-plane binding and sizing columns.
+	// Migrations: add control-plane binding and sizing columns.
 	cols := map[string]string{
 		"run_id":                       "TEXT NOT NULL DEFAULT ''",
 		"permission_mode":              "TEXT NOT NULL DEFAULT 'reviewed'",

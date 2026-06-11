@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"ai-agent-orch/internal/openrouter"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
 )
 
 type RoutedBackend struct {

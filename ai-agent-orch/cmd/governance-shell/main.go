@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,28 +12,31 @@ import (
 	"syscall"
 	"time"
 
-	"ai-agent-orch/internal/appconfig"
-	"ai-agent-orch/internal/appversion"
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/catalog"
-	"ai-agent-orch/internal/composition"
-	"ai-agent-orch/internal/contextresolver"
-	"ai-agent-orch/internal/copilot"
-	"ai-agent-orch/internal/governance"
-	"ai-agent-orch/internal/governanceui"
-	"ai-agent-orch/internal/httpauth"
-	"ai-agent-orch/internal/modelbackend"
-	"ai-agent-orch/internal/modelgateway"
-	"ai-agent-orch/internal/oauth"
-	"ai-agent-orch/internal/policyengine"
-	"ai-agent-orch/internal/router"
-	"ai-agent-orch/internal/server"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/appconfig"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/appversion"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/catalog"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/composition"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/contextresolver"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/copilot"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/envx"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/governance"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/governanceui"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpauth"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/logx"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/modelbackend"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/modelgateway"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/oauth"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/policyengine"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/router"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/server"
 )
 
 func main() {
+	logx.Setup()
 	cfg, err := appconfig.Load(os.Args[1:])
 	if err != nil {
-		log.Fatal(err)
+		logx.Fatal(err)
 	}
 
 	baseHandler := server.New("governance-shell", func() error {
@@ -50,7 +52,7 @@ func main() {
 
 	auditStore, err := newAuditStore(cfg.AuditPath)
 	if err != nil {
-		log.Fatal(err)
+		logx.Fatal(err)
 	}
 	auditStore = audit.NewChainAppender(auditStore)
 	var killSwitchStore governance.KillSwitchStore
@@ -58,18 +60,18 @@ func main() {
 	if hasSQLiteExt(cfg.AuditPath) {
 		durableKillSwitch, err := governance.NewSQLiteKillSwitch(cfg.AuditPath)
 		if err != nil {
-			log.Fatalf("kill switch store init failed: %v", err)
+			logx.Fatalf("kill switch store init failed: %v", err)
 		}
 		killSwitchStore = durableKillSwitch
 		killSwitchCloser = durableKillSwitch
 	} else {
 		killSwitchStore = governance.NewMemoryKillSwitch()
-		log.Println("kill switch store is in-memory; state resets on restart")
+		logx.Infof("kill switch store is in-memory; state resets on restart")
 	}
 	metricsHandler := governance.NewMetricsHandler()
 	policyEngine, err := policyengine.New(cfg.PolicyEngine)
 	if err != nil {
-		log.Fatalf("policy engine init failed: %v", err)
+		logx.Fatalf("policy engine init failed: %v", err)
 	}
 
 	// OIDC validator: when OIDC_ISSUER_URL and OIDC_CLIENT_ID are set,
@@ -87,7 +89,7 @@ func main() {
 	}, oidcDevToken)
 	var requestAuthorizer governance.RequestAuthorizer
 	if oidcValidator.IsOIDCEnabled() {
-		log.Println("OIDC auth enabled")
+		logx.Infof("OIDC auth enabled")
 		requestAuthorizer = oidcValidator
 	}
 
@@ -100,11 +102,11 @@ func main() {
 		}
 		if len(problems) > 0 {
 			for _, problem := range problems {
-				log.Printf("production config error: %s", problem)
+				logx.Errorf("production config error: %s", problem)
 			}
-			log.Fatal("refusing to start with AI_ORCH_ENV=production and unsafe configuration")
+			logx.Fatal("refusing to start with AI_ORCH_ENV=production and unsafe configuration")
 		}
-		log.Println("production posture active")
+		logx.Infof("production posture active")
 	}
 
 	// Initialize session store (SQLite-backed when audit path is SQLite).
@@ -114,12 +116,12 @@ func main() {
 	if hasSQLiteExt(cfg.AuditPath) {
 		store, err := governance.NewSQLiteSessionStore(cfg.AuditPath)
 		if err != nil {
-			log.Fatalf("session store init failed: %v", err)
+			logx.Fatalf("session store init failed: %v", err)
 		}
 		sessionStore = store
 		pricingStore, err := governance.NewSQLiteModelPricingStore(cfg.AuditPath)
 		if err != nil {
-			log.Fatalf("model pricing store init failed: %v", err)
+			logx.Fatalf("model pricing store init failed: %v", err)
 		}
 		modelPricingStore = pricingStore
 		modelPricingCloser = pricingStore
@@ -127,7 +129,7 @@ func main() {
 
 	var sessionContextResolver governance.ContextResolver
 	if cfg.EnableServerContextResolver {
-		log.Println("server-side context resolver enabled for local development")
+		logx.Infof("server-side context resolver enabled for local development")
 		sessionContextResolver = contextResolverAdapter{resolver: contextresolver.New("")}
 	}
 
@@ -157,25 +159,25 @@ func main() {
 	// encryption key are available; otherwise grants reset on restart.
 	var oauthTokenStore oauth.TokenStore
 	var oauthTokenCloser interface{ Close() error }
-	oauthKey := envOrDefault("AI_ORCH_OAUTH_TOKEN_ENCRYPTION_KEY", os.Getenv("AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY"))
+	oauthKey := envx.OrDefault("AI_ORCH_OAUTH_TOKEN_ENCRYPTION_KEY", os.Getenv("AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY"))
 	if hasSQLiteExt(cfg.AuditPath) && oauthKey != "" {
 		durableTokens, err := oauth.NewSQLiteTokenStore(cfg.AuditPath, oauthKey)
 		if err != nil {
-			log.Fatalf("oauth token store init failed: %v", err)
+			logx.Fatalf("oauth token store init failed: %v", err)
 		}
 		oauthTokenStore = durableTokens
 		oauthTokenCloser = durableTokens
 	} else {
 		oauthTokenStore = oauth.NewMemoryTokenStore()
-		log.Println("oauth token store is in-memory; MCP user grants reset on restart")
+		logx.Infof("oauth token store is in-memory; MCP user grants reset on restart")
 	}
 	var registryStore governance.RegistryStoreInterface
 	if hasSQLiteExt(cfg.AuditPath) {
 		durableStore, err := governance.NewDurableRegistryStore(cfg.AuditPath)
 		if err != nil {
-			log.Fatalf("durable registry store init failed for %s: %v", cfg.AuditPath, err)
+			logx.Fatalf("durable registry store init failed for %s: %v", cfg.AuditPath, err)
 		} else {
-			log.Printf("using durable registry store: %s", cfg.AuditPath)
+			logx.Infof("using durable registry store: %s", cfg.AuditPath)
 			registryStore = durableStore
 		}
 	} else {
@@ -192,12 +194,12 @@ func main() {
 	if os.Getenv("AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY") != "" {
 		store, err := copilot.OpenStore(os.Getenv("AI_ORCH_COPILOT_TOKEN_DB"), os.Getenv("AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY"))
 		if err != nil {
-			log.Fatalf("copilot token store init failed: %v", err)
+			logx.Fatalf("copilot token store init failed: %v", err)
 		}
 		copilotStore = store
 		copilotResolver = copilotStoreResolver{store: store, client: copilot.NewClient()}
 		if count, err := store.EnrollmentCount(context.Background()); err == nil {
-			log.Printf("copilot token store opened: %d enrollment(s)", count)
+			logx.Infof("copilot token store opened: %d enrollment(s)", count)
 		}
 	}
 	modelBackend, err := modelbackend.New(modelbackend.BackendConfig{
@@ -207,7 +209,7 @@ func main() {
 		CopilotTokenResolver: copilotResolver,
 	})
 	if err != nil {
-		log.Fatalf("model backend init failed: %v", err)
+		logx.Fatalf("model backend init failed: %v", err)
 	}
 	if modelBackend.Name() != modelbackend.BackendCopilotUser && copilotResolver != nil {
 		copilotBackend := modelbackend.NewCopilotUserBackend(copilot.NewClient(), copilotResolver)
@@ -220,16 +222,16 @@ func main() {
 		if err := waitForModelBackendHealth(healthCtx, healthBackend, 1*time.Second); err != nil {
 			cancel()
 			if cfg.RequireBackendHealth {
-				log.Fatalf("model backend health failed: %v", err)
+				logx.Fatalf("model backend health failed: %v", err)
 			}
 			// Keep serving so governance APIs, audit, and the UI stay up;
 			// model calls will fail per-request until the backend recovers.
-			log.Printf("model backend unhealthy at startup, continuing degraded: %v", err)
+			logx.Warnf("model backend unhealthy at startup, continuing degraded: %v", err)
 		} else {
 			cancel()
 		}
 	}
-	log.Printf("model backend selected: %s", modelBackend.Name())
+	logx.Infof("model backend selected: %s", modelBackend.Name())
 	pricingFetcher := governance.OpenRouterPricingFetcher{BaseURL: os.Getenv("OPENROUTER_BASE_URL")}
 	pricingBootstrapped := false
 	if modelPricingStore != nil {
@@ -298,7 +300,7 @@ func main() {
 	handler.Handle("/v1/compositions/", governance.NewCompositionHandler(sessionService, compositionStore))
 	registerRegistryHandlers(handler, governance.NewRegistryHandlerWithMetrics(registryStore, sessionService, metricsHandler))
 	if err := governance.SeedPOCRegistryDefaults(registryStore); err != nil {
-		log.Printf("registry seed warning: %v", err)
+		logx.Warnf("registry seed warning: %v", err)
 	}
 	mcpProxy := governance.NewMCPProxyHandler(governance.MCPProxyConfig{
 		ServiceToken:      cfg.ServiceToken,
@@ -347,11 +349,11 @@ func main() {
 	var gatewaySrv *http.Server
 	if cfg.RuntimeToken != "" {
 		if sessionStore == nil {
-			log.Fatal("model compatibility gateway requires durable session storage; configure a SQLite audit path")
+			logx.Fatal("model compatibility gateway requires durable session storage; configure a SQLite audit path")
 		}
 		modelRegistry, err := catalog.LoadModelRegistry(cfg.CatalogRoot)
 		if err != nil {
-			log.Printf("model registry load failed: %v", err)
+			logx.Warnf("model registry load failed: %v", err)
 		} else {
 			govRouter := router.NewWithRouteAvailability(modelRegistry, func(ctx context.Context, route catalog.ModelRoute, req router.Request) bool {
 				if strings.TrimSpace(route.Provider) != modelbackend.BackendCopilotUser {
@@ -459,62 +461,62 @@ func main() {
 				MaxHeaderBytes:    1 << 20,
 			}
 			go func() {
-				log.Printf("model compatibility gateway listening on %s", cfg.GatewayAddr)
+				logx.Infof("model compatibility gateway listening on %s", cfg.GatewayAddr)
 				if err := gatewaySrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					log.Fatalf("gateway error: %v", err)
+					logx.Fatalf("gateway error: %v", err)
 				}
 			}()
 		}
 	} else {
-		log.Println("model compatibility gateway disabled: no runtime token configured")
+		logx.Infof("model compatibility gateway disabled: no runtime token configured")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if modelPricingStore != nil {
-		governance.StartModelPricingRefresh(ctx, modelPricingStore, pricingFetcher, envDurationOrDefault("AI_ORCH_MODEL_PRICING_REFRESH_INTERVAL", 24*time.Hour), !pricingBootstrapped, log.Printf)
+		governance.StartModelPricingRefresh(ctx, modelPricingStore, pricingFetcher, envDurationOrDefault("AI_ORCH_MODEL_PRICING_REFRESH_INTERVAL", 24*time.Hour), !pricingBootstrapped, logx.Infof)
 	}
 
 	go func() {
-		log.Printf("governance-shell listening on %s", cfg.Addr)
+		logx.Infof("governance-shell listening on %s", cfg.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+			logx.Fatalf("server error: %v", err)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("shutting down gracefully...")
+	logx.Infof("shutting down gracefully...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("shutdown error: %v", err)
+		logx.Fatalf("shutdown error: %v", err)
 	}
 	if gatewaySrv != nil {
 		if err := gatewaySrv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("gateway shutdown error: %v", err)
+			logx.Warnf("gateway shutdown error: %v", err)
 		}
 	}
 	if modelPricingCloser != nil {
 		if err := modelPricingCloser.Close(); err != nil {
-			log.Printf("model pricing store close error: %v", err)
+			logx.Warnf("model pricing store close error: %v", err)
 		}
 	}
 	if copilotStore != nil {
 		if err := copilotStore.Close(); err != nil {
-			log.Printf("copilot token store close error: %v", err)
+			logx.Warnf("copilot token store close error: %v", err)
 		}
 	}
 	if killSwitchCloser != nil {
 		if err := killSwitchCloser.Close(); err != nil {
-			log.Printf("kill switch store close error: %v", err)
+			logx.Warnf("kill switch store close error: %v", err)
 		}
 	}
 	if oauthTokenCloser != nil {
 		if err := oauthTokenCloser.Close(); err != nil {
-			log.Printf("oauth token store close error: %v", err)
+			logx.Warnf("oauth token store close error: %v", err)
 		}
 	}
-	log.Println("shutdown complete")
+	logx.Infof("shutdown complete")
 }
 
 type copilotStoreResolver struct {
@@ -653,7 +655,7 @@ func logRequestLatency(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 		dur := time.Since(start)
 		if dur > 500*time.Millisecond {
-			log.Printf("slow request: %s %s %s request_id=%s", r.Method, r.URL.Path, dur, requestID)
+			logx.Warnf("slow request: %s %s %s request_id=%s", r.Method, r.URL.Path, dur, requestID)
 		}
 	})
 }
@@ -670,13 +672,6 @@ func containsSuffix(path, suffix string) bool {
 	return len(path) > len(suffix) && path[len(path)-len(suffix):] == suffix
 }
 
-func envOrDefault(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
-}
-
 func envDurationOrDefault(key string, fallback time.Duration) time.Duration {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
@@ -684,7 +679,7 @@ func envDurationOrDefault(key string, fallback time.Duration) time.Duration {
 	}
 	duration, err := time.ParseDuration(value)
 	if err != nil || duration <= 0 {
-		log.Printf("invalid %s=%q; using %s", key, value, fallback)
+		logx.Warnf("invalid %s=%q; using %s", key, value, fallback)
 		return fallback
 	}
 	return duration
@@ -699,10 +694,10 @@ func bootstrapModelPricing(ctx context.Context, store governance.ModelPricingSto
 	defer cancel()
 	count, err := governance.RefreshModelPricing(refreshCtx, store, fetcher)
 	if err != nil {
-		log.Printf("model pricing bootstrap failed: %v", err)
+		logx.Warnf("model pricing bootstrap failed: %v", err)
 		return false
 	}
-	log.Printf("model pricing bootstrapped: %d models", count)
+	logx.Infof("model pricing bootstrapped: %d models", count)
 	return true
 }
 
@@ -710,7 +705,7 @@ func defaultMCPRegistrations(catalogRoot string, classificationMax string) map[s
 	platformToken := os.Getenv("AI_ORCH_MCP_TOKEN")
 	registrations, err := catalog.LoadMCPRegistrations(catalogRoot)
 	if err != nil {
-		log.Fatalf("load mcp registrations: %v", err)
+		logx.Fatalf("load mcp registrations: %v", err)
 	}
 	endpoints := map[string]string{
 		"repo-classification":      "http://mcp-repo-classification:8091",
@@ -746,7 +741,7 @@ func newAuditStore(auditPath string) (audit.Store, error) {
 		return nil, err
 	}
 	if hasSQLiteExt(auditPath) {
-		log.Printf("using sqlite audit store: %s", auditPath)
+		logx.Infof("using sqlite audit store: %s", auditPath)
 	}
 	return store, nil
 }

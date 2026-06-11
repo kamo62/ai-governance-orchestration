@@ -7,9 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"ai-agent-orch/internal/catalog"
-	"ai-agent-orch/internal/dispatch"
-	"ai-agent-orch/internal/openrouter"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/catalog"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/dispatch"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/envx"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
 )
 
 // Dispatcher resolves model aliases and starts runtime sessions.
@@ -41,7 +42,7 @@ func NewDispatcher(catalogRoot string) *Dispatcher {
 			APIKey:   apiKey,
 			BaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
 			Referer:  os.Getenv("OPENROUTER_HTTP_REFERER"),
-			AppTitle: envOrDefault("OPENROUTER_APP_TITLE", "ai-agent-orch-local"),
+			AppTitle: envx.OrDefault("OPENROUTER_APP_TITLE", "ai-agent-orch-local"),
 		}), catalogRoot)
 	}
 
@@ -187,13 +188,6 @@ func resolveMCPEndpoints(servers []string) map[string]string {
 func mcpEndpointEnvKey(name string) string {
 	normalized := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(name))
 	return "MCP_" + normalized + "_URL"
-}
-
-func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 func betaSmokeEnabled() bool {

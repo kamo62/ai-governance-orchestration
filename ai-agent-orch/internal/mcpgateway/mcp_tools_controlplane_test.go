@@ -25,7 +25,7 @@ func TestDelegateGovernedWork(t *testing.T) {
 
 	cfg := &GatewayConfig{GovernanceURL: mock.URL, DevToken: "tok"}
 	s := NewServer("test", "1.0")
-	RegisterPhase1ITools(s, cfg)
+	RegisterControlPlaneTools(s, cfg)
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -66,7 +66,7 @@ func TestDelegateGovernedWorkEscapesSessionIDPathSegment(t *testing.T) {
 
 	cfg := &GatewayConfig{GovernanceURL: mock.URL, DevToken: "tok"}
 	s := NewServer("test", "1.0")
-	RegisterPhase1ITools(s, cfg)
+	RegisterControlPlaneTools(s, cfg)
 
 	resp := s.Handle(context.Background(), &Request{
 		JSONRPC: "2.0",
@@ -97,7 +97,7 @@ func TestRecordPatchDecision(t *testing.T) {
 
 	cfg := &GatewayConfig{GovernanceURL: mock.URL, DevToken: "tok"}
 	s := NewServer("test", "1.0")
-	RegisterPhase1ITools(s, cfg)
+	RegisterControlPlaneTools(s, cfg)
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -141,7 +141,7 @@ func TestLookupAudit(t *testing.T) {
 
 	cfg := &GatewayConfig{GovernanceURL: mock.URL, DevToken: "tok"}
 	s := NewServer("test", "1.0")
-	RegisterPhase1ITools(s, cfg)
+	RegisterControlPlaneTools(s, cfg)
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -167,7 +167,7 @@ func TestLookupAudit(t *testing.T) {
 func TestRecordExternalToolCall(t *testing.T) {
 	cfg := &GatewayConfig{GovernanceURL: "http://invalid", DevToken: "tok"}
 	s := NewServer("test", "1.0")
-	RegisterPhase1ITools(s, cfg)
+	RegisterControlPlaneTools(s, cfg)
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -215,7 +215,7 @@ func TestRecordExternalToolCallPostsEvidenceRoute(t *testing.T) {
 
 	cfg := &GatewayConfig{GovernanceURL: mock.URL, DevToken: "tok"}
 	s := NewServer("test", "1.0")
-	RegisterPhase1ITools(s, cfg)
+	RegisterControlPlaneTools(s, cfg)
 
 	resp := s.Handle(context.Background(), &Request{
 		JSONRPC: "2.0",
@@ -242,7 +242,7 @@ func TestRecordExternalToolCallPostsEvidenceRoute(t *testing.T) {
 func TestRecordExternalModelCall(t *testing.T) {
 	cfg := &GatewayConfig{GovernanceURL: "http://invalid", DevToken: "tok"}
 	s := NewServer("test", "1.0")
-	RegisterPhase1ITools(s, cfg)
+	RegisterControlPlaneTools(s, cfg)
 
 	req := &Request{
 		JSONRPC: "2.0",
@@ -283,7 +283,7 @@ func TestRecordExternalModelCallPostsEvidenceRoute(t *testing.T) {
 
 	cfg := &GatewayConfig{GovernanceURL: mock.URL, DevToken: "tok"}
 	s := NewServer("test", "1.0")
-	RegisterPhase1ITools(s, cfg)
+	RegisterControlPlaneTools(s, cfg)
 
 	resp := s.Handle(context.Background(), &Request{
 		JSONRPC: "2.0",
@@ -322,7 +322,7 @@ func TestCreateContextManifest(t *testing.T) {
 
 	cfg := &GatewayConfig{GovernanceURL: mock.URL, DevToken: "tok"}
 	s := NewServer("test", "1.0")
-	RegisterPhase1ITools(s, cfg)
+	RegisterControlPlaneTools(s, cfg)
 
 	resp := s.Handle(context.Background(), &Request{
 		JSONRPC: "2.0",
@@ -364,7 +364,7 @@ func TestAttachUseCase(t *testing.T) {
 
 	cfg := &GatewayConfig{GovernanceURL: mock.URL, DevToken: "tok"}
 	s := NewServer("test", "1.0")
-	RegisterPhase1ITools(s, cfg)
+	RegisterControlPlaneTools(s, cfg)
 
 	resp := s.Handle(context.Background(), &Request{
 		JSONRPC: "2.0",
@@ -402,7 +402,7 @@ func TestAttachWorkflow(t *testing.T) {
 
 	cfg := &GatewayConfig{GovernanceURL: mock.URL, DevToken: "tok"}
 	s := NewServer("test", "1.0")
-	RegisterPhase1ITools(s, cfg)
+	RegisterControlPlaneTools(s, cfg)
 
 	resp := s.Handle(context.Background(), &Request{
 		JSONRPC: "2.0",

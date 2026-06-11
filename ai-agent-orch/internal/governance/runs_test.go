@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 )
 
 func TestRunHandlerCreatesSessionAndRoutesWithContext(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/dispatch"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/dispatch"
 )
 
 func TestDispatchHandlerFailsClosedWhenAuditWriteFails(t *testing.T) {

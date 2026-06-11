@@ -14,7 +14,7 @@ import (
 	"io"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/sqlitex"
 )
 
 // SQLiteTokenStore persists user OAuth tokens encrypted at rest so MCP
@@ -33,17 +33,9 @@ func NewSQLiteTokenStore(dbPath string, key string) (*SQLiteTokenStore, error) {
 	if key == "" {
 		return nil, errors.New("oauth token encryption key is required")
 	}
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sqlitex.Open(dbPath, "oauth token")
 	if err != nil {
-		return nil, fmt.Errorf("open oauth token db: %w", err)
-	}
-	if _, err := db.Exec(`
-		PRAGMA journal_mode = WAL;
-		PRAGMA busy_timeout = 10000;
-		PRAGMA synchronous = NORMAL;
-	`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("configure oauth token db: %w", err)
+		return nil, err
 	}
 	store := &SQLiteTokenStore{db: db, key: deriveKey(key)}
 	if err := store.migrate(); err != nil {

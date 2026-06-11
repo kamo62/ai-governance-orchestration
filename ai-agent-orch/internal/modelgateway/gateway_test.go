@@ -14,11 +14,11 @@ import (
 	"strings"
 	"testing"
 
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/catalog"
-	"ai-agent-orch/internal/modelbackend"
-	"ai-agent-orch/internal/openrouter"
-	"ai-agent-orch/internal/router"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/catalog"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/modelbackend"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/router"
 )
 
 type fakeChatClient struct {
