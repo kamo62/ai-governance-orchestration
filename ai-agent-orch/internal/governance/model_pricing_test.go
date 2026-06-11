@@ -33,6 +33,35 @@ func TestOpenRouterPricingFetcherParsesPerTokenCosts(t *testing.T) {
 	}
 }
 
+func TestRefreshModelPricingCreatesTableRecordsOnFreshStore(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"x-ai/grok-build-0.1","pricing":{"prompt":"0.0000004","completion":"0.0000012"}}]}`))
+	}))
+	defer server.Close()
+
+	store, err := NewSQLiteModelPricingStore(filepath.Join(t.TempDir(), "audit.db"))
+	if err != nil {
+		t.Fatalf("new pricing store: %v", err)
+	}
+	defer store.Close()
+
+	count, err := RefreshModelPricing(context.Background(), store, OpenRouterPricingFetcher{BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("refresh pricing: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 pricing record, got %d", count)
+	}
+	got, err := store.GetModelPricing(context.Background(), "openrouter", "x-ai/grok-build-0.1")
+	if err != nil {
+		t.Fatalf("get pricing: %v", err)
+	}
+	if got.PromptCostPerToken != 0.0000004 || got.CompletionCostPerToken != 0.0000012 {
+		t.Fatalf("unexpected pricing: %#v", got)
+	}
+}
+
 func TestSQLiteModelPricingStoreUpsertsAndFindsPrefixedModelIDs(t *testing.T) {
 	store, err := NewSQLiteModelPricingStore(filepath.Join(t.TempDir(), "pricing.db"))
 	if err != nil {

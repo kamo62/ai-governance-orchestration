@@ -13,11 +13,10 @@ The local Compose stack runs:
 - `governance-shell`: public local API and policy boundary.
 - `orchestrator`: internal runtime orchestration service.
 - `bifrost`: internal OSS provider gateway sidecar used by the Governance Shell by default.
-- `agentgateway`: optional provider gateway sidecar when using `docker-compose.agentgateway.yml`.
 - optional MCP stub services.
 - optional tools such as `catalog-validator`, `openrouter-smoke`, `opencode-sandbox`, and `ai-orch`.
 
-The Orchestrator is intentionally internal to Docker Compose. Provider credentials belong to the Governance Shell or the selected provider gateway, never to Orchestrator, the VS Code Bridge, MCP clients or runtime containers. Runtime model calls go through the ai-orch model gateway; they do not call Bifrost, AgentGateway, OpenRouter, or provider APIs directly.
+The Orchestrator is intentionally internal to Docker Compose. Provider credentials belong to the Governance Shell or Bifrost, never to Orchestrator, the VS Code Bridge, MCP clients or runtime containers. Runtime model calls go through the ai-orch model gateway; they do not call Bifrost, OpenRouter, or provider APIs directly.
 
 ## Prerequisites
 
@@ -46,16 +45,28 @@ AI_ORCH_MODEL_GATEWAY_URL=http://127.0.0.1:18082
 AI_ORCH_MODEL_BACKEND=bifrost
 AI_ORCH_MODEL_PRICING_REFRESH_INTERVAL=24h
 AI_ORCH_BIFROST_BASE_URL=http://bifrost:8080
-AI_ORCH_AGENTGATEWAY_BASE_URL=
-AI_ORCH_AGENTGATEWAY_API_KEY=
-AI_ORCH_AGENTGATEWAY_READINESS_URL=
 AI_ORCH_TRUSTED_CLIENT_TOKEN=local-trusted-client-token
 BIFROST_ENCRYPTION_KEY=local-bifrost-enc-key-32-bytes!!
+AI_ORCH_ENV=local
+AI_ORCH_GATEWAY_MAX_REQUEST_BYTES=20971520
+AI_ORCH_REQUIRE_BACKEND_HEALTH=false
+AI_ORCH_COPILOT_CLIENT_ID=
+AI_ORCH_OAUTH_TOKEN_ENCRYPTION_KEY=
 ```
+
+`AI_ORCH_OAUTH_TOKEN_ENCRYPTION_KEY` enables encrypted, durable storage of MCP `oauth-user` tokens in the audit database so user grants survive restarts. It falls back to `AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY` when unset; with neither key the store is in-memory.
+
+`AI_ORCH_ENV=production` switches the Governance Shell to a fail-closed posture: OIDC (`OIDC_ISSUER_URL` plus `OIDC_CLIENT_ID`) becomes mandatory, the shared dev token is no longer accepted as a bearer credential, header-asserted identity is disabled, and startup refuses any admin, service, runtime, or trusted-client token that is missing or still set to a `local-*` Compose default.
+
+`AI_ORCH_REQUIRE_BACKEND_HEALTH=true` restores the old fail-fast startup when the model backend is unhealthy. The default keeps the shell serving in a degraded state so governance APIs, audit, and the UI stay up while model calls fail per-request.
+
+Session creation (`POST /v1/sessions` or `POST /v1/runs`) now returns a one-time `gateway_token`. Runtimes must send it as `X-AI-Orch-Session-Token` on model gateway calls alongside `X-AI-Orch-Session-ID`; only its hash is stored server-side. The generated OpenCode config reads it from `AI_ORCH_SESSION_TOKEN`. Sessions created before this change carry no hash and continue to work with the shared runtime token alone.
+
+The ACP lane mints its own session secret: at dispatch the Governance Shell generates a runtime gateway token, stores its hash next to the client hash, and passes the raw value to the orchestrator, which exposes it to the spawned `opencode acp` process as `AI_ORCH_SESSION_TOKEN`. The gateway accepts either token for the session, so the developer's client token and the server-side runtime coexist.
 
 `AI_ORCH_TRUSTED_CLIENT_TOKEN` is the secret that lets trusted clients (the MCP gateway and the VS Code bridge) record privileged audit trust levels (`gateway_enforced`, `managed_client`). The Governance Shell reads it, and trusted clients present it via the `X-AI-Orch-Trusted-Client-Token` header. When it is empty the shell falls back to honoring the `X-AI-Orch-Client` identity header on its own, which is convenient for local dev but means any token holder can claim a privileged trust level. Set a strong value in shared and production deployments, and configure the same value on the gateway/bridge, so trust labels on the audit trail cannot be forged.
 
-Set `AI_ORCH_REQUIRE_WORK_ITEM=true` in shared beta and production-like environments. With this gate enabled, governed runs fail closed unless the current branch or request metadata supplies a work item ID, and the branch contains that ID. Use branch names like `feature/OMENG-300-governance-fixes`, `bugfix/OMENG-301-null-session`, or `docs/OMENG-302-audit-export`.
+Set `AI_ORCH_REQUIRE_WORK_ITEM=true` in shared beta and production-like environments. With this gate enabled, governed runs fail closed unless the current branch or request metadata supplies a work item ID, and the branch contains that ID. Use branch names like `feature/WORK-123-governance-fixes`, `bugfix/WORK-124-null-session`, or `docs/WORK-125-audit-export`.
 
 Optional provider credentials for Bifrost can be added only when you are deliberately testing those paths:
 
@@ -228,7 +239,7 @@ Start a governed run:
 ```sh
 curl -H "Authorization: Bearer local-dev" \
   -H "Content-Type: application/json" \
-  -d '{"agent":"unit-tests","classification":"internal","prompt":"add regression tests for this module","permission_mode":"reviewed","approval_mode":"manual","workspace_mode":"local"}' \
+  -d '{"agent":"governance-lead","classification":"internal","prompt":"review this request and route it to the right specialist","permission_mode":"read_only","approval_mode":"manual","workspace_mode":"local"}' \
   http://127.0.0.1:18080/v1/runs
 ```
 
@@ -247,7 +258,7 @@ If `/readyz` returns HTML, or a different JSON service name, the Bridge is point
 The first local Governance UI is intentionally small and operational:
 
 - service and version posture;
-- active gateway backend plus Bifrost, AgentGateway and native OpenRouter options;
+- active gateway backend plus Bifrost and per-user Copilot options;
 - metrics counters for sessions, cache, evidence and patch decisions;
 - recent sessions with model attribution, token counts, cost source and readable runtime mode labels;
 - agent catalogue preview;
@@ -285,13 +296,13 @@ GOVERNANCE_SHELL_PORT=19080 docker compose --env-file ../.env.dev --profile tool
 This is an explicit local validation path, not the default runtime policy.
 
 ```sh
-AI_ORCH_MODEL_ALIAS_OVERRIDE=coding-gpt55 \
-AI_ORCH_OPENROUTER_REASONING_EFFORT=high \
-AI_ORCH_OPENROUTER_REASONING_EXCLUDE=true \
 docker compose --env-file ../.env.dev up -d bifrost orchestrator governance-shell
+AI_ORCH_RUNTIME_TOKEN=local-runtime-token \
+AI_ORCH_ACTOR_SUBJECT=$(whoami) \
+opencode run --model ai-orch/openrouter-openai-gpt55 "Use high reasoning for a short architecture comparison."
 ```
 
-Then run the CLI smoke command above.
+For OpenCode-managed agent configs, set `reasoningEffort: "high"` on the specific specialist or model-only run. The gateway normalizes that to Bifrost-compatible `reasoning.effort`, clamps it by policy, and records requested versus applied effort in audit.
 
 ## Model Compatibility Gateway
 
@@ -383,36 +394,7 @@ AI_ORCH_MODEL_BACKEND=bifrost
 AI_ORCH_BIFROST_BASE_URL=http://bifrost:8080
 ```
 
-Use `AI_ORCH_MODEL_BACKEND=native-openrouter` only when you intentionally want to bypass the Bifrost sidecar and use the native OpenRouter backend.
-
-For a concrete native OpenRouter run path:
-
-```sh
-docker compose --env-file ../.env.dev \
-  -f docker-compose.yml \
-  -f docker-compose.openrouter.yml \
-  up -d orchestrator governance-shell
-```
-
-Use `AI_ORCH_MODEL_BACKEND=agentgateway` when testing AgentGateway as an additional provider gateway candidate:
-
-```sh
-AI_ORCH_MODEL_BACKEND=agentgateway
-AI_ORCH_AGENTGATEWAY_BASE_URL=http://agentgateway:3000
-# Optional, only when agentgateway is configured to require an API key.
-AI_ORCH_AGENTGATEWAY_API_KEY=...
-# Optional, when the agentgateway readiness server is exposed to this container.
-AI_ORCH_AGENTGATEWAY_READINESS_URL=http://agentgateway:15021/healthz/ready
-```
-
-For a concrete AgentGateway run path:
-
-```sh
-docker compose --env-file ../.env.dev \
-  -f docker-compose.yml \
-  -f docker-compose.agentgateway.yml \
-  up -d agentgateway orchestrator governance-shell
-```
+Bifrost is the default OpenRouter/provider route for this POC. Do not bypass it with a native direct OpenRouter backend; that path was removed to keep provider plumbing behind one sidecar abstraction.
 
 The runtime-facing endpoint still stays ai-orch:
 
@@ -424,7 +406,18 @@ OpenCode / Cline / workbench
   -> provider
 ```
 
-Bifrost, AgentGateway and native OpenRouter are selectable local gateway paths. Keep them behind ai-orch until each path proves model-call audit, provider/backend metadata, patch/diff evidence and no provider keys in runtime config.
+Bifrost and per-user Copilot are selectable local gateway paths. Keep them behind ai-orch until each path proves model-call audit, provider/backend metadata, patch/diff evidence and no provider keys in runtime config.
+
+### Cline (OpenAI-compatible client)
+
+Cline connects through its "OpenAI Compatible" provider with no ai-orch-specific client code:
+
+1. In Cline settings choose API Provider: OpenAI Compatible.
+2. Base URL: `http://127.0.0.1:18082/v1` (the model compatibility gateway).
+3. API key: the composite runtime key `<AI_ORCH_RUNTIME_TOKEN>.<your-username>`, for example `local-runtime-token.kamogelo`. The actor suffix carries your identity because Cline cannot send custom headers; the gateway binds auto-created sessions and Copilot enrollment lookups to it.
+4. Model: Cline populates its dropdown from `GET /v1/models`, so the governed aliases appear automatically; pick one (for example `coding-fast`) or type an alias manually.
+
+Model calls then flow through governed auto-sessions exactly like OpenCode: routing, audit, token/cost capture, kill switches and per-session tokens all apply. For governed tools, install the MCP gateway config with `ai-orch mcp install --client cline`.
 
 ### Local OpenCode E2E
 
@@ -482,7 +475,7 @@ OPENCODE_EXPECT=opencode-e2e-ok \
 go run ./cmd/opencode-smoke e2e --dir /tmp/ai-orch-opencode-e2e
 ```
 
-The E2E creates a governed session, runs the local `opencode` binary with `OPENCODE_CONFIG`, `AI_ORCH_RUNTIME_TOKEN` and `AI_ORCH_SESSION_ID`, then verifies the session audit contains `model.gateway` events. ACP runs additionally emit durable runtime events and patch evidence from file-write hooks or before/after workspace diffs.
+The E2E creates a governed `governance-lead` session, runs the local `opencode` binary with `OPENCODE_CONFIG`, `AI_ORCH_RUNTIME_TOKEN`, `AI_ORCH_SESSION_ID` and `AI_ORCH_SESSION_TOKEN`, then verifies the session audit contains `model.gateway` events. Direct model-only launches can also provide `AI_ORCH_ACTOR_SUBJECT` and `AI_ORCH_INTENT` so auto-created sessions carry the actor and reason. ACP runs additionally emit durable runtime events and patch evidence from file-write hooks or before/after workspace diffs.
 
 Use `/Users/kamogelo/Code/ado_scripts` as a realistic repo target only through a disposable worktree or a deliberately temporary test file.
 
@@ -492,9 +485,7 @@ The implemented E2E verifies model routing, audit evidence and ACP patch/diff ev
 2. **Patch evidence.** OpenCode changes a disposable file or worktree. ai-orch records patch/diff metadata, buffers patch content where available and records the human patch decision.
 3. **ACP permissions.** OpenCode ACP permissions are accepted in the ACP lane by default. MCP is not injected through ACP; MCP calls must use the MCP gateway route.
 
-The generated OpenCode config should point at the ai-orch model gateway, not Bifrost or a provider directly. `opencode-smoke generate-config` emits the local config shape, including the required runtime token and session header placeholders:
-
-Expected config shape once verified:
+The generated OpenCode config should point at the ai-orch model gateway, not Bifrost or a provider directly. `opencode-smoke generate-config` emits the local config shape, including the required runtime token, session, actor and intent header placeholders, plus OpenCode agent definitions for a `governance-lead` primary agent and specialist subagents:
 
 ```json
 {
@@ -507,7 +498,10 @@ Expected config shape once verified:
         "baseURL": "http://127.0.0.1:18082/v1",
         "apiKey": "{env:AI_ORCH_RUNTIME_TOKEN}",
         "headers": {
-          "X-AI-Orch-Session-ID": "{env:AI_ORCH_SESSION_ID}"
+          "X-AI-Orch-Session-ID": "{env:AI_ORCH_SESSION_ID}",
+          "X-AI-Orch-Session-Token": "{env:AI_ORCH_SESSION_TOKEN}",
+          "X-AI-Orch-Actor-Subject": "{env:AI_ORCH_ACTOR_SUBJECT}",
+          "X-AI-Orch-Intent": "{env:AI_ORCH_INTENT}"
         }
       },
       "models": {
@@ -518,16 +512,39 @@ Expected config shape once verified:
     }
   },
   "enabled_providers": ["ai-orch"],
-  "model": "ai-orch/coding-balanced"
+  "model": "ai-orch/coding-gpt55",
+  "agent": {
+    "governance-lead": {
+      "mode": "primary",
+      "model": "ai-orch/coding-gpt55",
+      "permission": {
+        "edit": "deny",
+        "bash": "deny"
+      }
+    },
+    "code-review": {
+      "mode": "subagent",
+      "model": "ai-orch/coding-balanced"
+    }
+  }
 }
 ```
 
 The runtime token must be an ai-orch runtime token. Do not put OpenRouter, OpenAI, Anthropic, DeepSeek, AWS or Bifrost credentials into OpenCode for this E2E.
 
-When you do not want to use a local OpenCode install, run the opt-in Docker sandbox against the Compose network. Create or choose a governed session first, then pass that session ID into the sandbox:
+When you do not want to use a local OpenCode install, run the opt-in Docker sandbox against the Compose network. For an existing governed session, pass both the session ID and session token:
 
 ```sh
 AI_ORCH_SESSION_ID=<governed-session-id> \
+AI_ORCH_SESSION_TOKEN=<governed-session-token> \
+docker compose --env-file ../.env.dev --profile opencode run --rm opencode-sandbox
+```
+
+For a governed model-only sandbox session, omit the session headers and provide an actor plus intent:
+
+```sh
+AI_ORCH_ACTOR_SUBJECT=$(whoami) \
+AI_ORCH_INTENT="Docker sandbox model-only review" \
 docker compose --env-file ../.env.dev --profile opencode run --rm opencode-sandbox
 ```
 
@@ -721,7 +738,7 @@ AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX=15
 
 ## Local State
 
-The local POC uses SQLite and process-local state. SQLite stores audit, sessions, registry data, and model pricing when configured through the Compose audit database path.
+The local POC uses SQLite and process-local state. SQLite stores audit, sessions, registry data, model pricing, kill switches, and (when an encryption key is configured) MCP user OAuth tokens, all through the Compose audit database path.
 
 Some state is intentionally still local-process state:
 
@@ -729,8 +746,33 @@ Some state is intentionally still local-process state:
 - patch buffer;
 - SSE history;
 - cancellation map;
-- kill switches;
-- OAuth token stubs;
 - composition state.
 
 See [Local State Lifecycle](ai-agent-orch/docs/local-state-lifecycle.md) for the promotion path before team or multi-instance use.
+
+## TLS Termination
+
+Both listeners (Governance Shell API on 18080 and the model gateway on 18082) speak plain HTTP and must sit behind a TLS-terminating proxy in any shared deployment. Bearer tokens, prompts, and per-session gateway secrets cross both ports. A minimal Caddy example covering both:
+
+```text
+ai-orch.example.com {
+    reverse_proxy 127.0.0.1:18080
+}
+
+ai-orch-models.example.com {
+    reverse_proxy 127.0.0.1:18082 {
+        flush_interval -1   # SSE streams must not be buffered
+    }
+}
+```
+
+The equivalent nginx locations need `proxy_buffering off;` and `proxy_read_timeout 0;` on the gateway host so streaming responses are not cut. Keep the container ports bound to loopback (the Compose defaults already do this) so the proxy is the only ingress.
+
+## Backups And Retention
+
+The audit SQLite database is the system of record: the tamper-evident hash chain is only as trustworthy as its backups. For the Compose path the data lives in the `audit-data` volume.
+
+- Back up with SQLite's online backup, not a file copy, so WAL state is consistent: `sqlite3 /app/var/audit/audit.db ".backup /backup/audit-$(date +%F).db"` (run inside the container or against the mounted volume).
+- Verify a restore monthly: open the backup, run `PRAGMA integrity_check;`, and spot-check the newest audit event hash chain via `GET /v1/audit/sessions/{id}`.
+- Audit retention is enforced through `POST /v1/admin/audit/retention` with the admin token; set a policy that matches your evidence requirements before trimming.
+- The Copilot and OAuth token databases hold only re-obtainable credentials. Exclude them from long-term backups and re-enroll after a restore instead of restoring token material.

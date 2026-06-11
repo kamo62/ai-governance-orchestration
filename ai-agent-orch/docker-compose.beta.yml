@@ -30,4 +30,5 @@ services:
     volumes:
       - ./agents:/app/agents:ro
       - ./models:/app/models:ro
+      - ./mcp:/app/mcp:ro
       - ./policies:/app/policies:ro

@@ -4,8 +4,8 @@ phase: published
 owner: local
 runtime: opencode
 model:
-  primary: coding-balanced
-  fallback: coding-fast
+  primary: coding-fast
+  fallback: coding-economy
 mcp_servers:
   - repo-classification
   - engineering-standards-kb

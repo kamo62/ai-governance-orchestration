@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"ai-agent-orch/internal/copilot"
 	"ai-agent-orch/internal/openrouter"
 )
 
@@ -201,121 +200,10 @@ func TestBifrostBackendRawResponsesUsesResponsesPath(t *testing.T) {
 	}
 }
 
-func TestAgentGatewayBackendPostsOpenAICompatibleChatCompletion(t *testing.T) {
-	var gotAuth string
-	var gotModel string
-	var gotProviderHeader string
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Fatalf("expected POST, got %s", r.Method)
-		}
-		if r.URL.Path != "/v1/chat/completions" {
-			t.Fatalf("expected /v1/chat/completions, got %s", r.URL.Path)
-		}
-		gotAuth = r.Header.Get("Authorization")
-		gotProviderHeader = r.Header.Get("X-AI-Orch-Provider")
-
-		var body openrouter.ChatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		gotModel = body.Model
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(openrouter.ChatCompletionResponse{
-			ID:    "gen_agentgateway",
-			Model: body.Model,
-			Choices: []struct {
-				Message openrouter.Message `json:"message"`
-			}{
-				{Message: openrouter.Message{Role: "assistant", Content: "ok"}},
-			},
-			Usage: openrouter.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
-		})
-	}))
-	defer server.Close()
-
-	backend := NewAgentGatewayBackend(AgentGatewayConfig{
-		BaseURL:    server.URL,
-		APIKey:     "gateway-token",
-		HTTPClient: server.Client(),
-	})
-
-	resp, err := backend.ChatCompletion(context.Background(), openrouter.ChatCompletionRequest{
-		Provider: "openrouter",
-		Model:    "deepseek/deepseek-v4-flash",
-		Messages: []openrouter.Message{{Role: "user", Content: "hello"}},
-	})
-	if err != nil {
-		t.Fatalf("ChatCompletion returned error: %v", err)
-	}
-	if backend.Name() != BackendAgentGateway {
-		t.Fatalf("unexpected backend name %q", backend.Name())
-	}
-	if gotAuth != "Bearer gateway-token" {
-		t.Fatalf("unexpected auth header %q", gotAuth)
-	}
-	if gotProviderHeader != "openrouter" {
-		t.Fatalf("unexpected provider header %q", gotProviderHeader)
-	}
-	if gotModel != "deepseek/deepseek-v4-flash" {
-		t.Fatalf("agentgateway should receive the selected model without Bifrost provider prefix, got %q", gotModel)
-	}
-	if resp.FirstContent() != "ok" {
-		t.Fatalf("unexpected response content %q", resp.FirstContent())
-	}
-}
-
-func TestAgentGatewayBackendOptionalReadiness(t *testing.T) {
-	readinessHit := false
-	readiness := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		readinessHit = true
-		if r.URL.Path != "/healthz/ready" {
-			t.Fatalf("unexpected readiness path %s", r.URL.Path)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer readiness.Close()
-
-	backend := NewAgentGatewayBackend(AgentGatewayConfig{ReadinessURL: readiness.URL + "/healthz/ready"})
-	if err := backend.Health(context.Background()); err != nil {
-		t.Fatalf("Health returned error: %v", err)
-	}
-	if !readinessHit {
-		t.Fatal("expected readiness endpoint to be called")
-	}
-
-	backend = NewAgentGatewayBackend(AgentGatewayConfig{})
-	if err := backend.Health(context.Background()); err != nil {
-		t.Fatalf("Health without readiness URL should be a no-op, got %v", err)
-	}
-}
-
-func TestNewBackendCreatesAgentGatewayBackend(t *testing.T) {
-	backend, err := New(BackendConfig{
-		Name:                BackendAgentGateway,
-		AgentGatewayBaseURL: "http://agentgateway:3000",
-	})
-	if err != nil {
-		t.Fatalf("New returned error: %v", err)
-	}
-	if backend.Name() != BackendAgentGateway {
-		t.Fatalf("unexpected backend name %q", backend.Name())
-	}
-}
-
 func TestNewBackendRejectsUnknownBackend(t *testing.T) {
 	_, err := New(BackendConfig{Name: "nope"})
 	if err == nil {
 		t.Fatal("expected unknown backend error")
-	}
-}
-
-func TestNewBackendRejectsAgentGatewayWithoutBaseURL(t *testing.T) {
-	_, err := New(BackendConfig{Name: BackendAgentGateway})
-	if err == nil {
-		t.Fatal("expected missing agentgateway base URL error")
 	}
 }
 
@@ -367,10 +255,4 @@ func (b *recordRawBackend) ChatCompletionRaw(context.Context, RawRequest) ([]byt
 func (b *recordRawBackend) ChatCompletionStreamRaw(context.Context, RawRequest) (io.ReadCloser, error) {
 	b.calls++
 	return io.NopCloser(strings.NewReader("data: [DONE]\n\n")), nil
-}
-
-type staticCopilotResolver struct{}
-
-func (staticCopilotResolver) TokenForActor(context.Context, string) (copilot.TokenRecord, error) {
-	return copilot.TokenRecord{AccessToken: "token"}, nil
 }

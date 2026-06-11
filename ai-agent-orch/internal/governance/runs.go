@@ -25,6 +25,8 @@ type RunResponse struct {
 	PermissionMode    string `json:"permission_mode,omitempty"`
 	ApprovalMode      string `json:"approval_mode,omitempty"`
 	WorkspaceMode     string `json:"workspace_mode,omitempty"`
+	// GatewayToken is the per-session model gateway secret, surfaced once.
+	GatewayToken string `json:"gateway_token,omitempty"`
 }
 
 // RunHandler serves POST /v1/runs.
@@ -120,6 +122,10 @@ func (h *RunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.service.sessions != nil {
+		if err := h.service.setRoutedAgent(r.Context(), sessionResp.SessionID, decision.Specialist); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "routed agent update failed"})
+			return
+		}
 		if err := h.service.sessions.UpdateStatus(r.Context(), sessionResp.SessionID, "awaiting_confirmation"); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "session status update failed"})
 			return
@@ -172,6 +178,7 @@ func (h *RunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		PermissionMode:    request.PermissionMode,
 		ApprovalMode:      request.ApprovalMode,
 		WorkspaceMode:     request.WorkspaceMode,
+		GatewayToken:      sessionResp.GatewayToken,
 	})
 }
 

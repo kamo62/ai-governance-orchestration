@@ -2,16 +2,22 @@ package modelbackend
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"sync"
+	"time"
 
 	"ai-agent-orch/internal/copilot"
 	"ai-agent-orch/internal/openrouter"
 )
 
 const BackendCopilotUser = "copilot-user"
+
+// sessionTokenExpiryMargin forces a re-exchange shortly before the short-lived
+// Copilot bearer expires so in-flight requests never carry a stale token.
+const sessionTokenExpiryMargin = 2 * time.Minute
 
 type CopilotTokenResolver interface {
 	TokenForActor(context.Context, string) (copilot.TokenRecord, error)
@@ -20,13 +26,20 @@ type CopilotTokenResolver interface {
 type CopilotUserBackend struct {
 	client   *copilot.Client
 	resolver CopilotTokenResolver
+
+	mu            sync.Mutex
+	sessionTokens map[string]copilot.SessionToken
 }
 
 func NewCopilotUserBackend(client *copilot.Client, resolver CopilotTokenResolver) *CopilotUserBackend {
 	if client == nil {
 		client = copilot.NewClient()
 	}
-	return &CopilotUserBackend{client: client, resolver: resolver}
+	return &CopilotUserBackend{
+		client:        client,
+		resolver:      resolver,
+		sessionTokens: make(map[string]copilot.SessionToken),
+	}
 }
 
 func (b *CopilotUserBackend) Name() string { return BackendCopilotUser }
@@ -57,6 +70,22 @@ func (b *CopilotUserBackend) ChatCompletionStreamRaw(ctx context.Context, req Ra
 	return b.client.ChatCompletionStream(ctx, token, body)
 }
 
+func (b *CopilotUserBackend) ResponsesRaw(ctx context.Context, req RawRequest) ([]byte, error) {
+	token, body, err := b.prepare(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return b.client.Responses(ctx, token, body)
+}
+
+func (b *CopilotUserBackend) ResponsesStreamRaw(ctx context.Context, req RawRequest) (io.ReadCloser, error) {
+	token, body, err := b.prepare(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return b.client.ResponsesStream(ctx, token, body)
+}
+
 func (b *CopilotUserBackend) prepare(ctx context.Context, req RawRequest) (string, []byte, error) {
 	if b == nil || b.resolver == nil {
 		return "", nil, errors.New("copilot token resolver unavailable")
@@ -64,7 +93,7 @@ func (b *CopilotUserBackend) prepare(ctx context.Context, req RawRequest) (strin
 	if req.ActorSubject == "" {
 		return "", nil, errors.New("actor subject is required for copilot-user")
 	}
-	rec, err := b.resolver.TokenForActor(ctx, req.ActorSubject)
+	rec, err := b.resolveToken(ctx, req.ActorSubject)
 	if err != nil {
 		return "", nil, err
 	}
@@ -72,30 +101,50 @@ func (b *CopilotUserBackend) prepare(ctx context.Context, req RawRequest) (strin
 	if err != nil {
 		return "", nil, fmt.Errorf("prepare copilot request: %w", err)
 	}
-	return rec.AccessToken, body, nil
+	return b.bearerForRecord(ctx, rec), body, nil
 }
 
 func (b *CopilotUserBackend) Models(ctx context.Context, actorSubject string) ([]byte, error) {
 	if b == nil || b.resolver == nil {
 		return nil, errors.New("copilot token resolver unavailable")
 	}
-	rec, err := b.resolver.TokenForActor(ctx, actorSubject)
+	rec, err := b.resolveToken(ctx, actorSubject)
 	if err != nil {
 		return nil, err
 	}
-	return b.client.Models(ctx, rec.AccessToken)
+	return b.client.Models(ctx, b.bearerForRecord(ctx, rec))
 }
 
-func normalizeCopilotResponseModel(body []byte, alias string) []byte {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return body
+func (b *CopilotUserBackend) resolveToken(ctx context.Context, actorSubject string) (copilot.TokenRecord, error) {
+	rec, err := b.resolver.TokenForActor(ctx, actorSubject)
+	if errors.Is(err, copilot.ErrTokenNotFound) {
+		return copilot.TokenRecord{}, fmt.Errorf("%w for actor %q; enroll with `ai-orch copilot login`", err, actorSubject)
 	}
-	model, _ := json.Marshal(alias)
-	obj["model"] = model
-	encoded, err := json.Marshal(obj)
+	if errors.Is(err, copilot.ErrTokenRevoked) {
+		return copilot.TokenRecord{}, fmt.Errorf("%w for actor %q; re-enroll with `ai-orch copilot login`", err, actorSubject)
+	}
+	return rec, err
+}
+
+// bearerForRecord exchanges the stored GitHub OAuth token for the short-lived
+// Copilot API bearer, caching it per actor until it nears expiry. If the
+// exchange endpoint rejects the request, the OAuth token is used directly so
+// accounts where direct OAuth still works keep functioning.
+func (b *CopilotUserBackend) bearerForRecord(ctx context.Context, rec copilot.TokenRecord) string {
+	cacheKey := rec.ActorSubject + "\x00" + rec.Fingerprint
+	b.mu.Lock()
+	cached, ok := b.sessionTokens[cacheKey]
+	b.mu.Unlock()
+	if ok && !cached.Expired(sessionTokenExpiryMargin) {
+		return cached.Token
+	}
+	exchanged, err := b.client.ExchangeSessionToken(ctx, rec.AccessToken)
 	if err != nil {
-		return body
+		log.Printf("copilot session token exchange failed for actor %s; using OAuth token directly: %v", rec.ActorSubject, err)
+		return rec.AccessToken
 	}
-	return encoded
+	b.mu.Lock()
+	b.sessionTokens[cacheKey] = exchanged
+	b.mu.Unlock()
+	return exchanged.Token
 }

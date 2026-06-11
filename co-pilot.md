@@ -195,7 +195,10 @@ Example local or managed OpenCode config:
         "baseURL": "http://127.0.0.1:18082/v1",
         "apiKey": "{env:AI_ORCH_RUNTIME_TOKEN}",
         "headers": {
-          "X-AI-Orch-Session-ID": "{env:AI_ORCH_SESSION_ID}"
+          "X-AI-Orch-Session-ID": "{env:AI_ORCH_SESSION_ID}",
+          "X-AI-Orch-Session-Token": "{env:AI_ORCH_SESSION_TOKEN}",
+          "X-AI-Orch-Actor-Subject": "{env:AI_ORCH_ACTOR_SUBJECT}",
+          "X-AI-Orch-Intent": "{env:AI_ORCH_INTENT}"
         }
       },
       "models": {
@@ -212,10 +215,26 @@ Example local or managed OpenCode config:
     }
   },
   "enabled_providers": ["ai-orch"],
-  "model": "ai-orch/copilot-gpt-5-mini",
-  "small_model": "ai-orch/copilot-gpt-5-mini"
+  "model": "ai-orch/coding-gpt55",
+  "small_model": "ai-orch/coding-fast",
+  "agent": {
+    "governance-lead": {
+      "mode": "primary",
+      "model": "ai-orch/coding-gpt55",
+      "permission": {
+        "edit": "deny",
+        "bash": "deny"
+      }
+    },
+    "code-review": {
+      "mode": "subagent",
+      "model": "ai-orch/coding-gpt55"
+    }
+  }
 }
 ```
+
+The generated config uses `governance-lead` as the primary OpenCode agent and defines delivery specialists as subagents. The launcher defaults to the governed `ai-orch/coding-gpt55` capability alias; the gateway resolves that alias through the actor's Copilot credential when available and otherwise falls back to the approved Bifrost/OpenRouter route.
 
 For enterprise-managed OpenCode, use OpenCode managed settings so developers cannot override the provider list casually:
 
@@ -294,6 +313,65 @@ ai-orch copilot refresh
 ```
 
 The command should not read OpenCode's auth files. OpenCode's implementation is a reference for protocol behavior, not a credential source.
+
+Local beta enrollment is explicit and developer-owned:
+
+```sh
+cd ai-agent-orch
+scripts/enroll-developer-copilot-opencode.sh
+```
+
+This command:
+
+- creates or reuses a local `~/.ai-orch/copilot-token.key` encryption key;
+- starts GitHub device auth through the running Governance Shell;
+- stores the resulting Copilot OAuth credential encrypted in the Governance Shell token store for the authenticated ai-orch actor;
+- verifies `/v1/copilot/models` for that actor;
+- installs an OpenCode `ai-orch` provider config that points to the ai-orch model gateway.
+
+It does not write the Copilot OAuth credential into OpenCode config. OpenCode receives only:
+
+```text
+AI_ORCH_RUNTIME_TOKEN
+AI_ORCH_SESSION_ID
+AI_ORCH_SESSION_TOKEN
+AI_ORCH_ACTOR_SUBJECT
+AI_ORCH_INTENT
+```
+
+For launcher-created sessions, the session ID and session token come from `POST /v1/runs`. They are scoped to one governed session and are required by the model gateway. For direct model-only launches, `AI_ORCH_ACTOR_SUBJECT` and `AI_ORCH_INTENT` let the gateway create a governed auto session and record why the developer chose that lane. The Copilot credential stays inside ai-orch token storage and is looked up by the authenticated actor subject.
+
+Developers can start OpenCode or T3 Code directly after enrollment if the runtime token and actor subject are in the environment:
+
+```sh
+export AI_ORCH_RUNTIME_TOKEN=local-runtime-token
+export AI_ORCH_ACTOR_SUBJECT=$(whoami)
+opencode .
+```
+
+If `AI_ORCH_SESSION_ID` and `AI_ORCH_SESSION_TOKEN` are absent, the model gateway creates an auto session on the first model call, binds it to `AI_ORCH_ACTOR_SUBJECT`, then records model-call audit against that generated session.
+
+For demos and explicit single-run workflows, use the ai-orch launcher:
+
+```sh
+scripts/opencode-governed.sh -- run --model ai-orch/copilot-gpt-5-mini "Write tests"
+```
+
+or equivalently:
+
+```sh
+go run ./cmd/ai-orch opencode -- run --model ai-orch/copilot-gpt-5-mini "Write tests"
+```
+
+When no explicit model is passed, the launcher starts OpenCode with `ai-orch/coding-gpt55`. The gateway checks the actor's enrolled Copilot credential server-side and falls back to the approved Bifrost/OpenRouter route when Copilot is unavailable. The launcher creates the governed `governance-lead` session, receives the session-bound gateway token, exports `AI_ORCH_SESSION_ID` and `AI_ORCH_SESSION_TOKEN` only to the child OpenCode process, and then starts OpenCode with `--agent governance-lead`. The developer never has to copy those values.
+
+For a deliberate model-only run:
+
+```sh
+scripts/opencode-governed.sh --model-only --governance-intent "Need direct model exploration before choosing an agent" -- run --model ai-orch/openrouter-openai-gpt55 "Compare options"
+```
+
+Copilot token refresh is an ai-orch responsibility. OpenCode stores its own `github-copilot` OAuth record with access, refresh and expiry metadata, but governed mode does not read that file or pass those credentials as headers. ai-orch stores the same OAuth shape in its encrypted token store, refreshes the OAuth access token when it is near expiry, then exchanges it for the short-lived Copilot API bearer before each provider call. The initial session prompt must not perform credential refresh because prompts are not a reliable control-plane mechanism and would expose credential handling to the agent runtime.
 
 #### 3. OAuth Device Flow
 
@@ -663,22 +741,23 @@ Acceptance criteria:
 Generate an OpenCode config that points only at ai-orch:
 
 ```sh
-ai-orch opencode install-config --provider ai-orch --model copilot-gpt-5-mini
+go run ./cmd/opencode-smoke install-config --scope global
 ```
 
 Run:
 
 ```sh
 AI_ORCH_SESSION_ID=<session_id> \
+AI_ORCH_SESSION_TOKEN=<session_token> \
 AI_ORCH_RUNTIME_TOKEN=local-runtime-token \
-opencode run --model ai-orch/copilot-gpt-5-mini "Reply with exactly: opencode-ai-orch-copilot-ok"
+opencode run --agent governance-lead --model ai-orch/coding-gpt55 "Reply with exactly: opencode-ai-orch-copilot-ok"
 ```
 
 Acceptance criteria:
 
 - OpenCode response equals `opencode-ai-orch-copilot-ok`;
-- OpenCode session model is `ai-orch/copilot-gpt-5-mini`;
-- ai-orch audit records the Copilot backend;
+- OpenCode session model is `ai-orch/coding-gpt55`;
+- ai-orch audit records the selected backend, resolved provider, credential source and route decision;
 - Copilot usage is attributed to the logged-in GitHub user.
 
 #### Milestone 5: Responses API And Streaming
@@ -944,15 +1023,25 @@ Keep the Copilot POC branch focused on model access:
 
 Current ACP posture: OpenCode ACP is the direct runtime lane. It should not receive MCP servers through `session/new`; MCP remains a separate gateway route. ACP file writes and workspace diffs are recorded as patch evidence, while model calls remain gateway-enforced through ai-orch.
 
-Implemented local commands:
+Implemented commands. By default they enroll through the running Governance Shell's `/v1/copilot/*` endpoints, so the credential lands in the store the model gateway reads, keyed to the same actor subject sessions use. `--local` operates on the machine-local token database instead:
 
 ```sh
 ai-orch copilot login
 ai-orch copilot status
 ai-orch copilot models
-ai-orch copilot smoke --model gpt-5-mini --prompt "Reply exactly: copilot-smoke-ok"
+ai-orch copilot refresh
 ai-orch copilot logout
+ai-orch copilot smoke --local --model gpt-5-mini --prompt "Reply exactly: copilot-smoke-ok"
 ```
+
+Implementation status as of 2026-06-10:
+
+- The backend exchanges the stored GitHub OAuth token for the short-lived Copilot session bearer via `copilot_internal/v2/token`, caches it per actor, and re-exchanges before expiry. If the exchange endpoint rejects the call, the OAuth token is used directly.
+- Streaming uses a dedicated no-timeout HTTP client, so Copilot streams are no longer cut at the 45 second request timeout.
+- `/v1/responses` is supported by the copilot-user backend, covering the GPT-5-class Responses path in Milestone 5.
+- A missing or revoked enrollment returns 403 from the model gateway with the enrolling command in the error, instead of a blank 502.
+- The OAuth client ID is configurable via `AI_ORCH_COPILOT_CLIENT_ID`.
+- Copilot `copilot_usage.total_nano_aiu` is captured into gateway audit usage as `copilot_nano_aiu` when present.
 
 Required local storage setting:
 

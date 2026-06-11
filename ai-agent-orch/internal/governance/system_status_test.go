@@ -18,8 +18,7 @@ func TestSystemStatusHandlerReturnsGatewayOptions(t *testing.T) {
 		PolicyEngine:          "native",
 		Gateways: []GatewayOption{
 			{ID: "bifrost", Label: "Bifrost", Mode: "sidecar", Default: true},
-			{ID: "agentgateway", Label: "AgentGateway", Mode: "sidecar", ComposeFile: "docker-compose.agentgateway.yml"},
-			{ID: "native-openrouter", Label: "OpenRouter", Mode: "direct", ComposeFile: "docker-compose.openrouter.yml"},
+			{ID: "copilot-user", Label: "GitHub Copilot", Mode: "per-user", ComposeFile: "docker-compose.copilot.yml"},
 		},
 	})
 
@@ -46,10 +45,10 @@ func TestSystemStatusHandlerReturnsGatewayOptions(t *testing.T) {
 	if !body.RuntimeGatewayEnabled {
 		t.Fatal("expected runtime gateway to be enabled")
 	}
-	if len(body.Gateways) != 3 {
-		t.Fatalf("expected three gateway options, got %d", len(body.Gateways))
+	if len(body.Gateways) != 2 {
+		t.Fatalf("expected two gateway options, got %d", len(body.Gateways))
 	}
-	if body.Gateways[1].ID != "agentgateway" {
-		t.Fatalf("expected agentgateway option, got %#v", body.Gateways[1])
+	if body.Gateways[1].ID != "copilot-user" {
+		t.Fatalf("expected copilot option, got %#v", body.Gateways[1])
 	}
 }

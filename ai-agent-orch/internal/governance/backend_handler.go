@@ -82,10 +82,8 @@ func NewBackendHandler(cfg BackendHandlerConfig) http.Handler {
 
 func backendCommands() map[string]string {
 	return map[string]string{
-		"bifrost":           "docker compose -f docker-compose.yml up -d bifrost governance-shell orchestrator",
-		"native-openrouter": "docker compose -f docker-compose.yml -f docker-compose.openrouter.yml up -d governance-shell orchestrator",
-		"agentgateway":      "docker compose -f docker-compose.yml -f docker-compose.agentgateway.yml up -d agentgateway governance-shell orchestrator",
-		"copilot-user":      "docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d governance-shell orchestrator",
+		"bifrost":      "docker compose -f docker-compose.yml up -d bifrost governance-shell orchestrator",
+		"copilot-user": "docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d governance-shell orchestrator",
 	}
 }
 
@@ -103,18 +101,6 @@ func backendCommand(backend string, action string) (string, []string, error) {
 			return "docker", append(base, "up", "-d", "bifrost", "governance-shell", "orchestrator"), nil
 		}
 		return "docker", append(base, "stop", "bifrost"), nil
-	case "native-openrouter":
-		args := append(base, "-f", "docker-compose.openrouter.yml")
-		if action == "up" {
-			return "docker", append(args, "up", "-d", "governance-shell", "orchestrator"), nil
-		}
-		return "docker", append(args, "stop", "governance-shell", "orchestrator"), nil
-	case "agentgateway":
-		args := append(base, "-f", "docker-compose.agentgateway.yml")
-		if action == "up" {
-			return "docker", append(args, "up", "-d", "agentgateway", "governance-shell", "orchestrator"), nil
-		}
-		return "docker", append(args, "stop", "agentgateway"), nil
 	case "copilot-user":
 		args := append(base, "-f", "docker-compose.copilot.yml")
 		if action == "up" {

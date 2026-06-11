@@ -150,6 +150,110 @@ func TestRouterResolve(t *testing.T) {
 	}
 }
 
+func TestRouterSelectsFirstAvailableRouteForCapabilityAlias(t *testing.T) {
+	r := NewWithRouteAvailability(catalog.ModelRegistry{
+		Models: []catalog.ModelDefinition{
+			{
+				Alias:                  "coding-gpt55",
+				Provider:               "openrouter",
+				ModelID:                "openai/gpt-5.5",
+				AllowedClassifications: []string{"public", "internal"},
+				Routes: []catalog.ModelRoute{
+					{
+						Provider:           "copilot-user",
+						ModelID:            "gpt-5.5",
+						CredentialSource:   "copilot-user",
+						RequiresActorToken: true,
+						Reasoning: catalog.ReasoningMetadata{
+							DefaultEffort:  "low",
+							MaxEffort:      "medium",
+							SupportsEffort: boolPtr(false),
+						},
+					},
+					{
+						Provider:         "openrouter",
+						ModelID:          "openai/gpt-5.5",
+						CredentialSource: "platform-openrouter",
+						Reasoning: catalog.ReasoningMetadata{
+							DefaultEffort:  "medium",
+							MaxEffort:      "high",
+							SupportsEffort: boolPtr(true),
+						},
+					},
+				},
+			},
+		},
+	}, func(_ context.Context, route catalog.ModelRoute, req Request) bool {
+		return route.Provider != "copilot-user" || req.ActorSubject == "dev@example.test"
+	})
+
+	decision, err := r.Route(context.Background(), Request{
+		Classification: "internal",
+		PreferredAlias: "coding-gpt55",
+		ActorSubject:   "dev@example.test",
+	})
+	if err != nil {
+		t.Fatalf("route failed: %v", err)
+	}
+	if decision.Provider != "copilot-user" || decision.SelectedModelID != "gpt-5.5" {
+		t.Fatalf("expected copilot route, got %#v", decision)
+	}
+	if decision.CredentialSource != "copilot-user" {
+		t.Fatalf("expected copilot credential source, got %q", decision.CredentialSource)
+	}
+	if decision.ReasoningSupportsEffort {
+		t.Fatal("expected copilot route to report unsupported explicit reasoning effort")
+	}
+
+	decision, err = r.Route(context.Background(), Request{
+		Classification: "internal",
+		PreferredAlias: "coding-gpt55",
+		ActorSubject:   "no-token@example.test",
+	})
+	if err != nil {
+		t.Fatalf("route failed: %v", err)
+	}
+	if decision.Provider != "openrouter" || decision.SelectedModelID != "openai/gpt-5.5" {
+		t.Fatalf("expected openrouter fallback route, got %#v", decision)
+	}
+	if decision.CredentialSource != "platform-openrouter" {
+		t.Fatalf("expected platform credential source, got %q", decision.CredentialSource)
+	}
+	if !decision.ReasoningSupportsEffort || decision.ReasoningDefaultEffort != "medium" || decision.ReasoningMaxEffort != "high" {
+		t.Fatalf("unexpected reasoning metadata: %#v", decision)
+	}
+}
+
+func TestRouterProviderPinnedAliasDoesNotSwitchProvider(t *testing.T) {
+	r := NewWithRouteAvailability(catalog.ModelRegistry{
+		Models: []catalog.ModelDefinition{
+			{
+				Alias:                  "openrouter-openai-gpt55",
+				Provider:               "openrouter",
+				ModelID:                "openai/gpt-5.5",
+				AllowedClassifications: []string{"public", "internal"},
+				Routes: []catalog.ModelRoute{
+					{Provider: "openrouter", ModelID: "openai/gpt-5.5", CredentialSource: "platform-openrouter"},
+				},
+			},
+		},
+	}, func(context.Context, catalog.ModelRoute, Request) bool {
+		return false
+	})
+
+	decision, err := r.Route(context.Background(), Request{
+		Classification: "internal",
+		PreferredAlias: "openrouter-openai-gpt55",
+		ActorSubject:   "dev@example.test",
+	})
+	if err != nil {
+		t.Fatalf("route failed: %v", err)
+	}
+	if decision.Provider != "openrouter" || decision.SelectedModelID != "openai/gpt-5.5" {
+		t.Fatalf("provider-pinned alias switched unexpectedly: %#v", decision)
+	}
+}
+
 func TestRouterAliasesFiltered(t *testing.T) {
 	r := New(catalog.ModelRegistry{
 		Models: []catalog.ModelDefinition{
@@ -162,6 +266,10 @@ func TestRouterAliasesFiltered(t *testing.T) {
 	if len(aliases) != 1 || aliases[0].Alias != "internal-ok" {
 		t.Fatalf("expected 1 internal alias, got %v", aliases)
 	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func TestRouterEnrichmentPostures(t *testing.T) {

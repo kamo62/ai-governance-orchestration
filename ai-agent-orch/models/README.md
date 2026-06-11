@@ -41,14 +41,16 @@ models:
     fallback_alias: null
 ```
 
-The registry also contains smoke-test aliases such as `smoke-openai-gpt4o-mini`, `smoke-anthropic-haiku` for direct Anthropic Haiku validation, `smoke-deepseek-chat`, `smoke-deepseek-v4-flash`, and `coding-gpt55`. Treat those as local validation aliases, not default routing policy.
+The registry also contains smoke-test aliases such as `smoke-openai-gpt4o-mini`, `smoke-anthropic-haiku` for direct Anthropic Haiku validation, `smoke-deepseek-chat`, and `smoke-deepseek-v4-flash`. Capability aliases such as `coding-gpt55` can define ordered `routes`; the router chooses the first available route for the current actor, classification and policy context.
 
 ## Rules
 
 - **Only** `models/registry.yaml` may contain concrete provider model IDs.
 - All `agent.config.yaml` files must reference aliases only.
 - The catalog validator rejects any agent config containing `model_id:`.
-- Fallback chains allow graceful degradation when a provider or model is unavailable.
+- Fallback chains allow graceful degradation when an alias is rejected or unavailable.
+- Route candidates allow a stable alias to prefer actor-bound Copilot while retaining an approved Bifrost/OpenRouter fallback.
+- Reasoning metadata records default and maximum effort for routes that support explicit reasoning controls.
 
 ## Adding a New Alias
 
@@ -59,11 +61,11 @@ The registry also contains smoke-test aliases such as `smoke-openai-gpt4o-mini`,
 
 ## Provider Strategy
 
-**Phase 1 (Current):** The Governance Shell owns the model-backend decision. Compose defaults to Bifrost OSS as the proven provider-plumbing sidecar, with native OpenRouter kept as a fallback and direct provider-health smoke path. AgentGateway is available as an additional sidecar gateway for smoke testing before beta.
+**Phase 1 (Current):** The Governance Shell owns the model-backend decision. Compose defaults to Bifrost OSS as the proven provider-plumbing sidecar. Per-user Copilot is available as an explicit alternate for actor-bound entitlements.
 
 **Phase 1G.2:** The `ai-orch` model compatibility gateway exposes runtime-facing OpenAI-compatible endpoints such as `/v1/models`, `/v1/chat/completions`, `/v1/responses`, and streaming. Runtimes such as OpenCode should call governed aliases through that gateway instead of receiving provider API keys or calling Bifrost directly.
 
-**Phase 2+:** Additional Bifrost providers, AgentGateway routes, LiteLLM, direct cloud providers such as Azure OpenAI, or private gateways can be added behind the same alias system without changing agent definitions. Bifrost, AgentGateway, native OpenRouter and LiteLLM should remain backend adapters or compatibility references, not the authority for policy, audit, session identity, or patch decisions.
+**Phase 2+:** Additional Bifrost providers, LiteLLM, direct cloud providers such as Azure OpenAI, or private gateways can be added behind the same alias system without changing agent definitions. Bifrost, Copilot and LiteLLM should remain backend adapters or compatibility references, not the authority for policy, audit, session identity, or patch decisions.
 
 See [Governed Model Compatibility Gateway](../docs/model-compatibility-gateway.md) for the runtime-facing model API plan.
 
@@ -83,11 +85,9 @@ export OPENROUTER_APP_TITLE=ai-agent-orch-local
 # Select model backend
 export AI_ORCH_MODEL_BACKEND=bifrost
 export AI_ORCH_BIFROST_BASE_URL=http://bifrost:8080
-# Use this instead when smoke-testing agentgateway behind ai-orch.
-# export AI_ORCH_MODEL_BACKEND=agentgateway
-# export AI_ORCH_AGENTGATEWAY_BASE_URL=http://agentgateway:3000
-# export AI_ORCH_AGENTGATEWAY_READINESS_URL=http://agentgateway:15021/healthz/ready
+# Use AI_ORCH_MODEL_BACKEND=copilot-user only after per-user Copilot enrollment.
 
-# Enable reasoning effort for supported models
-export AI_ORCH_OPENROUTER_REASONING_EFFORT=high
+# Request reasoning effort through the runtime request or OpenCode agent config.
+# ai-orch normalizes reasoningEffort/reasoning_effort/reasoning.effort and
+# forwards Bifrost-compatible reasoning.effort when the selected route supports it.
 ```

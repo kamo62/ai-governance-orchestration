@@ -338,6 +338,41 @@ func TestConfirmHandlerConfirmsRoutedSession(t *testing.T) {
 	}
 }
 
+func TestConfirmHandlerRejectsAgentMismatch(t *testing.T) {
+	store, err := NewSQLiteSessionStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	defer store.Close()
+	if err := store.Create(context.Background(), SessionRecord{
+		SessionID:      "sess_routed_mismatch",
+		ActorSubject:   "local-dev",
+		Agent:          "router-agent",
+		RoutedAgent:    "unit-tests",
+		Classification: "internal",
+		PromptSHA256:   "abc123",
+		Status:         "awaiting_confirmation",
+		CreatedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+		Sessions: store,
+	})
+	handler := NewConfirmHandler(service, &fakeOrchestrator{})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_routed_mismatch/confirm", strings.NewReader(`{"agent":"code-review"}`))
+	req.Header.Set("Authorization", "Bearer local-test-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestConfirmHandlerWithEventsRequiresCachedPrompt(t *testing.T) {
 	service := NewSessionService(SessionConfig{
 		DevToken: "local-test-token",
@@ -754,7 +789,7 @@ func (f *fakeOrchestrator) AcceptSession(ctx context.Context, sessionID string, 
 	return nil
 }
 
-func (f *fakeOrchestrator) Dispatch(ctx context.Context, sessionID string, agent string, prompt string) (DispatchResult, error) {
+func (f *fakeOrchestrator) Dispatch(ctx context.Context, sessionID string, agent string, prompt string, runtimeToken string) (DispatchResult, error) {
 	if f.dispatchErr != nil {
 		return DispatchResult{}, f.dispatchErr
 	}
@@ -786,7 +821,7 @@ func (o *contextProbeOrchestrator) AcceptSession(ctx context.Context, sessionID 
 	return nil
 }
 
-func (o *contextProbeOrchestrator) Dispatch(ctx context.Context, sessionID string, agent string, prompt string) (DispatchResult, error) {
+func (o *contextProbeOrchestrator) Dispatch(ctx context.Context, sessionID string, agent string, prompt string, runtimeToken string) (DispatchResult, error) {
 	select {
 	case <-ctx.Done():
 		o.dispatched <- ctx.Err()

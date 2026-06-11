@@ -75,7 +75,7 @@ func (c *OrchestratorHTTPClient) AcceptSession(ctx context.Context, sessionID st
 	return nil
 }
 
-func (c *OrchestratorHTTPClient) Dispatch(ctx context.Context, sessionID string, agent string, prompt string) (DispatchResult, error) {
+func (c *OrchestratorHTTPClient) Dispatch(ctx context.Context, sessionID string, agent string, prompt string, runtimeToken string) (DispatchResult, error) {
 	body, _ := json.Marshal(map[string]any{"agent": agent, "prompt": prompt})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/orchestrator/dispatch", bytes.NewReader(body))
 	if err != nil {
@@ -83,6 +83,9 @@ func (c *OrchestratorHTTPClient) Dispatch(ctx context.Context, sessionID string,
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-AI-Orch-Session-ID", sessionID)
+	if runtimeToken != "" {
+		req.Header.Set("X-AI-Orch-Session-Token", runtimeToken)
+	}
 	c.setServiceAuth(req)
 
 	dispatchClient := c.dispatchClient

@@ -66,7 +66,7 @@ Governance Shell
   -> cost and usage records
 ```
 
-Bifrost is the default OSS provider-plumbing sidecar in the current Compose path. AgentGateway is an additional gateway candidate with its own Compose override. Native OpenRouter remains a direct gateway/fallback path and provider-health smoke path. LiteLLM can still be evaluated later as an optional backend adapter if compatibility work grows too large.
+Bifrost is the default OSS provider-plumbing sidecar in the current Compose path. LiteLLM or other gateways can still be evaluated later, but the current POC keeps shared provider routing consolidated in Bifrost.
 
 ## Minimal API Surface
 
@@ -155,6 +155,8 @@ Audit should record:
 - stream started;
 - selected alias;
 - selected provider model;
+- credential source;
+- requested and applied reasoning effort;
 - routing reasons;
 - request hash;
 - final response hash;
@@ -178,22 +180,39 @@ The OpenCode provider configuration should point at the local compatibility gate
         "baseURL": "http://127.0.0.1:18082/v1",
         "apiKey": "{env:AI_ORCH_RUNTIME_TOKEN}",
         "headers": {
-          "X-AI-Orch-Session-ID": "{env:AI_ORCH_SESSION_ID}"
+          "X-AI-Orch-Session-ID": "{env:AI_ORCH_SESSION_ID}",
+          "X-AI-Orch-Session-Token": "{env:AI_ORCH_SESSION_TOKEN}",
+          "X-AI-Orch-Actor-Subject": "{env:AI_ORCH_ACTOR_SUBJECT}",
+          "X-AI-Orch-Intent": "{env:AI_ORCH_INTENT}",
+          "X-AI-Orch-Client": "opencode",
+          "X-AI-Orch-Classification": "internal"
         }
       },
       "models": {
-        "coding-balanced": {
-          "name": "Governed Coding Balanced"
+        "coding-gpt55": {
+          "name": "Governed GPT-5.5 Capability Route"
         },
-        "coding-fast": {
-          "name": "Governed Coding Fast"
+        "openrouter-openai-gpt55": {
+          "name": "Governed OpenRouter OpenAI GPT-5.5"
         }
       }
     }
   },
   "enabled_providers": ["ai-orch"],
-  "model": "ai-orch/coding-balanced",
-  "small_model": "ai-orch/coding-fast"
+  "model": "ai-orch/coding-gpt55",
+  "small_model": "ai-orch/coding-fast",
+  "agent": {
+    "governance-lead": {
+      "mode": "primary",
+      "model": "ai-orch/coding-gpt55",
+      "reasoningEffort": "low",
+      "permission": {
+        "edit": "deny",
+        "bash": "deny",
+        "task": ["code-review", "unit-tests", "backend-development", "frontend-development", "security-review"]
+      }
+    }
+  }
 }
 ```
 
@@ -203,6 +222,8 @@ The runtime should receive:
 
 - `AI_ORCH_RUNTIME_TOKEN`;
 - `AI_ORCH_SESSION_ID`;
+- `AI_ORCH_SESSION_TOKEN`;
+- `AI_ORCH_ACTOR_SUBJECT`;
 - model aliases;
 - MCP gateway URL;
 - session ID;
@@ -228,13 +249,11 @@ That endpoint is not the same as `/v1/chat/completions`, so it belongs in the ro
 
 ## Relationship To Provider Gateways
 
-Bifrost is useful because it already handles a large part of the provider-compatibility problem as open-source plumbing. AgentGateway is another useful candidate because it also covers MCP gateway, A2A, auth, RBAC, rate limiting, guardrails and telemetry. Native OpenRouter remains useful as the direct baseline.
+Bifrost is useful because it already handles a large part of the provider-compatibility problem as open-source plumbing. Direct one-off provider backends were removed so the POC keeps shared provider plumbing behind one sidecar abstraction.
 
 Possible roles:
 
 - default local Compose backend for OpenAI-compatible provider calls through Bifrost;
-- optional AgentGateway backend for LLM/MCP/security plumbing behind ai-orch;
-- direct native OpenRouter backend for baseline provider smoke and fallback checks;
 - provider translation for OpenRouter, Anthropic, Bedrock, OpenAI, Vertex, Azure, Ollama/vLLM-style providers;
 - streaming and retry plumbing behind the Governance Shell;
 - replaceable backend adapter if another provider gateway fits better later.
@@ -242,9 +261,9 @@ Possible roles:
 Non-goal:
 
 - replace the Governance Shell;
-- let Bifrost, AgentGateway, OpenRouter or another gateway own policy, audit, session identity, patch buffering, evidence, or model-routing decisions;
-- use Bifrost or AgentGateway governance/UI features as the ai-orch control plane in this phase;
-- route runtimes directly to Bifrost, AgentGateway, OpenRouter or a provider without the Governance Shell.
+- let Bifrost, OpenRouter or another gateway own policy, audit, session identity, patch buffering, evidence, or model-routing decisions;
+- use Bifrost governance/UI features as the ai-orch control plane in this phase;
+- route runtimes directly to Bifrost, OpenRouter or a provider without the Governance Shell.
 
 The correct relationship is:
 
@@ -252,11 +271,11 @@ The correct relationship is:
 Runtime
   -> ai-orch Model Compatibility Gateway
   -> Governance Shell
-  -> Bifrost, AgentGateway or native OpenRouter
+  -> Bifrost or per-user Copilot
   -> approved provider
 ```
 
-AgentGateway should be tested before beta as provider and MCP plumbing, not as a Governance Shell replacement. Bifrost, AgentGateway and native OpenRouter should stay selectable until the gateway evidence is strong enough to choose defaults by environment rather than preference.
+Bifrost remains the default OpenRouter/provider route for this POC.
 
 ## Relationship To LiteLLM
 
@@ -280,7 +299,7 @@ The correct relationship is:
 Runtime
   -> ai-orch Model Compatibility Gateway
   -> Governance Shell
-  -> optional Bifrost, AgentGateway, LiteLLM or native OpenRouter backend
+  -> optional Bifrost, LiteLLM or per-user Copilot backend
 ```
 
 ## Security Contract
@@ -342,7 +361,7 @@ This gives reporting and maturity exports a clean record without making the audi
 
 Deliverables:
 
-- define selectable model backends: `native-openrouter`, `bifrost` and `agentgateway`;
+- define selectable model backends: `bifrost` and `copilot-user`;
 - define provider-sidecar health and fail-closed startup behaviour for selected backends;
 - define runtime-token authentication for model calls;
 - define OpenAI-compatible response shapes for `/v1/models`, `/v1/chat/completions` and `/v1/responses`;
@@ -391,7 +410,7 @@ Deliverables:
 - verify OpenCode `v1.16.2` fixture payloads against the gateway contract;
 - prove `OpenCode -> ai-orch -> Bifrost -> Bedrock` with tool-call payloads;
 - prove `OpenCode -> ai-orch -> Bifrost or Foundry adapter -> Azure AI Foundry` with tool-call payloads;
-- keep direct Anthropic, Bedrock and Foundry SDK translation behind Bifrost, AgentGateway or a dedicated backend adapter;
+- keep direct Anthropic, Bedrock and Foundry SDK translation behind Bifrost or a dedicated backend adapter;
 - do not expose Bifrost, Bedrock, Foundry or provider credentials directly to OpenCode.
 
 ### Phase 1M Dependency: OpenCode Managed-Provider E2E

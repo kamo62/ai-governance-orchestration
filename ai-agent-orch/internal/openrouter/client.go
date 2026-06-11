@@ -166,7 +166,7 @@ func (c *Client) ChatCompletion(ctx context.Context, request ChatCompletionReque
 		return ChatCompletionResponse{}, errors.New("OPENROUTER_API_KEY is required")
 	}
 	if request.Provider != "" && request.Provider != "openrouter" {
-		return ChatCompletionResponse{}, fmt.Errorf("native OpenRouter client cannot route provider %q; use a provider-aware backend", request.Provider)
+		return ChatCompletionResponse{}, fmt.Errorf("OpenRouter client cannot route provider %q; use Bifrost or another provider-aware gateway", request.Provider)
 	}
 	if request.Model == "" {
 		return ChatCompletionResponse{}, errors.New("model is required")
@@ -253,7 +253,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, request ChatCompletio
 		return nil, errors.New("OPENROUTER_API_KEY is required")
 	}
 	if request.Provider != "" && request.Provider != "openrouter" {
-		return nil, fmt.Errorf("native OpenRouter client cannot route provider %q; use a provider-aware backend", request.Provider)
+		return nil, fmt.Errorf("OpenRouter client cannot route provider %q; use Bifrost or another provider-aware gateway", request.Provider)
 	}
 	if request.Model == "" {
 		return nil, errors.New("model is required")

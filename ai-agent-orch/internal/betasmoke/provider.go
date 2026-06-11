@@ -17,6 +17,7 @@ func RunProviderSmoke(ctx context.Context, cfg Config) error {
 	client := httpClient{
 		devToken:     cfg.DevToken,
 		runtimeToken: cfg.RuntimeToken,
+		actorSubject: cfg.ActorSubject,
 		timeout:      cfg.HTTPTimeout,
 	}
 
@@ -54,8 +55,9 @@ Do not include passwords, tokens, API keys, credentials, private URLs, or extern
 		return err
 	}
 	var runResp struct {
-		SessionID  string `json:"session_id"`
-		Specialist string `json:"specialist"`
+		SessionID    string `json:"session_id"`
+		Specialist   string `json:"specialist"`
+		GatewayToken string `json:"gateway_token"`
 	}
 	if err := json.Unmarshal(raw, &runResp); err != nil {
 		return fmt.Errorf("decode run response: %w", err)

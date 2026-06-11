@@ -18,6 +18,7 @@ func RunGatewaySmoke(ctx context.Context, cfg Config) error {
 	client := httpClient{
 		devToken:     cfg.DevToken,
 		runtimeToken: cfg.RuntimeToken,
+		actorSubject: cfg.ActorSubject,
 		timeout:      cfg.HTTPTimeout,
 	}
 
@@ -54,8 +55,9 @@ func RunGatewaySmoke(ctx context.Context, cfg Config) error {
 		return err
 	}
 	var runResp struct {
-		SessionID  string `json:"session_id"`
-		Specialist string `json:"specialist"`
+		SessionID    string `json:"session_id"`
+		Specialist   string `json:"specialist"`
+		GatewayToken string `json:"gateway_token"`
 	}
 	if err := json.Unmarshal(raw, &runResp); err != nil {
 		return fmt.Errorf("decode run response: %w", err)
@@ -65,21 +67,12 @@ func RunGatewaySmoke(ctx context.Context, cfg Config) error {
 	}
 	fmt.Printf("   session=%s specialist=%s\n", runResp.SessionID, runResp.Specialist)
 
-	fmt.Println("\n3. Confirming specialist...")
-	confirmBody, _ := json.Marshal(map[string]any{"agent": runResp.Specialist})
-	confirmURL := fmt.Sprintf("%s/v1/sessions/%s/confirm", strings.TrimRight(cfg.GovernanceURL, "/"), runResp.SessionID)
-	status, raw, err = client.do(ctx, http.MethodPost, confirmURL, cfg.DevToken, confirmBody)
-	if err != nil {
-		return fmt.Errorf("confirm: %w", err)
-	}
-	if err := client.requireOK(status, raw, "confirm"); err != nil {
-		return err
-	}
-	fmt.Println("   OK")
-
+	// Gateway model calls run before the specialist is confirmed: confirmation
+	// triggers async execution that completes the session, and the gateway
+	// rejects model calls on finished sessions.
 	gatewayBase := strings.TrimRight(cfg.GatewayURL, "/")
 
-	fmt.Println("\n4. Listing gateway models...")
+	fmt.Println("\n3. Listing gateway models...")
 	modelsURL := gatewayBase + "/v1/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
@@ -87,6 +80,9 @@ func RunGatewaySmoke(ctx context.Context, cfg Config) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.RuntimeToken)
 	req.Header.Set("X-AI-Orch-Session-ID", runResp.SessionID)
+	if runResp.GatewayToken != "" {
+		req.Header.Set("X-AI-Orch-Session-Token", runResp.GatewayToken)
+	}
 	httpClient := &http.Client{Timeout: cfg.HTTPTimeout}
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -110,14 +106,14 @@ func RunGatewaySmoke(ctx context.Context, cfg Config) error {
 	}
 	fmt.Printf("   %d model aliases exposed\n", len(modelsResp.Data))
 
-	fmt.Println("\n5. Gateway chat completion...")
+	fmt.Println("\n4. Gateway chat completion...")
 	chatBody, _ := json.Marshal(map[string]any{
 		"model": cfg.ModelAlias,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
 		"temperature": 0,
-		"max_tokens":  32,
+		"max_tokens":  cfg.MaxTokens,
 	})
 	chatReq, err := http.NewRequestWithContext(ctx, http.MethodPost, gatewayBase+"/v1/chat/completions", bytes.NewReader(chatBody))
 	if err != nil {
@@ -126,6 +122,9 @@ func RunGatewaySmoke(ctx context.Context, cfg Config) error {
 	chatReq.Header.Set("Content-Type", "application/json")
 	chatReq.Header.Set("Authorization", "Bearer "+cfg.RuntimeToken)
 	chatReq.Header.Set("X-AI-Orch-Session-ID", runResp.SessionID)
+	if runResp.GatewayToken != "" {
+		chatReq.Header.Set("X-AI-Orch-Session-Token", runResp.GatewayToken)
+	}
 	chatResp, err := httpClient.Do(chatReq)
 	if err != nil {
 		return fmt.Errorf("chat completion: %w", err)
@@ -144,7 +143,7 @@ func RunGatewaySmoke(ctx context.Context, cfg Config) error {
 	}
 	fmt.Printf("   model response: %s\n", content)
 
-	fmt.Println("\n6. Gateway tool-call transcript compatibility...")
+	fmt.Println("\n5. Gateway tool-call transcript compatibility...")
 	toolBody, _ := json.Marshal(map[string]any{
 		"model": cfg.ModelAlias,
 		"messages": []map[string]any{
@@ -180,7 +179,7 @@ func RunGatewaySmoke(ctx context.Context, cfg Config) error {
 		},
 		"tool_choice": "auto",
 		"temperature": 0,
-		"max_tokens":  32,
+		"max_tokens":  cfg.MaxTokens,
 	})
 	toolReq, err := http.NewRequestWithContext(ctx, http.MethodPost, gatewayBase+"/v1/chat/completions", bytes.NewReader(toolBody))
 	if err != nil {
@@ -189,6 +188,9 @@ func RunGatewaySmoke(ctx context.Context, cfg Config) error {
 	toolReq.Header.Set("Content-Type", "application/json")
 	toolReq.Header.Set("Authorization", "Bearer "+cfg.RuntimeToken)
 	toolReq.Header.Set("X-AI-Orch-Session-ID", runResp.SessionID)
+	if runResp.GatewayToken != "" {
+		toolReq.Header.Set("X-AI-Orch-Session-Token", runResp.GatewayToken)
+	}
 	toolResp, err := httpClient.Do(toolReq)
 	if err != nil {
 		return fmt.Errorf("tool-call transcript completion: %w", err)
@@ -202,6 +204,18 @@ func RunGatewaySmoke(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("tool-call transcript completion returned empty body")
 	}
 	fmt.Println("   tool-call transcript accepted")
+
+	fmt.Println("\n6. Confirming specialist...")
+	confirmBody, _ := json.Marshal(map[string]any{"agent": runResp.Specialist})
+	confirmURL := fmt.Sprintf("%s/v1/sessions/%s/confirm", strings.TrimRight(cfg.GovernanceURL, "/"), runResp.SessionID)
+	status, raw, err = client.do(ctx, http.MethodPost, confirmURL, cfg.DevToken, confirmBody)
+	if err != nil {
+		return fmt.Errorf("confirm: %w", err)
+	}
+	if err := client.requireOK(status, raw, "confirm"); err != nil {
+		return err
+	}
+	fmt.Println("   OK")
 
 	fmt.Println("\n7. Audit lookup for gateway events...")
 	auditURL := fmt.Sprintf("%s/v1/audit/sessions/%s", strings.TrimRight(cfg.GovernanceURL, "/"), runResp.SessionID)

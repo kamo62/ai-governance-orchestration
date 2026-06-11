@@ -14,7 +14,7 @@ import (
 type OrchestratorClient interface {
 	Route(ctx context.Context, sessionID string, prompt string, context SessionContext) (RouteDecision, error)
 	AcceptSession(ctx context.Context, sessionID string, agent string) error
-	Dispatch(ctx context.Context, sessionID string, agent string, prompt string) (DispatchResult, error)
+	Dispatch(ctx context.Context, sessionID string, agent string, prompt string, runtimeToken string) (DispatchResult, error)
 }
 
 // RouteDecision is the response from the Orchestrator router.
@@ -148,6 +148,10 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Transition session to awaiting_confirmation after successful routing.
 	if h.service.sessions != nil {
+		if err := h.service.setRoutedAgent(r.Context(), sessionID, decision.Specialist); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "routed agent update failed"})
+			return
+		}
 		if err := h.service.sessions.UpdateStatus(r.Context(), sessionID, "awaiting_confirmation"); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "session status update failed"})
 			return

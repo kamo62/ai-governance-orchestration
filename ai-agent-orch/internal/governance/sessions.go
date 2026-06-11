@@ -205,6 +205,19 @@ func (s *SessionService) setSessionStatus(ctx context.Context, sessionID string,
 	_ = s.sessions.UpdateStatus(ctx, sessionID, status)
 }
 
+func (s *SessionService) setRoutedAgent(ctx context.Context, sessionID string, agent string) error {
+	if s == nil || s.sessions == nil || sessionID == "" || agent == "" {
+		return nil
+	}
+	setter, ok := s.sessions.(interface {
+		SetRoutedAgent(context.Context, string, string) error
+	})
+	if !ok {
+		return nil
+	}
+	return setter.SetRoutedAgent(ctx, sessionID, agent)
+}
+
 // SessionExists verifies that a session id is known to the Governance Shell.
 func (s *SessionService) SessionExists(ctx context.Context, sessionID string) bool {
 	if s == nil || sessionID == "" {
@@ -225,6 +238,189 @@ func (s *SessionService) SessionRecord(ctx context.Context, sessionID string) (S
 		return SessionRecord{}, errors.New("session not found")
 	}
 	return s.sessions.Get(ctx, sessionID)
+}
+
+type AutoGatewaySessionRequest struct {
+	ActorSubject       string
+	Classification     string
+	PromptSHA256       string
+	ModelAlias         string
+	Client             string
+	Endpoint           string
+	RawRequestBody     []byte
+	TrustedClientToken string
+	UseCaseID          string
+	WorkflowID         string
+	WorkItemID         string
+	WorkItemType       string
+	RepoURL            string
+	Branch             string
+	CommitSHA          string
+	Intent             string
+	ActorHint          string
+	SourceSystem       string
+	EstimatedCostUSD   float64
+}
+
+type AutoGatewaySessionResult struct {
+	Record       SessionRecord
+	GatewayToken string
+}
+
+func (s *SessionService) CreateAutoGatewaySession(ctx context.Context, req AutoGatewaySessionRequest) (AutoGatewaySessionResult, error) {
+	if s == nil || s.sessions == nil || s.audit == nil {
+		return AutoGatewaySessionResult{}, errors.New("auto sessions unavailable")
+	}
+	actorSubject := strings.TrimSpace(req.ActorSubject)
+	if actorSubject == "" || !validActorLabel(actorSubject) {
+		return AutoGatewaySessionResult{}, errors.New("valid actor subject is required")
+	}
+	classification := strings.TrimSpace(req.Classification)
+	if classification == "" {
+		classification = "internal"
+	}
+	request := CreateSessionRequest{
+		Agent:            "model-gateway",
+		Classification:   classification,
+		Prompt:           string(req.RawRequestBody),
+		EstimatedCostUSD: req.EstimatedCostUSD,
+		PermissionMode:   "reviewed",
+		ApprovalMode:     "self_reported",
+		WorkspaceMode:    "client-local",
+		UseCaseID:        strings.TrimSpace(req.UseCaseID),
+		WorkflowID:       strings.TrimSpace(req.WorkflowID),
+		WorkItemID:       strings.TrimSpace(req.WorkItemID),
+		WorkItemType:     strings.TrimSpace(req.WorkItemType),
+		RepoURL:          strings.TrimSpace(req.RepoURL),
+		Branch:           strings.TrimSpace(req.Branch),
+		CommitSHA:        strings.TrimSpace(req.CommitSHA),
+		Intent:           strings.TrimSpace(req.Intent),
+		ActorHint:        strings.TrimSpace(req.ActorHint),
+		SourceSystem:     defaultString(strings.TrimSpace(req.SourceSystem), defaultString(strings.TrimSpace(req.Client), "model-gateway")),
+	}
+	request.normalizeRuntimeModes()
+	if strings.TrimSpace(request.Prompt) == "" {
+		request.Prompt = strings.TrimSpace(req.PromptSHA256)
+	}
+	if blocked, reason := s.blockedByKillSwitch(""); blocked {
+		_ = s.appendDenied(WithAuthInfo(ctx, AuthInfo{Subject: actorSubject, Method: "self_reported"}), reason, nil, classification)
+		return AutoGatewaySessionResult{}, errors.New(reason)
+	}
+	if err := s.enforceWorkItemContext(&request); err != nil {
+		_ = s.appendDenied(WithAuthInfo(ctx, AuthInfo{Subject: actorSubject, Method: "self_reported"}), err.Error(), nil, classification)
+		return AutoGatewaySessionResult{}, err
+	}
+	if blocked, reason := s.blockedByKillSwitch(request.Agent); blocked {
+		_ = s.appendDenied(WithAuthInfo(ctx, AuthInfo{Subject: actorSubject, Method: "self_reported"}), reason, nil, classification)
+		return AutoGatewaySessionResult{}, errors.New(reason)
+	}
+	if blocked, reason := s.blockedByClientKillSwitch(strings.TrimSpace(req.Client)); blocked {
+		_ = s.appendDenied(WithAuthInfo(ctx, AuthInfo{Subject: actorSubject, Method: "self_reported"}), reason, nil, classification)
+		return AutoGatewaySessionResult{}, errors.New(reason)
+	}
+	policyCtx := WithAuthInfo(ctx, AuthInfo{Subject: actorSubject, Method: "self_reported"})
+	decision, err := s.evaluatePolicy(policyCtx, policyengine.Request{
+		AgentName:         request.Agent,
+		ActionType:        "session.auto_create",
+		Classification:    request.Classification,
+		ClassificationMax: s.classificationMax,
+		Metadata: map[string]any{
+			"prompt_length": len(request.Prompt),
+			"prompt":        request.Prompt,
+			"model_alias":   strings.TrimSpace(req.ModelAlias),
+			"client":        strings.TrimSpace(req.Client),
+			"endpoint":      strings.TrimSpace(req.Endpoint),
+		},
+		CostCapEnabled:    s.costCapEnabled,
+		SessionCostCapUSD: s.sessionCostCapUSD,
+		EstimatedCostUSD:  request.EstimatedCostUSD,
+	})
+	if err != nil {
+		_ = s.appendDenied(policyCtx, "policy engine unavailable", nil, classification)
+		return AutoGatewaySessionResult{}, errors.New("policy engine unavailable")
+	}
+	if !decision.Allowed {
+		reason := decision.Reason
+		if reason == "" {
+			reason = "policy denied"
+		}
+		if reason == "cost cap exceeded" {
+			_ = s.appendDeniedWithCost(policyCtx, reason, classification, request.EstimatedCostUSD, s.sessionCostCapUSD)
+			s.recordCostCapped()
+		} else {
+			_ = s.appendDenied(policyCtx, reason, decision.Findings, classification)
+			s.recordPolicyDenial(reason)
+		}
+		return AutoGatewaySessionResult{}, errors.New(reason)
+	}
+	promptHash := strings.TrimSpace(req.PromptSHA256)
+	modelAlias := strings.TrimSpace(req.ModelAlias)
+	endpoint := strings.TrimSpace(req.Endpoint)
+	sessionID := s.newID("sess_auto")
+	eventID := s.newID("evt")
+	now := time.Now().UTC()
+	trust := s.trustMetadataFromClient(strings.TrimSpace(req.Client), strings.TrimSpace(req.TrustedClientToken))
+	gatewayToken := s.newID("sgt")
+	tokenHash := sha256.Sum256([]byte(gatewayToken))
+	event, err := s.audit.Append(ctx, audit.Event{
+		EventID:            eventID,
+		SessionID:          sessionID,
+		EventType:          "session.auto_created",
+		Actor:              actorSubject,
+		Agent:              request.Agent,
+		Classification:     classification,
+		PermissionMode:     request.PermissionMode,
+		ApprovalMode:       request.ApprovalMode,
+		WorkspaceMode:      request.WorkspaceMode,
+		WorkItemID:         request.WorkItemID,
+		WorkItemType:       request.WorkItemType,
+		CommitSHA:          request.CommitSHA,
+		ActorHint:          request.ActorHint,
+		SourceSystem:       request.SourceSystem,
+		PromptSHA256:       promptHash,
+		ModelAlias:         modelAlias,
+		Reason:             "auto session for model gateway " + endpoint,
+		EstimatedCostUSD:   request.EstimatedCostUSD,
+		CostCapUSD:         activeCostCap(s.costCapEnabled, s.sessionCostCapUSD),
+		RawPromptStored:    false,
+		RawResponseStored:  false,
+		CorrelationSubject: "model-gateway",
+		TrustLevel:         trust.TrustLevel,
+		EnforcementMode:    trust.EnforcementMode,
+		RecordedAt:         now,
+	})
+	if err != nil {
+		return AutoGatewaySessionResult{}, err
+	}
+	rec := SessionRecord{
+		SessionID:          sessionID,
+		GatewayTokenSHA256: hex.EncodeToString(tokenHash[:]),
+		ActorSubject:       actorSubject,
+		Agent:              request.Agent,
+		Classification:     classification,
+		PromptSHA256:       promptHash,
+		Status:             "running",
+		CreatedAt:          now,
+		PermissionMode:     request.PermissionMode,
+		ApprovalMode:       request.ApprovalMode,
+		WorkspaceMode:      request.WorkspaceMode,
+		UseCaseID:          request.UseCaseID,
+		WorkflowID:         request.WorkflowID,
+		WorkItemID:         request.WorkItemID,
+		WorkItemType:       request.WorkItemType,
+		RepoURL:            request.RepoURL,
+		Branch:             request.Branch,
+		CommitSHA:          request.CommitSHA,
+		Intent:             request.Intent,
+		ActorHint:          request.ActorHint,
+		SourceSystem:       request.SourceSystem,
+	}
+	if err := s.sessions.Create(ctx, rec); err != nil {
+		return AutoGatewaySessionResult{}, err
+	}
+	s.rememberEventID(sessionID, event.EventID)
+	s.recordSessionCreated()
+	return AutoGatewaySessionResult{Record: rec, GatewayToken: gatewayToken}, nil
 }
 
 type CreateSessionRequest struct {
@@ -270,6 +466,10 @@ type CreateSessionResponse struct {
 	PermissionMode string `json:"permission_mode,omitempty"`
 	ApprovalMode   string `json:"approval_mode,omitempty"`
 	AuditEventID   string `json:"audit_event_id"`
+	// GatewayToken is the per-session secret runtimes must send as
+	// X-AI-Orch-Session-Token on model gateway calls. It is returned once at
+	// creation; only its hash is stored.
+	GatewayToken string `json:"gateway_token,omitempty"`
 }
 
 type SessionSummary struct {
@@ -277,6 +477,7 @@ type SessionSummary struct {
 	RunID               string              `json:"run_id,omitempty"`
 	ActorSubject        string              `json:"actor_subject"`
 	Agent               string              `json:"agent"`
+	RoutedAgent         string              `json:"routed_agent,omitempty"`
 	Classification      string              `json:"classification"`
 	Status              string              `json:"status"`
 	CreatedAt           time.Time           `json:"created_at"`
@@ -304,6 +505,16 @@ type SessionSummary struct {
 	VerificationCostUSD float64             `json:"verification_cost_usd,omitempty"`
 	RetryCount          int                 `json:"retry_count,omitempty"`
 	UsageSummary        SessionUsageSummary `json:"usage_summary"`
+	LatestEventType     string              `json:"latest_event_type,omitempty"`
+	LatestEventAt       time.Time           `json:"latest_event_at,omitempty"`
+	Transport           string              `json:"transport,omitempty"`
+	TrustLevel          string              `json:"trust_level,omitempty"`
+	EnforcementMode     string              `json:"enforcement_mode,omitempty"`
+	PatchState          string              `json:"patch_state,omitempty"`
+	PatchCount          int                 `json:"patch_count,omitempty"`
+	ToolCallCount       int                 `json:"tool_call_count,omitempty"`
+	PolicyDecision      string              `json:"policy_decision,omitempty"`
+	PolicyReason        string              `json:"policy_reason,omitempty"`
 }
 
 type ListSessionsResponse struct {
@@ -410,10 +621,63 @@ func (s *SessionService) listSessions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			summary.UsageSummary = SummarizeSessionUsageWithPricing(authReq.Context(), events, s.modelPricing)
+			applyLedgerFields(&summary, events)
 		}
 		summaries = append(summaries, summary)
 	}
 	writeJSON(w, http.StatusOK, ListSessionsResponse{Sessions: summaries})
+}
+
+func applyLedgerFields(summary *SessionSummary, events []audit.Event) {
+	if summary == nil || len(events) == 0 {
+		return
+	}
+	for _, event := range events {
+		if event.RecordedAt.After(summary.LatestEventAt) {
+			summary.LatestEventAt = event.RecordedAt
+			summary.LatestEventType = event.EventType
+		}
+		if event.TrustLevel != "" {
+			summary.TrustLevel = event.TrustLevel
+		}
+		if event.EnforcementMode != "" {
+			summary.EnforcementMode = event.EnforcementMode
+		}
+		if event.Runtime != "" {
+			summary.Transport = event.Runtime
+		}
+		if event.GatewayBackend != "" {
+			summary.Transport = "model-gateway/" + event.GatewayBackend
+		}
+		if event.PolicyDecisionID != "" {
+			summary.PolicyDecision = event.PolicyDecisionID
+		}
+		if event.Reason != "" && (strings.Contains(event.EventType, "denied") || event.EventType == "session.created" || event.EventType == "session.auto_created") {
+			summary.PolicyReason = event.Reason
+		}
+		if event.PatchID != "" || event.PatchCount > 0 {
+			if event.PatchCount > summary.PatchCount {
+				summary.PatchCount = event.PatchCount
+			}
+			if event.PatchID != "" {
+				summary.PatchCount++
+			}
+		}
+		if event.PatchDecision != "" {
+			summary.PatchState = event.PatchDecision
+		} else if event.PatchID != "" && summary.PatchState == "" {
+			summary.PatchState = "proposed"
+		}
+		if event.ToolCallCount > 0 {
+			summary.ToolCallCount += event.ToolCallCount
+		}
+		if event.EventType == "mcp.proxy_call" && event.Reason == "forwarded" {
+			summary.ToolCallCount++
+		}
+	}
+	if summary.Transport == "" {
+		summary.Transport = summary.SourceSystem
+	}
 }
 
 func parseSessionListLimit(value string) int {
@@ -436,6 +700,7 @@ func sessionSummaryFromRecord(record SessionRecord) SessionSummary {
 		RunID:               record.RunID,
 		ActorSubject:        record.ActorSubject,
 		Agent:               record.Agent,
+		RoutedAgent:         record.RoutedAgent,
 		Classification:      record.Classification,
 		Status:              record.Status,
 		CreatedAt:           record.CreatedAt,
@@ -551,14 +816,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
-		switch reason {
-		case "secret detected":
-			s.recordSecretBlocked()
-		default:
-			if strings.HasPrefix(reason, "classification ") {
-				s.recordClassificationBlocked()
-			}
-		}
+		s.recordPolicyDenial(reason)
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": reason})
 		return
 	}
@@ -600,11 +858,23 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-session gateway secret: returned once to the caller, stored hashed.
+	// Runtimes present it as X-AI-Orch-Session-Token so a leaked session ID
+	// plus the shared runtime token is not enough to bill another actor.
+	gatewayToken := ""
+	gatewayTokenHash := ""
+	if s.sessions != nil {
+		gatewayToken = s.newID("sgt")
+		sum := sha256.Sum256([]byte(gatewayToken))
+		gatewayTokenHash = hex.EncodeToString(sum[:])
+	}
+
 	// Persist only after the authoritative audit event is durable.
 	if s.sessions != nil {
 		if err := s.sessions.Create(r.Context(), SessionRecord{
 			SessionID:           sessionID,
 			RunID:               request.RunID,
+			GatewayTokenSHA256:  gatewayTokenHash,
 			ActorSubject:        actor,
 			Agent:               request.Agent,
 			Classification:      request.Classification,
@@ -651,6 +921,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		PermissionMode: request.PermissionMode,
 		ApprovalMode:   request.ApprovalMode,
 		AuditEventID:   event.EventID,
+		GatewayToken:   gatewayToken,
 	})
 }
 
@@ -693,11 +964,11 @@ func (s *SessionService) enforceWorkItemContext(request *CreateSessionRequest) e
 	}
 	workItemID := strings.TrimSpace(request.WorkItemID)
 	if workItemID == "" {
-		return errors.New("work item ID is required; switch to a feature branch like feature/OMENG-300-governance-fixes or pass work_item_id")
+		return errors.New("work item ID is required; switch to a feature branch named after the work item (for example feature/<WORK-ITEM-ID>-short-description) or pass work_item_id")
 	}
 	branch := strings.TrimSpace(request.Branch)
 	if branch == "" {
-		return errors.New("feature branch is required before starting governed work; switch to feature/OMENG-300-governance-fixes")
+		return fmt.Errorf("feature branch is required before starting governed work; switch to a branch containing %s", workItemID)
 	}
 	switch strings.ToLower(branch) {
 	case "main", "master", "trunk", "develop", "development":
@@ -707,6 +978,47 @@ func (s *SessionService) enforceWorkItemContext(request *CreateSessionRequest) e
 		return fmt.Errorf("branch %q must contain work item ID %q", branch, workItemID)
 	}
 	return nil
+}
+
+// mintRuntimeGatewayToken creates the dispatch-time gateway secret for
+// server-side runtimes and persists its hash on the session record. Returns
+// the raw token, or empty when the session store cannot record the hash, in
+// which case the runtime falls back to legacy shared-token behavior.
+func (s *SessionService) mintRuntimeGatewayToken(ctx context.Context, sessionID string) string {
+	if s == nil || s.sessions == nil {
+		return ""
+	}
+	setter, ok := s.sessions.(interface {
+		SetRuntimeGatewayTokenHash(context.Context, string, string) error
+	})
+	if !ok {
+		return ""
+	}
+	token := s.newID("srt")
+	sum := sha256.Sum256([]byte(token))
+	if err := setter.SetRuntimeGatewayTokenHash(ctx, sessionID, hex.EncodeToString(sum[:])); err != nil {
+		return ""
+	}
+	return token
+}
+
+// AdminOperatorSubject is the synthetic actor for admin-token requests. It
+// grants org-wide read access on actor-scoped surfaces.
+const AdminOperatorSubject = "admin-operator"
+
+// AdminBearerSubject reports whether the Authorization header carries the
+// configured admin token.
+func (s *SessionService) AdminBearerSubject(header string) (string, bool) {
+	if s == nil || s.adminToken == "" {
+		return "", false
+	}
+	if !strings.HasPrefix(header, "Bearer ") {
+		return "", false
+	}
+	if subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(header, "Bearer ")), []byte(s.adminToken)) != 1 {
+		return "", false
+	}
+	return AdminOperatorSubject, true
 }
 
 // actorFromContext extracts the authenticated subject from the context, falling back to "local-dev".
@@ -735,13 +1047,17 @@ func (s *SessionService) trustMetadataFromRequest(r *http.Request) requestTrustM
 	if r == nil {
 		return selfReported
 	}
+	return s.trustMetadataFromClient(r.Header.Get("X-AI-Orch-Client"), r.Header.Get("X-AI-Orch-Trusted-Client-Token"))
+}
+
+func (s *SessionService) trustMetadataFromClient(client string, presentedToken string) requestTrustMetadata {
+	selfReported := requestTrustMetadata{TrustLevel: "self_reported", EnforcementMode: "advisory"}
 	if s != nil && s.trustedClientToken != "" {
-		presented := r.Header.Get("X-AI-Orch-Trusted-Client-Token")
-		if subtle.ConstantTimeCompare([]byte(presented), []byte(s.trustedClientToken)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(presentedToken)), []byte(s.trustedClientToken)) != 1 {
 			return selfReported
 		}
 	}
-	client := strings.ToLower(strings.TrimSpace(r.Header.Get("X-AI-Orch-Client")))
+	client = strings.ToLower(strings.TrimSpace(client))
 	switch client {
 	case "ai-orch-mcp":
 		return requestTrustMetadata{TrustLevel: "gateway_enforced", EnforcementMode: "gateway"}
@@ -750,6 +1066,20 @@ func (s *SessionService) trustMetadataFromRequest(r *http.Request) requestTrustM
 	}
 	// Unknown clients may report evidence, but they cannot upgrade its strength.
 	return selfReported
+}
+
+func (s *SessionService) recordPolicyDenial(reason string) {
+	if s == nil {
+		return
+	}
+	switch reason {
+	case "secret detected":
+		s.recordSecretBlocked()
+	default:
+		if strings.HasPrefix(reason, "classification ") || strings.HasPrefix(reason, "unknown classification") {
+			s.recordClassificationBlocked()
+		}
+	}
 }
 
 func (s *SessionService) appendDeniedWithCost(ctx context.Context, reason string, classification string, estimatedCostUSD float64, costCapUSD float64) error {
@@ -846,6 +1176,11 @@ func (s *SessionService) RequireAuthorizedRequest(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return r, false
 	}
+	// The auth middleware may already have established identity (including the
+	// admin-operator superset); handlers re-checking must honor it.
+	if info, ok := AuthInfoFromContext(r.Context()); ok && info.Subject != "" {
+		return r, true
+	}
 	if s.authorizer != nil {
 		subject, ok := s.authorizer.Validate(r.Context(), r.Header.Get("Authorization"))
 		if ok {
@@ -937,6 +1272,20 @@ func (s *SessionService) blockedByKillSwitch(agent string) (bool, string) {
 	}
 	if agent != "" && s.killSwitchStore.IsBlocked("agent", agent) {
 		return true, fmt.Sprintf("kill switch enabled for agent %s", agent)
+	}
+	return false, ""
+}
+
+func (s *SessionService) blockedByClientKillSwitch(client string) (bool, string) {
+	if s == nil || s.killSwitchStore == nil {
+		return false, ""
+	}
+	client = strings.TrimSpace(client)
+	if client == "" {
+		return false, ""
+	}
+	if s.killSwitchStore.IsBlocked("client", client) {
+		return true, fmt.Sprintf("kill switch enabled for client %s", client)
 	}
 	return false, ""
 }
@@ -1151,13 +1500,6 @@ func randomID(prefix string) string {
 
 func defaultString(value string, fallback string) string {
 	if value == "" {
-		return fallback
-	}
-	return value
-}
-
-func defaultFloat(value float64, fallback float64) float64 {
-	if value == 0 {
 		return fallback
 	}
 	return value

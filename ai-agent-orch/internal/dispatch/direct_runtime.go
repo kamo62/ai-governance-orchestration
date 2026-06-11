@@ -312,9 +312,6 @@ func openRouterReasoningConfig() *openrouter.ReasoningConfig {
 }
 
 func reasoningEffort() string {
-	if effort := os.Getenv("AI_ORCH_OPENROUTER_REASONING_EFFORT"); effort != "" {
-		return effort
-	}
 	return os.Getenv("OPENROUTER_REASONING_EFFORT")
 }
 

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"ai-agent-orch/internal/appconfig"
@@ -65,14 +69,29 @@ func main() {
 	log.Fatal(srv.ListenAndServe())
 }
 
-// logRequestLatency wraps an http.Handler and logs requests that exceed a threshold.
+// logRequestLatency wraps an http.Handler, tags requests with an ID, and logs
+// requests that exceed a threshold. The governance shell forwards its own
+// X-Request-ID so cross-service calls share one correlation ID.
 func logRequestLatency(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		if requestID == "" {
+			requestID = newRequestID()
+		}
+		w.Header().Set("X-Request-ID", requestID)
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		dur := time.Since(start)
 		if dur > 500*time.Millisecond {
-			log.Printf("slow request: %s %s %s", r.Method, r.URL.Path, dur)
+			log.Printf("slow request: %s %s %s request_id=%s", r.Method, r.URL.Path, dur, requestID)
 		}
 	})
+}
+
+func newRequestID() string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("req_%d", time.Now().UnixNano())
+	}
+	return "req_" + hex.EncodeToString(b[:])
 }

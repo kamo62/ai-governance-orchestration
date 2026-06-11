@@ -41,11 +41,15 @@ func TestSummarizeSessionUsageAggregatesModelAndMCPEvents(t *testing.T) {
 func TestSummarizeSessionUsageAggregatesModelGatewayEvents(t *testing.T) {
 	events := []audit.Event{
 		{
-			EventType:      "model.gateway_stream.completed",
-			Provider:       "openrouter",
-			ModelAlias:     "coding-fast",
-			ModelResolved:  "openrouter/x-ai/grok-build-0.1",
-			GatewayBackend: "bifrost",
+			EventType:                "model.gateway_stream.completed",
+			Provider:                 "openrouter",
+			ModelAlias:               "coding-fast",
+			ModelResolved:            "openrouter/x-ai/grok-build-0.1",
+			CredentialSource:         "platform-openrouter",
+			ReasoningEffortRequested: "high",
+			ReasoningEffortApplied:   "medium",
+			ReasoningSource:          "policy_clamped",
+			GatewayBackend:           "bifrost",
 			TokenUsage: map[string]any{
 				"total_tokens":      float64(16),
 				"prompt_tokens":     float64(12),
@@ -65,6 +69,9 @@ func TestSummarizeSessionUsageAggregatesModelGatewayEvents(t *testing.T) {
 	}
 	if summary.ModelAlias != "coding-fast" || summary.ModelResolved != "openrouter/x-ai/grok-build-0.1" || summary.GatewayBackend != "bifrost" {
 		t.Fatalf("expected model attribution, got %#v", summary)
+	}
+	if summary.CredentialSource != "platform-openrouter" || summary.ReasoningEffortRequested != "high" || summary.ReasoningEffortApplied != "medium" || summary.ReasoningSource != "policy_clamped" {
+		t.Fatalf("expected route reasoning metadata, got %#v", summary)
 	}
 	if summary.CostSource != "provider_reported" {
 		t.Fatalf("expected provider_reported cost source, got %q", summary.CostSource)

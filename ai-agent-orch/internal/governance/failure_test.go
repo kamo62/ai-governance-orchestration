@@ -550,7 +550,7 @@ func (f *failingOrchestrator) Route(ctx context.Context, sessionID string, promp
 func (f *failingOrchestrator) AcceptSession(ctx context.Context, sessionID string, agent string) error {
 	return f.err
 }
-func (f *failingOrchestrator) Dispatch(ctx context.Context, sessionID string, agent string, prompt string) (DispatchResult, error) {
+func (f *failingOrchestrator) Dispatch(ctx context.Context, sessionID string, agent string, prompt string, runtimeToken string) (DispatchResult, error) {
 	return DispatchResult{}, f.err
 }
 
@@ -565,7 +565,7 @@ func (s *slowOrchestrator) Route(ctx context.Context, sessionID string, prompt s
 func (s *slowOrchestrator) AcceptSession(ctx context.Context, sessionID string, agent string) error {
 	return nil
 }
-func (s *slowOrchestrator) Dispatch(ctx context.Context, sessionID string, agent string, prompt string) (DispatchResult, error) {
+func (s *slowOrchestrator) Dispatch(ctx context.Context, sessionID string, agent string, prompt string, runtimeToken string) (DispatchResult, error) {
 	select {
 	case <-time.After(s.delay):
 		return DispatchResult{SessionID: sessionID, Status: "completed", Agent: agent}, nil

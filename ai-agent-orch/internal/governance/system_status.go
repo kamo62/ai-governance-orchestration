@@ -13,6 +13,7 @@ type GatewayOption struct {
 type SystemStatusConfig struct {
 	Service               string
 	Version               string
+	Environment           string
 	ModelBackend          string
 	GatewayAddr           string
 	RuntimeGatewayEnabled bool
@@ -37,6 +38,7 @@ func (h *SystemStatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service":                 h.cfg.Service,
 		"version":                 h.cfg.Version,
+		"environment":             h.cfg.Environment,
 		"model_backend":           h.cfg.ModelBackend,
 		"model_gateway_addr":      h.cfg.GatewayAddr,
 		"runtime_gateway_enabled": h.cfg.RuntimeGatewayEnabled,

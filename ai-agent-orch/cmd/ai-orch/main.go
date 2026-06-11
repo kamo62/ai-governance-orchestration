@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -22,6 +23,10 @@ const (
 	defaultGovernanceURL   = "http://127.0.0.1:18080"
 	defaultOrchestratorURL = "http://127.0.0.1:8081"
 	defaultModelGatewayURL = "http://127.0.0.1:18082"
+
+	defaultOpenCodeLeadAgent      = "governance-lead"
+	defaultOpenCodeModelOnlyAgent = "model-gateway"
+	defaultOpenCodeFallbackModel  = "ai-orch/coding-gpt55"
 )
 
 type Config struct {
@@ -45,6 +50,16 @@ type sessionEvent struct {
 	Payload string `json:"payload"`
 }
 
+type openCodeWrapperOptions struct {
+	GovernanceAgent         string
+	GovernanceAgentExplicit bool
+	Classification          string
+	SessionPrompt           string
+	Intent                  string
+	ModelOnly               bool
+	OpenCodeArgs            []string
+}
+
 func loadConfig() Config {
 	return Config{
 		GovernanceURL:      envOrDefault("AI_ORCH_GOVERNANCE_URL", defaultGovernanceURL),
@@ -62,6 +77,16 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// localIdentity is the actor label asserted on dev-token requests so sessions
+// and Copilot enrollment share one subject. AI_ORCH_ACTOR_SUBJECT overrides
+// the OS username.
+func localIdentity() string {
+	if v := strings.TrimSpace(os.Getenv("AI_ORCH_ACTOR_SUBJECT")); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv("USER"))
 }
 
 func smokeSSETimeout() time.Duration {
@@ -135,7 +160,9 @@ func main() {
 			os.Exit(1)
 		}
 	case "copilot":
-		handleCopilot(ctx, os.Args[2:])
+		handleCopilot(ctx, cfg, os.Args[2:])
+	case "opencode":
+		handleOpenCode(ctx, cfg, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -160,7 +187,9 @@ Usage:
   ai-orch mcp start [--transport http|stdio] [--host 127.0.0.1] [--port 18081]
   ai-orch mcp install --client <vscode|cline|claude-code|codex> [--force]
   ai-orch mcp doctor
-  ai-orch copilot login|status|models|logout|smoke
+  ai-orch copilot login|status|models|logout|refresh [--local]
+  ai-orch copilot smoke --local [--model <id>] [--prompt <text>]
+  ai-orch opencode [--governance-agent <name>] [--governance-classification <level>] [--governance-prompt <text>] [-- <opencode args...>]
 
 Environment:
   AI_ORCH_GOVERNANCE_URL    Governance Shell base URL (default: http://127.0.0.1:18080)
@@ -169,7 +198,241 @@ Environment:
   AI_ORCH_DEV_TOKEN         Bearer token for local dev auth
   AI_ORCH_ADMIN_TOKEN       Bearer token for admin routes such as killswitch
   AI_ORCH_RUNTIME_TOKEN     Bearer token for runtime model gateway calls
-  AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY  Required for copilot token storage`)
+  AI_ORCH_ACTOR_SUBJECT     Actor label for dev-token requests (default: OS username)
+  AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY  Required for copilot --local token storage`)
+}
+
+func handleOpenCode(ctx context.Context, cfg Config, args []string) {
+	if isHelpOnly(args) {
+		fmt.Println(`Usage:
+  ai-orch opencode [--governance-agent <name>] [--governance-classification <level>] [--governance-prompt <text>] [-- <opencode args...>]
+  ai-orch opencode --model-only --governance-intent <reason> [-- <opencode args...>]
+
+Creates a governed ai-orch session, exports AI_ORCH_SESSION_ID and
+AI_ORCH_SESSION_TOKEN for the child process, then launches OpenCode.
+
+Examples:
+  ai-orch opencode -- .
+  ai-orch opencode -- run --model ai-orch/copilot-gpt-5-mini "Write tests"
+  ai-orch opencode --model-only --governance-intent "Need direct model exploration" -- run --model ai-orch/coding-gpt55 "Explore the options"
+
+Developers should launch OpenCode through this wrapper for governed mode.
+They do not need to copy session IDs or gateway tokens.`)
+		return
+	}
+	opts := parseOpenCodeWrapperArgs(args)
+	if err := validateOpenCodeWrapperOptions(opts); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid OpenCode governance options: %v\n", err)
+		os.Exit(2)
+	}
+	if _, err := exec.LookPath("opencode"); err != nil {
+		fmt.Fprintf(os.Stderr, "opencode binary not found: %v\n", err)
+		os.Exit(2)
+	}
+	if opts.SessionPrompt == "" {
+		opts.SessionPrompt = defaultOpenCodeSessionPrompt(opts)
+	}
+	openCodeArgs := withDefaultOpenCodeModel(opts.OpenCodeArgs, defaultOpenCodeLeadModel(ctx, cfg, http.DefaultClient))
+	if shouldRouteOpenCodeSession(opts) {
+		openCodeArgs = withDefaultOpenCodeAgent(openCodeArgs, defaultOpenCodeLeadAgent)
+	}
+	session, err := createOpenCodeGovernedSession(ctx, cfg, opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create governed OpenCode session failed: %v\n", err)
+		os.Exit(2)
+	}
+	runtimeToken := cfg.RuntimeToken
+	if runtimeToken == "" {
+		runtimeToken = "local-runtime-token"
+	}
+	fmt.Fprintf(os.Stderr, "ai-orch governed OpenCode session: %s\n", session.SessionID)
+	cmd := exec.CommandContext(ctx, "opencode", openCodeArgs...)
+	cmd.Env = append(os.Environ(),
+		"AI_ORCH_RUNTIME_TOKEN="+runtimeToken,
+		"AI_ORCH_SESSION_ID="+session.SessionID,
+		"AI_ORCH_SESSION_TOKEN="+session.GatewayToken,
+	)
+	if identity := localIdentity(); identity != "" {
+		cmd.Env = append(cmd.Env, "AI_ORCH_ACTOR_SUBJECT="+identity)
+	}
+	if opts.Intent != "" {
+		cmd.Env = append(cmd.Env, "AI_ORCH_INTENT="+opts.Intent)
+	}
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "opencode failed: %v\n", err)
+		os.Exit(2)
+	}
+}
+
+func parseOpenCodeWrapperArgs(args []string) openCodeWrapperOptions {
+	opts := openCodeWrapperOptions{
+		GovernanceAgent: defaultOpenCodeLeadAgent,
+		Classification:  "internal",
+	}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			opts.OpenCodeArgs = append(opts.OpenCodeArgs, args[i+1:]...)
+			break
+		}
+		switch arg {
+		case "--governance-agent":
+			if i+1 < len(args) {
+				i++
+				opts.GovernanceAgent = args[i]
+				opts.GovernanceAgentExplicit = true
+			}
+		case "--governance-classification":
+			if i+1 < len(args) {
+				i++
+				opts.Classification = args[i]
+			}
+		case "--governance-prompt":
+			if i+1 < len(args) {
+				i++
+				opts.SessionPrompt = args[i]
+			}
+		case "--governance-intent", "--governance-reason":
+			if i+1 < len(args) {
+				i++
+				opts.Intent = args[i]
+			}
+		case "--model-only":
+			opts.ModelOnly = true
+			opts.GovernanceAgent = defaultOpenCodeModelOnlyAgent
+		default:
+			opts.OpenCodeArgs = append(opts.OpenCodeArgs, arg)
+		}
+	}
+	return opts
+}
+
+func validateOpenCodeWrapperOptions(opts openCodeWrapperOptions) error {
+	if opts.ModelOnly && strings.TrimSpace(opts.Intent) == "" {
+		return errors.New("--model-only requires --governance-intent <reason>")
+	}
+	if opts.ModelOnly && strings.TrimSpace(opts.GovernanceAgent) != defaultOpenCodeModelOnlyAgent {
+		return errors.New("--model-only must use the model-gateway governance agent")
+	}
+	return nil
+}
+
+func defaultOpenCodeSessionPrompt(opts openCodeWrapperOptions) string {
+	command := "interactive session"
+	if len(opts.OpenCodeArgs) > 0 {
+		command = "opencode " + strings.Join(opts.OpenCodeArgs, " ")
+	}
+	if opts.ModelOnly {
+		return "Governed OpenCode model-only session: " + command
+	}
+	if opts.GovernanceAgent == defaultOpenCodeLeadAgent {
+		return "Governance lead for OpenCode: clarify intent, classify risk, attach context, and choose a specialist before delivery. Session: " + command
+	}
+	return "Governed OpenCode specialist session: " + command
+}
+
+type openCodeSessionTokens struct {
+	SessionID    string
+	GatewayToken string
+	Specialist   string
+}
+
+func createOpenCodeGovernedSession(ctx context.Context, cfg Config, opts openCodeWrapperOptions) (openCodeSessionTokens, error) {
+	permissionMode := "reviewed"
+	if shouldRouteOpenCodeSession(opts) {
+		permissionMode = "read_only"
+	}
+	bodyMap := map[string]any{
+		"agent":           opts.GovernanceAgent,
+		"classification":  opts.Classification,
+		"prompt":          opts.SessionPrompt,
+		"permission_mode": permissionMode,
+		"approval_mode":   "manual",
+		"workspace_mode":  "local",
+		"source_system":   "opencode",
+	}
+	if opts.ModelOnly {
+		bodyMap["approval_mode"] = "self_reported"
+	}
+	if strings.TrimSpace(opts.Intent) != "" {
+		bodyMap["intent"] = strings.TrimSpace(opts.Intent)
+	}
+	addLocalProjectContext(bodyMap)
+	body, _ := json.Marshal(bodyMap)
+	endpoint := "/v1/sessions"
+	if shouldRouteOpenCodeSession(opts) {
+		endpoint = "/v1/runs"
+	}
+	resp, err := doPost(ctx, cfg, cfg.GovernanceURL+endpoint, body)
+	if err != nil {
+		return openCodeSessionTokens{}, err
+	}
+	var session struct {
+		SessionID    string `json:"session_id"`
+		GatewayToken string `json:"gateway_token"`
+		Specialist   string `json:"specialist"`
+	}
+	if err := json.Unmarshal([]byte(resp), &session); err != nil || session.SessionID == "" || session.GatewayToken == "" {
+		return openCodeSessionTokens{}, fmt.Errorf("unexpected session response: %s", resp)
+	}
+	return openCodeSessionTokens{SessionID: session.SessionID, GatewayToken: session.GatewayToken, Specialist: session.Specialist}, nil
+}
+
+func shouldRouteOpenCodeSession(opts openCodeWrapperOptions) bool {
+	return !opts.ModelOnly && opts.GovernanceAgent == defaultOpenCodeLeadAgent
+}
+
+func defaultOpenCodeLeadModel(_ context.Context, _ Config, _ *http.Client) string {
+	return defaultOpenCodeFallbackModel
+}
+
+func withDefaultOpenCodeModel(args []string, model string) []string {
+	out := append([]string{}, args...)
+	if strings.TrimSpace(model) == "" || openCodeArgsHaveModel(out) {
+		return out
+	}
+	if len(out) > 0 && out[0] == "run" {
+		return append([]string{"run", "--model", model}, out[1:]...)
+	}
+	return append([]string{"--model", model}, out...)
+}
+
+func withDefaultOpenCodeAgent(args []string, agent string) []string {
+	out := append([]string{}, args...)
+	if strings.TrimSpace(agent) == "" || openCodeArgsHaveAgent(out) {
+		return out
+	}
+	if len(out) > 0 && out[0] == "run" {
+		return append([]string{"run", "--agent", agent}, out[1:]...)
+	}
+	return append([]string{"--agent", agent}, out...)
+}
+
+func openCodeArgsHaveModel(args []string) bool {
+	for i, arg := range args {
+		if arg == "--model" || arg == "-m" {
+			return i+1 < len(args)
+		}
+		if strings.HasPrefix(arg, "--model=") || strings.HasPrefix(arg, "-m=") {
+			return true
+		}
+	}
+	return false
+}
+
+func openCodeArgsHaveAgent(args []string) bool {
+	for i, arg := range args {
+		if arg == "--agent" {
+			return i+1 < len(args)
+		}
+		if strings.HasPrefix(arg, "--agent=") {
+			return true
+		}
+	}
+	return false
 }
 
 func printSmokeUsage() {
@@ -312,6 +575,9 @@ func streamEvents(ctx context.Context, cfg Config, args []string) {
 		token = "local-dev"
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	if identity := localIdentity(); identity != "" {
+		req.Header.Set("X-AI-Orch-Local-Identity", identity)
+	}
 	req.Header.Set("Accept", "text/event-stream")
 
 	client := &http.Client{Timeout: 60 * time.Second}
@@ -708,6 +974,9 @@ func streamEventsFromURL(ctx context.Context, cfg Config, url string) (eventStre
 		token = "local-dev"
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	if identity := localIdentity(); identity != "" {
+		req.Header.Set("X-AI-Orch-Local-Identity", identity)
+	}
 	req.Header.Set("Accept", "text/event-stream")
 
 	client := &http.Client{Timeout: smokeSSETimeout()}
@@ -775,6 +1044,12 @@ func doRequest(ctx context.Context, cfg Config, method, url string, body []byte)
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.bearerTokenForURL(url))
+	// In dev-token mode the shell derives the actor from this header. Sending
+	// it on every CLI call keeps session ownership and Copilot enrollment
+	// keyed to the same actor subject. OIDC deployments ignore it.
+	if identity := localIdentity(); identity != "" {
+		req.Header.Set("X-AI-Orch-Local-Identity", identity)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

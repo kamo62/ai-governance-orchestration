@@ -74,7 +74,12 @@ func (e *SessionExecutor) Run(ctx context.Context, sessionID, agent, prompt stri
 		EnforcementMode:    "gateway",
 	})
 
-	result, err := e.orch.Dispatch(ctx, sessionID, agent, prompt)
+	// Server-side runtimes (the ACP lane) need their own gateway secret: the
+	// client's token is never stored in the clear, so a fresh one is minted at
+	// dispatch and its hash recorded next to the client hash.
+	runtimeToken := e.service.mintRuntimeGatewayToken(ctx, sessionID)
+
+	result, err := e.orch.Dispatch(ctx, sessionID, agent, prompt, runtimeToken)
 	if err != nil {
 		e.service.setSessionStatus(context.Background(), sessionID, "failed")
 		_, _ = e.service.audit.Append(ctx, audit.Event{

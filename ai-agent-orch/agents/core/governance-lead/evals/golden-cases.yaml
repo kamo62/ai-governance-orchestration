@@ -1,0 +1,5 @@
+cases:
+  - prompt: "I need help reviewing this diff before it goes out."
+    expected_specialist: code-review
+  - prompt: "Can we explore the design first and then decide who should do the work?"
+    expected_specialist: architecture-review

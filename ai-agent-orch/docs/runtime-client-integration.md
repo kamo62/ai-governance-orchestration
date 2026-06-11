@@ -35,7 +35,6 @@ Checked on 2026-06-04:
 - Codex supports MCP server configuration through the Codex CLI / config path, including `codex mcp add`: https://platform.openai.com/docs/docs-mcp
 - T3 Code is a minimal workbench for coding agents, currently centred on existing Codex and Claude CLI flows rather than being a governance plane itself: https://github.com/pingdotgg/t3code
 - Bifrost is open-source provider plumbing with OpenAI-compatible multi-provider routing across OpenAI, Anthropic, Bedrock, Vertex, OpenRouter and others: https://github.com/maximhq/bifrost
-- agentgateway is open-source agent/LLM/MCP gateway plumbing with LLM gateway, MCP gateway, A2A, routing, guardrail, security and observability features: https://github.com/agentgateway/agentgateway
 
 ## Boundary
 
@@ -44,7 +43,7 @@ The boundary is:
 ```text
 Local client owns repo access.
 ai-orch owns governance.
-Bifrost, AgentGateway, or native OpenRouter owns provider plumbing behind ai-orch.
+Bifrost or per-user Copilot owns provider plumbing behind ai-orch.
 ```
 
 Do not build:

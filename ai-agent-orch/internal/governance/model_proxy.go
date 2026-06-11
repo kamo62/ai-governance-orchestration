@@ -1,6 +1,7 @@
 package governance
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,18 +15,19 @@ import (
 )
 
 type ModelProxyConfig struct {
-	ServiceToken string
-	Backend      modelbackend.Backend
-	OpenRouter   openrouter.ChatClient
-	Audit        audit.Store
-	NewID        func(prefix string) string
+	ServiceToken  string
+	Backend       modelbackend.Backend
+	Audit         audit.Store
+	LookupSession func(context.Context, string) (SessionRecord, error)
+	NewID         func(prefix string) string
 }
 
 type ModelProxyHandler struct {
-	serviceToken string
-	backend      modelbackend.Backend
-	audit        audit.Store
-	newID        func(prefix string) string
+	serviceToken  string
+	backend       modelbackend.Backend
+	audit         audit.Store
+	lookupSession func(context.Context, string) (SessionRecord, error)
+	newID         func(prefix string) string
 }
 
 func NewModelProxyHandler(cfg ModelProxyConfig) http.Handler {
@@ -33,15 +35,12 @@ func NewModelProxyHandler(cfg ModelProxyConfig) http.Handler {
 	if newID == nil {
 		newID = randomID
 	}
-	backend := cfg.Backend
-	if backend == nil && cfg.OpenRouter != nil {
-		backend = modelbackend.NewOpenRouterBackend(cfg.OpenRouter)
-	}
 	return &ModelProxyHandler{
-		serviceToken: cfg.ServiceToken,
-		backend:      backend,
-		audit:        cfg.Audit,
-		newID:        newID,
+		serviceToken:  cfg.ServiceToken,
+		backend:       cfg.Backend,
+		audit:         cfg.Audit,
+		lookupSession: cfg.LookupSession,
+		newID:         newID,
 	}
 }
 
@@ -81,15 +80,19 @@ func (h *ModelProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if provider := r.Header.Get("X-AI-Orch-Provider"); provider != "" {
 		req.Provider = provider
 	}
+	var record SessionRecord
+	if h.lookupSession != nil {
+		var err error
+		record, err = h.lookupSession(r.Context(), sessionID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			return
+		}
+	}
 
-	resp, err := h.backend.ChatCompletion(r.Context(), req)
+	respBody, resolvedModel, usage, err := h.callBackend(r.Context(), req, body, record)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
-		return
-	}
-	respBody, err := json.Marshal(resp)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "encode model response failed"})
 		return
 	}
 
@@ -104,11 +107,11 @@ func (h *ModelProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Alias-to-model enforcement is currently delegated to the orchestrator;
 			// the proxy trusts req.Model as the resolved value.
 			ModelAlias:         r.Header.Get("X-AI-Orch-Model-Alias"),
-			ModelResolved:      h.backend.ResolvedModel(req.Provider, req.Model),
+			ModelResolved:      resolvedModel,
 			ProxyCallID:        h.newID("proxy"),
 			RequestSHA256:      sha256Hex(body),
 			ResponseSHA256:     sha256Hex(respBody),
-			TokenUsage:         tokenUsage(resp.Usage),
+			TokenUsage:         usage,
 			GatewayBackend:     h.backend.Name(),
 			TrustLevel:         "gateway_enforced",
 			EnforcementMode:    "gateway",
@@ -126,6 +129,31 @@ func (h *ModelProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(respBody)
 }
 
+func (h *ModelProxyHandler) callBackend(ctx context.Context, req openrouter.ChatCompletionRequest, body []byte, record SessionRecord) ([]byte, string, map[string]any, error) {
+	if rawBackend, ok := h.backend.(modelbackend.RawChatBackend); ok {
+		respBody, err := rawBackend.ChatCompletionRaw(ctx, modelbackend.RawRequest{
+			Provider:     req.Provider,
+			ModelAlias:   req.ModelAlias,
+			Model:        req.Model,
+			Body:         body,
+			ActorSubject: record.ActorSubject,
+		})
+		if err != nil {
+			return nil, "", nil, err
+		}
+		return respBody, h.backend.ResolvedModel(req.Provider, req.Model), usageFromRawProxyResponse(respBody), nil
+	}
+	resp, err := h.backend.ChatCompletion(ctx, req)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	respBody, err := json.Marshal(resp)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return respBody, h.backend.ResolvedModel(req.Provider, req.Model), tokenUsage(resp.Usage), nil
+}
+
 func sha256Hex(body []byte) string {
 	sum := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(sum[:])
@@ -139,6 +167,16 @@ func tokenUsage(usage openrouter.Usage) map[string]any {
 		"cost_usd":          usage.Cost,
 		"reasoning_tokens":  usage.CompletionTokensDetails.ReasoningTokens,
 	}
+}
+
+func usageFromRawProxyResponse(body []byte) map[string]any {
+	var payload struct {
+		Usage map[string]any `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || payload.Usage == nil {
+		return map[string]any{}
+	}
+	return payload.Usage
 }
 
 var _ http.Handler = (*ModelProxyHandler)(nil)

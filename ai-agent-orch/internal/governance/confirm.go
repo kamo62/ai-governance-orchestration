@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"ai-agent-orch/internal/audit"
 )
@@ -97,6 +96,10 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
 			return
 		}
+		if record.RoutedAgent != "" && record.RoutedAgent != req.Agent {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "confirmed agent does not match routed specialist"})
+			return
+		}
 		if err := h.service.sessions.CompareAndSwapStatus(r.Context(), sessionID, "awaiting_confirmation", "confirming"); err != nil {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "session state transition failed"})
 			return
@@ -160,8 +163,4 @@ func sanitizeRuntimeStreamPayload(payload string) string {
 		return "Patch proposal received."
 	}
 	return payload
-}
-
-func timeNow() time.Time {
-	return time.Now().UTC()
 }

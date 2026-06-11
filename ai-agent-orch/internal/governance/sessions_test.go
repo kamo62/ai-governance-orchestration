@@ -93,9 +93,23 @@ func TestListSessionsReturnsRecentSummariesForCurrentActor(t *testing.T) {
 			"completion_tokens": 4,
 			"total_tokens":      16,
 		},
-		GatewayBackend: "bifrost",
+		GatewayBackend:  "bifrost",
+		TrustLevel:      "gateway_enforced",
+		EnforcementMode: "gateway",
+		RecordedAt:      time.Date(2026, 6, 8, 7, 3, 0, 0, time.UTC),
 	}); err != nil {
 		t.Fatalf("append usage audit event: %v", err)
+	}
+	if _, err := auditStore.Append(context.Background(), audit.Event{
+		EventID:     "evt_mcp_new",
+		SessionID:   "sess_new",
+		EventType:   "mcp.proxy_call",
+		Reason:      "forwarded",
+		MCPServerID: "playwright-cli",
+		MCPToolName: "runPlaywrightTest",
+		RecordedAt:  time.Date(2026, 6, 8, 7, 4, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("append mcp audit event: %v", err)
 	}
 	store := &recordingSessionStore{created: []SessionRecord{
 		{
@@ -170,6 +184,12 @@ func TestListSessionsReturnsRecentSummariesForCurrentActor(t *testing.T) {
 	}
 	if got.UsageSummary.CostSource != "pricing_table" || got.UsageSummary.EstimatedCostUSD <= 0 {
 		t.Fatalf("expected pricing-table cost in session summary, got %#v", got.UsageSummary)
+	}
+	if got.LatestEventType != "mcp.proxy_call" || got.ToolCallCount != 1 || got.Transport != "model-gateway/bifrost" {
+		t.Fatalf("expected ledger fields in session summary, got %#v", got)
+	}
+	if got.TrustLevel != "gateway_enforced" || got.EnforcementMode != "gateway" {
+		t.Fatalf("expected trust fields in session summary, got %#v", got)
 	}
 	if strings.Contains(rec.Body.String(), "new-hash") || strings.Contains(rec.Body.String(), "old-hash") {
 		t.Fatalf("session list must not expose prompt hashes: %s", rec.Body.String())
@@ -437,8 +457,8 @@ func TestCreateSessionAllowsFeatureBranchWithWorkItemWhenRequired(t *testing.T) 
 			"evt_work_item_required",
 		),
 		ContextResolver: staticContextResolver{context: SessionContext{
-			Branch:       "feature/OMENG-300-governance-fixes",
-			WorkItemID:   "OMENG-300",
+			Branch:       "feature/WORK-123-governance-fixes",
+			WorkItemID:   "WORK-123",
 			WorkItemType: "feature",
 			CommitSHA:    "0123456789abcdef0123456789abcdef01234567",
 		}},
@@ -456,7 +476,7 @@ func TestCreateSessionAllowsFeatureBranchWithWorkItemWhenRequired(t *testing.T) 
 	if err != nil {
 		t.Fatalf("audit lookup: %v", err)
 	}
-	if len(events) != 1 || events[0].WorkItemID != "OMENG-300" || events[0].WorkItemType != "feature" {
+	if len(events) != 1 || events[0].WorkItemID != "WORK-123" || events[0].WorkItemType != "feature" {
 		t.Fatalf("expected resolved work item audit event, got %#v", events)
 	}
 }
@@ -896,6 +916,163 @@ func authorizedSessionRequest(body string) *http.Request {
 	return req
 }
 
+func TestCreateAutoGatewaySessionAppliesGovernanceAndTokenBinding(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	store := &recordingSessionStore{}
+	service := NewSessionService(SessionConfig{
+		Audit:              auditStore,
+		Sessions:           store,
+		ClassificationMax:  "internal",
+		TrustedClientToken: "trusted-client",
+		NewID: fixedIDs(
+			"sess_auto_1",
+			"evt_auto_created_1",
+			"sgt_auto_secret_1",
+		),
+	})
+
+	result, err := service.CreateAutoGatewaySession(context.Background(), AutoGatewaySessionRequest{
+		ActorSubject:       "dev@example.test",
+		Classification:     "internal",
+		PromptSHA256:       "sha256:req",
+		ModelAlias:         "coding-fast",
+		Client:             "ai-orch-mcp",
+		Endpoint:           "chat.completions",
+		RawRequestBody:     []byte(`{"model":"coding-fast","messages":[{"role":"user","content":"hello"}]}`),
+		TrustedClientToken: "trusted-client",
+		WorkItemID:         "WORK-123",
+		WorkItemType:       "test",
+		Branch:             "test/WORK-123-auto-session",
+		Intent:             "Need direct model exploration before choosing a specialist",
+	})
+	if err != nil {
+		t.Fatalf("create auto session: %v", err)
+	}
+	if result.Record.SessionID != "sess_auto_1" || result.GatewayToken != "sgt_auto_secret_1" {
+		t.Fatalf("unexpected auto session result: %#v", result)
+	}
+	if len(store.created) != 1 || store.created[0].GatewayTokenSHA256 == "" {
+		t.Fatalf("expected stored gateway token hash, got %#v", store.created)
+	}
+	goodHash := sha256.Sum256([]byte("sgt_auto_secret_1"))
+	if store.created[0].GatewayTokenSHA256 != hex.EncodeToString(goodHash[:]) {
+		t.Fatalf("unexpected gateway token hash: %s", store.created[0].GatewayTokenSHA256)
+	}
+	if store.created[0].Intent != "Need direct model exploration before choosing a specialist" {
+		t.Fatalf("expected auto-session intent reason, got %q", store.created[0].Intent)
+	}
+	events, err := auditStore.EventsBySession(context.Background(), "sess_auto_1")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 || events[0].TrustLevel != "gateway_enforced" || events[0].EnforcementMode != "gateway" {
+		t.Fatalf("expected trusted auto-session audit, got %#v", events)
+	}
+}
+
+func TestCreateAutoGatewaySessionDefaultsToSelfReportedTrust(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	service := NewSessionService(SessionConfig{
+		Audit:              auditStore,
+		Sessions:           &recordingSessionStore{},
+		ClassificationMax:  "internal",
+		TrustedClientToken: "trusted-client",
+	})
+	result, err := service.CreateAutoGatewaySession(context.Background(), AutoGatewaySessionRequest{
+		ActorSubject:   "dev@example.test",
+		Classification: "internal",
+		PromptSHA256:   "sha256:req",
+		ModelAlias:     "coding-fast",
+		Client:         "ai-orch-mcp",
+		Endpoint:       "chat.completions",
+		RawRequestBody: []byte(`{"model":"coding-fast","messages":[{"role":"user","content":"hello"}]}`),
+	})
+	if err != nil {
+		t.Fatalf("create auto session: %v", err)
+	}
+	events, err := auditStore.EventsBySession(context.Background(), result.Record.SessionID)
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 || events[0].TrustLevel != "self_reported" || events[0].EnforcementMode != "advisory" {
+		t.Fatalf("expected self-reported trust, got %#v", events)
+	}
+}
+
+func TestCreateAutoGatewaySessionDeniesGovernanceFailures(t *testing.T) {
+	secretBody := []byte(`{"model":"coding-fast","messages":[{"role":"user","content":"OPENROUTER_API_KEY=sk-or-v1-secretsecretsecret"}]}`)
+	cases := []struct {
+		name     string
+		config   SessionConfig
+		request  AutoGatewaySessionRequest
+		wantPart string
+	}{
+		{
+			name:     "global kill switch",
+			config:   SessionConfig{KillSwitch: true},
+			request:  validAutoGatewaySessionRequest(),
+			wantPart: "kill switch",
+		},
+		{
+			name:     "work item required",
+			config:   SessionConfig{RequireWorkItem: true},
+			request:  validAutoGatewaySessionRequest(),
+			wantPart: "work item",
+		},
+		{
+			name:     "secret detected",
+			config:   SessionConfig{},
+			request:  withAutoBody(validAutoGatewaySessionRequest(), secretBody),
+			wantPart: "secret detected",
+		},
+		{
+			name:     "classification ceiling",
+			config:   SessionConfig{ClassificationMax: "internal"},
+			request:  withAutoClassification(validAutoGatewaySessionRequest(), "confidential"),
+			wantPart: "classification confidential exceeds max internal",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+			cfg := tc.config
+			cfg.Audit = auditStore
+			cfg.Sessions = &recordingSessionStore{}
+			if cfg.ClassificationMax == "" {
+				cfg.ClassificationMax = "internal"
+			}
+			service := NewSessionService(cfg)
+			_, err := service.CreateAutoGatewaySession(context.Background(), tc.request)
+			if err == nil || !strings.Contains(err.Error(), tc.wantPart) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantPart, err)
+			}
+		})
+	}
+}
+
+func validAutoGatewaySessionRequest() AutoGatewaySessionRequest {
+	return AutoGatewaySessionRequest{
+		ActorSubject:   "dev@example.test",
+		Classification: "internal",
+		PromptSHA256:   "sha256:req",
+		ModelAlias:     "coding-fast",
+		Client:         "opencode",
+		Endpoint:       "chat.completions",
+		RawRequestBody: []byte(`{"model":"coding-fast","messages":[{"role":"user","content":"hello"}]}`),
+	}
+}
+
+func withAutoBody(req AutoGatewaySessionRequest, body []byte) AutoGatewaySessionRequest {
+	req.RawRequestBody = body
+	return req
+}
+
+func withAutoClassification(req AutoGatewaySessionRequest, classification string) AutoGatewaySessionRequest {
+	req.Classification = classification
+	return req
+}
+
 func readAuditText(t *testing.T, path string) string {
 	t.Helper()
 	auditBytes, err := os.ReadFile(path)
@@ -959,6 +1136,16 @@ func (s *recordingSessionStore) UpdateStatus(_ context.Context, sessionID string
 	for i := range s.created {
 		if s.created[i].SessionID == sessionID {
 			s.created[i].Status = status
+			return nil
+		}
+	}
+	return nil
+}
+
+func (s *recordingSessionStore) SetRoutedAgent(_ context.Context, sessionID string, agent string) error {
+	for i := range s.created {
+		if s.created[i].SessionID == sessionID {
+			s.created[i].RoutedAgent = agent
 			return nil
 		}
 	}

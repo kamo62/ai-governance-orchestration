@@ -12,8 +12,8 @@ import (
 	"ai-agent-orch/internal/openrouter"
 )
 
-func TestOpenRouterReasoningConfigUsesHighEffortFromEnvironment(t *testing.T) {
-	t.Setenv("AI_ORCH_OPENROUTER_REASONING_EFFORT", "high")
+func TestOpenRouterReasoningConfigUsesHighEffortFromProviderEnvironment(t *testing.T) {
+	t.Setenv("OPENROUTER_REASONING_EFFORT", "high")
 	t.Setenv("AI_ORCH_OPENROUTER_REASONING_EXCLUDE", "false")
 
 	got := openRouterReasoningConfig()

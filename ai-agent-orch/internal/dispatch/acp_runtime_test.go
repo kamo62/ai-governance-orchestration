@@ -240,6 +240,9 @@ func TestACPHandle_handleAgentRequest_permission(t *testing.T) {
 		done:      make(chan struct{}),
 		stdin:     &fakeWriteCloser{},
 		sessionID: "sess_123",
+		config: SessionConfig{
+			AllowedTools: []string{"run_command"},
+		},
 	}
 
 	msg := &jsonRPCMessage{
@@ -261,7 +264,7 @@ func TestACPHandle_handleAgentRequest_permission(t *testing.T) {
 		t.Fatal("expected permission response to be written")
 	}
 	last := fwc.written[len(fwc.written)-1]
-	if !strContains(last, `"id":42`) || !strContains(last, `"outcome":"selected"`) || !strContains(last, `"optionId":"always"`) {
+	if !strContains(last, `"id":42`) || !strContains(last, `"outcome":"selected"`) || !strContains(last, `"optionId":"once"`) {
 		t.Fatalf("unexpected permission response: %s", last)
 	}
 	select {
@@ -274,16 +277,60 @@ func TestACPHandle_handleAgentRequest_permission(t *testing.T) {
 	}
 }
 
-func TestSelectedACPOptionIDPrefersAllowAlways(t *testing.T) {
+func TestACPHandle_acpToolAllowedUsesToolBrokerForScopedCommands(t *testing.T) {
+	broker, err := NewToolBroker(filepath.Join("..", "..", "policies", "command-allowlists.yaml"))
+	if err != nil {
+		t.Fatalf("load tool broker: %v", err)
+	}
+
+	denied := &acpHandle{
+		config: SessionConfig{
+			AgentName:    "code-review",
+			AllowedTools: []string{"run_command:playwright"},
+			ToolBroker:   broker,
+			Permissions:  map[string]string{"workspace_write": "deny"},
+		},
+	}
+	if denied.acpToolAllowed("run_command:playwright") {
+		t.Fatal("code-review must not be allowed to run the playwright subcommand")
+	}
+
+	allowed := &acpHandle{
+		config: SessionConfig{
+			AgentName:    "unit-tests",
+			AllowedTools: []string{"run_command:playwright"},
+			ToolBroker:   broker,
+			Permissions:  map[string]string{"workspace_write": "allow"},
+		},
+	}
+	if !allowed.acpToolAllowed("run_command:playwright") {
+		t.Fatal("unit-tests should be allowed to run the playwright subcommand")
+	}
+}
+
+func TestSelectedACPOptionIDPrefersAllowOnce(t *testing.T) {
 	got := selectedACPOptionID(map[string]any{
 		"options": []any{
 			map[string]any{"optionId": "once", "kind": "allow_once"},
 			map[string]any{"optionId": "always", "kind": "allow_always"},
 			map[string]any{"optionId": "reject", "kind": "reject_once"},
 		},
-	})
-	if got != "always" {
-		t.Fatalf("expected always, got %q", got)
+	}, true)
+	if got != "once" {
+		t.Fatalf("expected once, got %q", got)
+	}
+}
+
+func TestSelectedACPOptionIDRejectsWhenToolNotAllowed(t *testing.T) {
+	got := selectedACPOptionID(map[string]any{
+		"options": []any{
+			map[string]any{"optionId": "once", "kind": "allow_once"},
+			map[string]any{"optionId": "always", "kind": "allow_always"},
+			map[string]any{"optionId": "reject", "kind": "reject_once"},
+		},
+	}, false)
+	if got != "reject" {
+		t.Fatalf("expected reject, got %q", got)
 	}
 }
 
@@ -293,6 +340,8 @@ func TestACPHandle_handleWriteTextFileHonorsWorkspacePermission(t *testing.T) {
 		events: make(chan RuntimeEvent, 64),
 		config: SessionConfig{
 			WorkspacePath: workspace,
+			AllowedTools:  []string{"write_file"},
+			Permissions:   map[string]string{"workspace_write": "allow"},
 		},
 	}
 	if err := h.handleWriteTextFile(map[string]any{"path": "AI_ORCH_REVIEW_FINDINGS.md", "content": "findings"}); err != nil {
@@ -332,11 +381,12 @@ func TestACPHandle_handleWriteTextFileDoesNotUseAgentPermissionFlags(t *testing.
 	h := &acpHandle{
 		config: SessionConfig{
 			WorkspacePath: t.TempDir(),
+			AllowedTools:  []string{"write_file"},
 			Permissions:   map[string]string{"workspace_write": "deny"},
 		},
 	}
-	if err := h.handleWriteTextFile(map[string]any{"path": "x.md", "content": "ok"}); err != nil {
-		t.Fatalf("ACP should not use agent permission flags for file writes: %v", err)
+	if err := h.handleWriteTextFile(map[string]any{"path": "x.md", "content": "ok"}); err == nil {
+		t.Fatal("expected ACP write to honor workspace_write deny")
 	}
 }
 
@@ -393,7 +443,7 @@ func TestACPHandle_handleNotification_routesToSessionUpdate(t *testing.T) {
 
 func TestACPHandle_emitNonCriticalEventNonBlocking(t *testing.T) {
 	h := &acpHandle{
-		events: make(chan RuntimeEvent, 0), // unbuffered
+		events: make(chan RuntimeEvent), // unbuffered
 		done:   make(chan struct{}),
 	}
 	h.emitEvent(RuntimeEvent{Type: "stream", Payload: "drop me"})
@@ -404,7 +454,7 @@ func TestACPHandle_emitErrorStopsOnContextCancellation(t *testing.T) {
 	cancel()
 	h := &acpHandle{
 		ctx:    ctx,
-		events: make(chan RuntimeEvent, 0), // unbuffered
+		events: make(chan RuntimeEvent), // unbuffered
 		done:   make(chan struct{}),
 	}
 	h.emitError("test error")

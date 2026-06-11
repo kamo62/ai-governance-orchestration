@@ -17,9 +17,7 @@ import (
 )
 
 const (
-	BackendNativeOpenRouter = "native-openrouter"
-	BackendBifrost          = "bifrost"
-	BackendAgentGateway     = "agentgateway"
+	BackendBifrost = "bifrost"
 )
 
 type Backend interface {
@@ -55,147 +53,36 @@ type RawResponsesBackend interface {
 }
 
 type BackendConfig struct {
-	Name                     string
-	OpenRouterClient         openrouter.ChatClient
-	BifrostBaseURL           string
-	BifrostAPIKey            string
-	AgentGatewayBaseURL      string
-	AgentGatewayAPIKey       string
-	AgentGatewayReadinessURL string
-	CopilotTokenResolver     CopilotTokenResolver
-	HTTPClient               *http.Client
+	Name                 string
+	BifrostBaseURL       string
+	BifrostAPIKey        string
+	CopilotTokenResolver CopilotTokenResolver
+	HTTPClient           *http.Client
 }
 
 func New(cfg BackendConfig) (Backend, error) {
 	switch strings.TrimSpace(cfg.Name) {
-	case "", BackendNativeOpenRouter:
-		if cfg.OpenRouterClient == nil {
-			return nil, errors.New("native OpenRouter backend requires an OpenRouter client")
-		}
-		return NewOpenRouterBackend(cfg.OpenRouterClient), nil
-	case BackendBifrost:
+	case "", BackendBifrost:
 		if strings.TrimSpace(cfg.BifrostBaseURL) == "" {
-			return nil, errors.New("Bifrost backend requires a base URL")
+			return nil, errors.New("bifrost backend requires a base URL")
 		}
 		return NewBifrostBackend(BifrostConfig{
 			BaseURL:    cfg.BifrostBaseURL,
 			APIKey:     cfg.BifrostAPIKey,
 			HTTPClient: cfg.HTTPClient,
 		}), nil
-	case BackendAgentGateway:
-		if strings.TrimSpace(cfg.AgentGatewayBaseURL) == "" {
-			return nil, errors.New("agentgateway backend requires a base URL")
-		}
-		return NewAgentGatewayBackend(AgentGatewayConfig{
-			BaseURL:      cfg.AgentGatewayBaseURL,
-			APIKey:       cfg.AgentGatewayAPIKey,
-			ReadinessURL: cfg.AgentGatewayReadinessURL,
-			HTTPClient:   cfg.HTTPClient,
-		}), nil
 	case BackendCopilotUser:
 		if cfg.CopilotTokenResolver == nil {
 			return nil, errors.New("copilot-user backend requires a token resolver")
 		}
 		client := copilot.NewClient()
-		client.HTTPClient = cfg.HTTPClient
+		if cfg.HTTPClient != nil {
+			client.HTTPClient = cfg.HTTPClient
+		}
 		return NewCopilotUserBackend(client, cfg.CopilotTokenResolver), nil
 	default:
 		return nil, fmt.Errorf("unknown model backend %q", cfg.Name)
 	}
-}
-
-type OpenRouterBackend struct {
-	client openrouter.ChatClient
-}
-
-func NewOpenRouterBackend(client openrouter.ChatClient) *OpenRouterBackend {
-	return &OpenRouterBackend{client: client}
-}
-
-func (b *OpenRouterBackend) Name() string {
-	return BackendNativeOpenRouter
-}
-
-func (b *OpenRouterBackend) ResolvedModel(_ string, model string) string {
-	return model
-}
-
-func (b *OpenRouterBackend) ChatCompletion(ctx context.Context, req openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
-	if req.Provider != "" && req.Provider != "openrouter" {
-		return openrouter.ChatCompletionResponse{}, fmt.Errorf("native OpenRouter backend cannot handle provider %q", req.Provider)
-	}
-	if b == nil || b.client == nil {
-		return openrouter.ChatCompletionResponse{}, errors.New("native OpenRouter backend unavailable")
-	}
-	return b.client.ChatCompletion(ctx, req)
-}
-
-func (b *OpenRouterBackend) ChatCompletionStream(ctx context.Context, req openrouter.ChatCompletionRequest) (io.ReadCloser, error) {
-	if req.Provider != "" && req.Provider != "openrouter" {
-		return nil, fmt.Errorf("native OpenRouter backend cannot handle provider %q", req.Provider)
-	}
-	if b == nil || b.client == nil {
-		return nil, errors.New("native OpenRouter backend unavailable")
-	}
-	return b.client.ChatCompletionStream(ctx, req)
-}
-
-func (b *OpenRouterBackend) ChatCompletionRaw(ctx context.Context, req RawRequest) ([]byte, error) {
-	if req.Provider != "" && req.Provider != "openrouter" {
-		return nil, fmt.Errorf("native OpenRouter backend cannot handle provider %q", req.Provider)
-	}
-	if rawClient, ok := b.client.(interface {
-		ChatCompletionRaw(context.Context, []byte) ([]byte, error)
-	}); ok {
-		body, err := withRawModel(req.Body, req.Model)
-		if err != nil {
-			return nil, err
-		}
-		return rawClient.ChatCompletionRaw(ctx, body)
-	}
-	chatReq, err := chatRequestFromRaw(req)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := b.ChatCompletion(ctx, chatReq)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(resp)
-}
-
-func (b *OpenRouterBackend) ChatCompletionStreamRaw(ctx context.Context, req RawRequest) (io.ReadCloser, error) {
-	if req.Provider != "" && req.Provider != "openrouter" {
-		return nil, fmt.Errorf("native OpenRouter backend cannot handle provider %q", req.Provider)
-	}
-	if rawClient, ok := b.client.(interface {
-		ChatCompletionStreamRaw(context.Context, []byte) (io.ReadCloser, error)
-	}); ok {
-		body, err := withRawModel(req.Body, req.Model)
-		if err != nil {
-			return nil, err
-		}
-		return rawClient.ChatCompletionStreamRaw(ctx, body)
-	}
-	chatReq, err := chatRequestFromRaw(req)
-	if err != nil {
-		return nil, err
-	}
-	return b.ChatCompletionStream(ctx, chatReq)
-}
-
-func chatRequestFromRaw(req RawRequest) (openrouter.ChatCompletionRequest, error) {
-	var chatReq openrouter.ChatCompletionRequest
-	if err := json.Unmarshal(req.Body, &chatReq); err != nil {
-		return openrouter.ChatCompletionRequest{}, fmt.Errorf("decode raw chat request: %w", err)
-	}
-	chatReq.Provider = req.Provider
-	chatReq.ModelAlias = req.ModelAlias
-	chatReq.Model = req.Model
-	if len(chatReq.Messages) == 0 {
-		return openrouter.ChatCompletionRequest{}, errors.New("at least one message is required")
-	}
-	return chatReq, nil
 }
 
 func withRawModel(body []byte, model string) ([]byte, error) {
@@ -252,34 +139,6 @@ func BifrostModelName(provider string, model string) string {
 		return model
 	}
 	return provider + "/" + model
-}
-
-type AgentGatewayConfig struct {
-	BaseURL      string
-	APIKey       string
-	ReadinessURL string
-	HTTPClient   *http.Client
-}
-
-type AgentGatewayBackend struct {
-	*openAICompatibleBackend
-}
-
-func NewAgentGatewayBackend(cfg AgentGatewayConfig) *AgentGatewayBackend {
-	return &AgentGatewayBackend{
-		openAICompatibleBackend: newOpenAICompatibleBackend(openAICompatibleConfig{
-			Name:           BackendAgentGateway,
-			DisplayName:    "agentgateway",
-			BaseURL:        cfg.BaseURL,
-			APIKey:         cfg.APIKey,
-			HealthURL:      cfg.ReadinessURL,
-			ProviderHeader: "X-AI-Orch-Provider",
-			ResolveModel: func(_ string, model string) string {
-				return strings.TrimSpace(model)
-			},
-			HTTPClient: cfg.HTTPClient,
-		}),
-	}
 }
 
 type openAICompatibleConfig struct {

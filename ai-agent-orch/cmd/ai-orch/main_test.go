@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -212,6 +213,150 @@ func TestRuntimeDoctorChecksMissingTokensAndBrokenServices(t *testing.T) {
 		if !containsSubstring(checks, item) {
 			t.Fatalf("expected substring %q in checks, got %#v", item, checks)
 		}
+	}
+}
+
+func TestParseOpenCodeWrapperArgs(t *testing.T) {
+	opts := parseOpenCodeWrapperArgs([]string{
+		"--governance-agent", "code-review",
+		"--governance-classification", "internal",
+		"--governance-prompt", "review safely",
+		"--", "run", "--model", "ai-orch/copilot-gpt-5-mini", "hello",
+	})
+	if opts.GovernanceAgent != "code-review" || opts.Classification != "internal" || opts.SessionPrompt != "review safely" {
+		t.Fatalf("unexpected governance args: %#v", opts)
+	}
+	want := []string{"run", "--model", "ai-orch/copilot-gpt-5-mini", "hello"}
+	if len(opts.OpenCodeArgs) != len(want) {
+		t.Fatalf("unexpected opencode args: %#v", opts.OpenCodeArgs)
+	}
+	for i := range want {
+		if opts.OpenCodeArgs[i] != want[i] {
+			t.Fatalf("unexpected opencode args: %#v", opts.OpenCodeArgs)
+		}
+	}
+}
+
+func TestParseOpenCodeWrapperArgsDefaultsToGovernanceLead(t *testing.T) {
+	opts := parseOpenCodeWrapperArgs([]string{"--", "run", "hello"})
+	if opts.GovernanceAgent != "governance-lead" {
+		t.Fatalf("expected governance-lead default, got %q", opts.GovernanceAgent)
+	}
+	if opts.Classification != "internal" {
+		t.Fatalf("expected internal default, got %q", opts.Classification)
+	}
+	if opts.ModelOnly {
+		t.Fatal("did not expect model-only mode by default")
+	}
+}
+
+func TestParseOpenCodeWrapperArgsModelOnlyRequiresIntent(t *testing.T) {
+	opts := parseOpenCodeWrapperArgs([]string{
+		"--model-only",
+		"--governance-intent", "Need direct model exploration before choosing a specialist",
+		"--", "run", "hello",
+	})
+	if !opts.ModelOnly {
+		t.Fatal("expected model-only mode")
+	}
+	if opts.GovernanceAgent != "model-gateway" {
+		t.Fatalf("expected model-gateway agent, got %q", opts.GovernanceAgent)
+	}
+	if opts.Intent == "" {
+		t.Fatal("expected intent reason")
+	}
+
+	if err := validateOpenCodeWrapperOptions(opts); err != nil {
+		t.Fatalf("expected valid model-only options: %v", err)
+	}
+
+	missingReason := parseOpenCodeWrapperArgs([]string{"--model-only", "--", "run", "hello"})
+	if err := validateOpenCodeWrapperOptions(missingReason); err == nil {
+		t.Fatal("expected model-only mode to require a governance intent reason")
+	}
+}
+
+func TestCreateOpenCodeGovernedSessionUsesLeadRunReadOnly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/runs" {
+			t.Fatalf("expected /v1/runs, got %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer dev-token" {
+			t.Fatalf("expected dev token auth, got %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if body["agent"] != "governance-lead" {
+			t.Fatalf("expected governance-lead, got %#v", body["agent"])
+		}
+		if body["permission_mode"] != "read_only" {
+			t.Fatalf("expected read_only lead permission, got %#v", body["permission_mode"])
+		}
+		if body["approval_mode"] != "manual" {
+			t.Fatalf("expected manual approval, got %#v", body["approval_mode"])
+		}
+		fmt.Fprint(w, `{"session_id":"sess_1","gateway_token":"sgt_1","specialist":"code-review"}`)
+	}))
+	defer server.Close()
+
+	session, err := createOpenCodeGovernedSession(context.Background(), Config{
+		GovernanceURL: server.URL,
+		Token:         "dev-token",
+	}, openCodeWrapperOptions{
+		GovernanceAgent: defaultOpenCodeLeadAgent,
+		Classification:  "internal",
+		SessionPrompt:   "route this",
+	})
+	if err != nil {
+		t.Fatalf("create governed session: %v", err)
+	}
+	if session.SessionID != "sess_1" || session.GatewayToken != "sgt_1" || session.Specialist != "code-review" {
+		t.Fatalf("unexpected session tokens: %#v", session)
+	}
+}
+
+func TestOpenCodeModelHelpersInjectDefaultOnlyWhenMissing(t *testing.T) {
+	args := withDefaultOpenCodeModel([]string{"run", "hello"}, "ai-orch/coding-gpt55")
+	want := []string{"run", "--model", "ai-orch/coding-gpt55", "hello"}
+	if len(args) != len(want) {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("unexpected args: %#v", args)
+		}
+	}
+
+	explicit := withDefaultOpenCodeModel([]string{"run", "--model", "ai-orch/opus-4.8", "hello"}, "ai-orch/coding-gpt55")
+	if explicit[2] != "ai-orch/opus-4.8" {
+		t.Fatalf("explicit model should be preserved: %#v", explicit)
+	}
+}
+
+func TestOpenCodeAgentHelperInjectsGovernanceLeadOnlyWhenMissing(t *testing.T) {
+	args := withDefaultOpenCodeAgent([]string{"run", "hello"}, "governance-lead")
+	want := []string{"run", "--agent", "governance-lead", "hello"}
+	if len(args) != len(want) {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("unexpected args: %#v", args)
+		}
+	}
+
+	explicit := withDefaultOpenCodeAgent([]string{"run", "--agent", "build", "hello"}, "governance-lead")
+	if explicit[2] != "build" {
+		t.Fatalf("explicit agent should be preserved: %#v", explicit)
+	}
+}
+
+func TestOpenCodeLeadModelUsesCapabilityAlias(t *testing.T) {
+	got := defaultOpenCodeLeadModel(context.Background(), Config{}, nil)
+	if got != "ai-orch/coding-gpt55" {
+		t.Fatalf("expected coding capability alias, got %q", got)
 	}
 }
 

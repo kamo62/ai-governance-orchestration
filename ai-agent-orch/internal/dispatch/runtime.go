@@ -15,13 +15,18 @@ type Runtime interface {
 
 // SessionConfig holds the rendered configuration for a runtime session.
 type SessionConfig struct {
-	SessionID     string
+	SessionID string
+	// GatewayToken is the per-session model gateway secret minted at dispatch
+	// time, exposed to the runtime as AI_ORCH_SESSION_TOKEN.
+	GatewayToken  string
 	SystemPrompt  string
 	UserPrompt    string
 	ModelID       string
 	ModelProvider string
 	WorkspacePath string
 	AllowedTools  []string
+	AgentName     string
+	ToolBroker    *ToolBroker
 	MCPEndpoints  map[string]string
 	Permissions   map[string]string
 	CostCapUSD    float64

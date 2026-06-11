@@ -66,7 +66,7 @@ func (r *ACPRuntime) StartSession(ctx context.Context, cfg SessionConfig) (Sessi
 		return nil, err
 	}
 	cmd := exec.CommandContext(runCtx, path, "acp")
-	cmd.Env = acpEnvironment(configPath, cfg.SessionID)
+	cmd.Env = acpEnvironment(configPath, cfg.SessionID, cfg.GatewayToken)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		_ = os.Remove(configPath)
@@ -147,7 +147,7 @@ func (h *acpHandle) runSession() {
 			"clientCapabilities": map[string]any{
 				"fs": map[string]any{
 					"readTextFile":  true,
-					"writeTextFile": true,
+					"writeTextFile": h.acpWritesAllowed(),
 				},
 				"terminal": true,
 			},
@@ -398,9 +398,14 @@ func (h *acpHandle) handleAgentRequest(msg *jsonRPCMessage) {
 				toolName = title
 			}
 		}
-		optionID := selectedACPOptionID(msg.Params)
+		allowed := h.acpToolAllowed(toolName)
+		optionID := selectedACPOptionID(msg.Params, allowed)
 		h.emitEvent(RuntimeEvent{Type: "tool_call", Payload: fmt.Sprintf("ACP permission requested for %s: %s", toolName, optionID)})
-		permissionPayload, _ := json.Marshal(map[string]string{"tool": toolName, "option_id": optionID})
+		decision := "rejected"
+		if allowed {
+			decision = "allowed_once"
+		}
+		permissionPayload, _ := json.Marshal(map[string]string{"tool": toolName, "option_id": optionID, "decision": decision})
 		h.emitEvent(RuntimeEvent{Type: "acp_permission", Payload: string(permissionPayload)})
 		resp := map[string]any{
 			"jsonrpc": "2.0",
@@ -571,8 +576,21 @@ func (h *acpHandle) Stop() error {
 	return nil
 }
 
-func selectedACPOptionID(params map[string]any) string {
+func selectedACPOptionID(params map[string]any, allowed bool) string {
 	if options, ok := params["options"].([]any); ok {
+		if allowed {
+			for _, option := range options {
+				item, ok := option.(map[string]any)
+				if !ok {
+					continue
+				}
+				kind, _ := item["kind"].(string)
+				id, _ := item["optionId"].(string)
+				if id != "" && kind == "allow_once" {
+					return id
+				}
+			}
+		}
 		for _, option := range options {
 			item, ok := option.(map[string]any)
 			if !ok {
@@ -583,26 +601,78 @@ func selectedACPOptionID(params map[string]any) string {
 			if id == "" {
 				continue
 			}
-			if kind == "allow_always" {
-				return id
-			}
-		}
-		for _, option := range options {
-			item, ok := option.(map[string]any)
-			if !ok {
-				continue
-			}
-			kind, _ := item["kind"].(string)
-			id, _ := item["optionId"].(string)
-			if id != "" && kind == "allow_once" {
+			if strings.HasPrefix(kind, "reject") || strings.HasPrefix(kind, "deny") {
 				return id
 			}
 		}
 	}
-	return "always"
+	if allowed {
+		return "once"
+	}
+	return "reject"
+}
+
+func (h *acpHandle) acpToolAllowed(toolName string) bool {
+	command, subcommand := acpToolPolicyCommand(toolName)
+	if command == "write_file" {
+		return h.acpWritesAllowed()
+	}
+	if !h.sessionConfigDeclaresACPTool(command, subcommand) {
+		return false
+	}
+	if h.config.ToolBroker != nil && strings.TrimSpace(h.config.AgentName) != "" {
+		return h.config.ToolBroker.ValidateWithPermissions(command, subcommand, h.config.AgentName, h.config.Permissions) == nil
+	}
+	return true
+}
+
+func (h *acpHandle) sessionConfigDeclaresACPTool(command, subcommand string) bool {
+	for _, allowedTool := range h.config.AllowedTools {
+		allowedCommand, allowedSubcommand := ParseToolCommand(allowedTool)
+		if allowedCommand == command && (allowedSubcommand == "" || allowedSubcommand == subcommand) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *acpHandle) acpWritesAllowed() bool {
+	if strings.EqualFold(strings.TrimSpace(h.config.Permissions["workspace_write"]), "deny") {
+		return false
+	}
+	if !h.sessionConfigDeclaresACPTool("write_file", "") {
+		return false
+	}
+	if h.config.ToolBroker != nil && strings.TrimSpace(h.config.AgentName) != "" {
+		return h.config.ToolBroker.ValidateWithPermissions("write_file", "", h.config.AgentName, h.config.Permissions) == nil
+	}
+	return true
+}
+
+func acpToolCommand(toolName string) string {
+	name := strings.ToLower(strings.TrimSpace(toolName))
+	switch name {
+	case "fs/write_text_file", "fs.write_text_file", "fs/writetextfile", "fs.writetextfile", "write_text_file", "writefile", "write_file":
+		return "write_file"
+	case "fs/read_text_file", "fs.read_text_file", "fs/readtextfile", "fs.readtextfile", "read_text_file", "readfile", "read_file":
+		return "read_file"
+	case "bash", "shell", "terminal", "run_command":
+		return "run_command"
+	default:
+		return name
+	}
+}
+
+func acpToolPolicyCommand(toolName string) (string, string) {
+	normalized := acpToolCommand(toolName)
+	command, subcommand := ParseToolCommand(normalized)
+	return command, subcommand
 }
 
 func (h *acpHandle) handleWriteTextFile(params map[string]any) error {
+	if !h.acpWritesAllowed() {
+		return fmt.Errorf("ACP write denied by workspace permissions")
+	}
 	path, _ := params["path"].(string)
 	if path == "" {
 		path, _ = params["filePath"].(string)
@@ -913,7 +983,8 @@ func writeOpenCodeACPConfig(cfg SessionConfig) (string, error) {
 					"baseURL": baseURL,
 					"apiKey":  "{env:AI_ORCH_RUNTIME_TOKEN}",
 					"headers": map[string]any{
-						"X-AI-Orch-Session-ID": "{env:AI_ORCH_SESSION_ID}",
+						"X-AI-Orch-Session-ID":    "{env:AI_ORCH_SESSION_ID}",
+						"X-AI-Orch-Session-Token": "{env:AI_ORCH_SESSION_TOKEN}",
 					},
 				},
 				"models": map[string]any{
@@ -943,12 +1014,15 @@ func writeOpenCodeACPConfig(cfg SessionConfig) (string, error) {
 	return path, nil
 }
 
-func acpEnvironment(configPath string, sessionID string) []string {
+func acpEnvironment(configPath string, sessionID string, gatewayToken string) []string {
 	env := append([]string{}, os.Environ()...)
 	env = append(env, "OPENCODE_CONFIG="+configPath)
 	if sessionID != "" {
 		env = append(env, "AI_ORCH_SESSION_ID="+sessionID)
 	}
+	// Always set the session token env var so the config placeholder resolves;
+	// sessions without token binding send an empty header, which passes.
+	env = append(env, "AI_ORCH_SESSION_TOKEN="+gatewayToken)
 	if os.Getenv("AI_ORCH_RUNTIME_TOKEN") == "" {
 		env = append(env, "AI_ORCH_RUNTIME_TOKEN=local-runtime-token")
 	}

@@ -12,11 +12,13 @@ x-mcp-environment: &mcp-environment
 x-catalog-volumes: &catalog-volumes
   - ./agents:/app/agents:ro
   - ./models:/app/models:ro
+  - ./mcp:/app/mcp:ro
   - ./policies:/app/policies:ro
 
 x-runtime-volumes: &runtime-volumes
   - ./agents:/app/agents:ro
   - ./models:/app/models:ro
+  - ./mcp:/app/mcp:ro
   - ./policies:/app/policies:ro
   - audit-data:/app/var/audit
 
@@ -57,13 +59,15 @@ services:
       AI_ORCH_SESSION_COST_CAP_USD: ${AI_ORCH_SESSION_COST_CAP_USD:-0}
       AI_ORCH_POLICY_ENGINE: ${AI_ORCH_POLICY_ENGINE:-native}
       AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX: ${AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX:-15}
+      AI_ORCH_REQUIRE_WORK_ITEM: ${AI_ORCH_REQUIRE_WORK_ITEM:-false}
+      AI_ORCH_ENABLE_SERVER_CONTEXT_RESOLVER: ${AI_ORCH_ENABLE_SERVER_CONTEXT_RESOLVER:-false}
+      AI_ORCH_GATEWAY_AUTO_SESSION: ${AI_ORCH_GATEWAY_AUTO_SESSION:-true}
+      AI_ORCH_TRUSTED_CLIENT_TOKEN: ${AI_ORCH_TRUSTED_CLIENT_TOKEN:-}
+      AI_ORCH_ENV: ${AI_ORCH_ENV:-local}
       AI_ORCH_ORCHESTRATOR_URL: http://orchestrator:8080
       AI_ORCH_MODEL_BACKEND: ${AI_ORCH_MODEL_BACKEND:-bifrost}
       AI_ORCH_BIFROST_BASE_URL: ${AI_ORCH_BIFROST_BASE_URL:-http://bifrost:8080}
       AI_ORCH_BIFROST_API_KEY: ${AI_ORCH_BIFROST_API_KEY:-}
-      AI_ORCH_AGENTGATEWAY_BASE_URL: ${AI_ORCH_AGENTGATEWAY_BASE_URL:-}
-      AI_ORCH_AGENTGATEWAY_API_KEY: ${AI_ORCH_AGENTGATEWAY_API_KEY:-}
-      AI_ORCH_AGENTGATEWAY_READINESS_URL: ${AI_ORCH_AGENTGATEWAY_READINESS_URL:-}
       AI_ORCH_COPILOT_TOKEN_DB: ${AI_ORCH_COPILOT_TOKEN_DB:-/app/var/audit/copilot-tokens.db}
       AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY: ${AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
@@ -91,7 +95,6 @@ services:
       AI_ORCH_MODEL_PROXY_URL: http://governance-shell:8080/internal/v1/model
       AI_ORCH_MCP_PROXY_URL: http://governance-shell:8080/internal/v1/mcp
       AI_ORCH_MODEL_ALIAS_OVERRIDE: ${AI_ORCH_MODEL_ALIAS_OVERRIDE:-}
-      AI_ORCH_OPENROUTER_REASONING_EFFORT: ${AI_ORCH_OPENROUTER_REASONING_EFFORT:-}
       AI_ORCH_OPENROUTER_REASONING_EXCLUDE: ${AI_ORCH_OPENROUTER_REASONING_EXCLUDE:-true}
     volumes: *runtime-volumes
     healthcheck:
@@ -137,11 +140,16 @@ services:
       - /workspace
       - --model
       - ${OPENCODE_MODEL:-ai-orch/coding-balanced}
+      - --agent
+      - ${OPENCODE_AGENT:-governance-lead}
       - ${OPENCODE_PROMPT:-Review this sandbox workspace briefly without editing files.}
     environment:
       OPENCODE_CONFIG: /opencode/opencode.json
       AI_ORCH_RUNTIME_TOKEN: ${AI_ORCH_RUNTIME_TOKEN:-local-runtime-token}
       AI_ORCH_SESSION_ID: ${AI_ORCH_SESSION_ID:-}
+      AI_ORCH_SESSION_TOKEN: ${AI_ORCH_SESSION_TOKEN:-}
+      AI_ORCH_ACTOR_SUBJECT: ${AI_ORCH_ACTOR_SUBJECT:-local-dev}
+      AI_ORCH_INTENT: ${AI_ORCH_INTENT:-Docker sandbox model-only review}
     depends_on:
       governance-shell:
         condition: service_healthy

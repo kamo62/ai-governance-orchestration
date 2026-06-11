@@ -31,7 +31,7 @@ func runOpenCodeE2E(gatewayURL string, args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
-	sessionID, specialist, err := createGovernedRun(ctx, cfg, prompt)
+	sessionID, specialist, gatewayToken, err := createGovernedRun(ctx, cfg, prompt)
 	if err != nil {
 		return err
 	}
@@ -50,11 +50,13 @@ func runOpenCodeE2E(gatewayURL string, args []string) error {
 		return fmt.Errorf("close temporary OpenCode config: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, "opencode", "run", "--dir", targetDir, "--model", model, "--format", "json", prompt)
+	agent := envOrDefault("OPENCODE_AGENT", "governance-lead")
+	cmd := exec.CommandContext(ctx, "opencode", "run", "--dir", targetDir, "--model", model, "--agent", agent, "--format", "json", prompt)
 	cmd.Env = append(os.Environ(),
 		"OPENCODE_CONFIG="+configFile.Name(),
 		"AI_ORCH_RUNTIME_TOKEN="+cfg.RuntimeToken,
 		"AI_ORCH_SESSION_ID="+sessionID,
+		"AI_ORCH_SESSION_TOKEN="+gatewayToken,
 	)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = io.MultiWriter(os.Stdout, &stdout)
@@ -100,9 +102,16 @@ func openCodeE2EArgs(args []string) (string, string, string) {
 	return targetDir, model, prompt
 }
 
-func createGovernedRun(ctx context.Context, cfg betasmoke.Config, prompt string) (string, string, error) {
+func e2eActorSubject(cfg betasmoke.Config) string {
+	if strings.TrimSpace(cfg.ActorSubject) != "" {
+		return strings.TrimSpace(cfg.ActorSubject)
+	}
+	return strings.TrimSpace(os.Getenv("USER"))
+}
+
+func createGovernedRun(ctx context.Context, cfg betasmoke.Config, prompt string) (string, string, string, error) {
 	body, _ := json.Marshal(map[string]any{
-		"agent":           "unit-tests",
+		"agent":           "governance-lead",
 		"classification":  cfg.Classification,
 		"prompt":          prompt,
 		"permission_mode": "reviewed",
@@ -111,29 +120,35 @@ func createGovernedRun(ctx context.Context, cfg betasmoke.Config, prompt string)
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(cfg.GovernanceURL, "/")+"/v1/runs", bytes.NewReader(body))
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+cfg.DevToken)
+	// Bind the session to the developer's actor so it appears in their
+	// actor-scoped console views and resolves their Copilot enrollment.
+	if actor := e2eActorSubject(cfg); actor != "" {
+		req.Header.Set("X-AI-Orch-Local-Identity", actor)
+	}
 	resp, err := (&http.Client{Timeout: cfg.HTTPTimeout}).Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("start governed run: %w", err)
+		return "", "", "", fmt.Errorf("start governed run: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", "", fmt.Errorf("start governed run: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return "", "", "", fmt.Errorf("start governed run: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return "", "", fmt.Errorf("decode governed run: %w", err)
+		return "", "", "", fmt.Errorf("decode governed run: %w", err)
 	}
 	sessionID, _ := parsed["session_id"].(string)
 	specialist, _ := parsed["specialist"].(string)
+	gatewayToken, _ := parsed["gateway_token"].(string)
 	if sessionID == "" {
-		return "", "", fmt.Errorf("governed run response missing session_id")
+		return "", "", "", fmt.Errorf("governed run response missing session_id")
 	}
-	return sessionID, specialist, nil
+	return sessionID, specialist, gatewayToken, nil
 }
 
 func requireGatewayAudit(ctx context.Context, cfg betasmoke.Config, sessionID string) error {
@@ -142,6 +157,9 @@ func requireGatewayAudit(ctx context.Context, cfg betasmoke.Config, sessionID st
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.DevToken)
+	if actor := e2eActorSubject(cfg); actor != "" {
+		req.Header.Set("X-AI-Orch-Local-Identity", actor)
+	}
 	resp, err := (&http.Client{Timeout: cfg.HTTPTimeout}).Do(req)
 	if err != nil {
 		return fmt.Errorf("audit lookup: %w", err)

@@ -59,7 +59,7 @@ func NewDispatcher(catalogRoot string) *Dispatcher {
 	return d
 }
 
-func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName string, prompt string) (dispatch.SessionHandle, error) {
+func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName string, prompt string, gatewayToken string) (dispatch.SessionHandle, error) {
 	report, err := catalog.Validate(d.catalogRoot)
 	if err != nil {
 		return nil, fmt.Errorf("validate catalog: %w", err)
@@ -93,11 +93,14 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 
 	sessionCfg := dispatch.SessionConfig{
 		SessionID:     sessionID,
+		GatewayToken:  gatewayToken,
 		SystemPrompt:  agentCfg.SystemPrompt(d.catalogRoot),
 		UserPrompt:    prompt,
 		ModelID:       modelAlias,
 		WorkspacePath: workspaceRoot(d.catalogRoot),
 		AllowedTools:  agentCfg.ToolsAllowed,
+		AgentName:     agentName,
+		ToolBroker:    d.broker,
 		Permissions:   permissions,
 		CostCapUSD:    agentCfg.Cost.PerInvocationCapUSD,
 		MCPEndpoints:  resolveMCPEndpoints(agentCfg.MCPServers),

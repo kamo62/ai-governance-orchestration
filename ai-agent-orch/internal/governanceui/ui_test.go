@@ -19,11 +19,14 @@ func TestHandlerServesEmbeddedIndex(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "AI Orch Governance") {
 		t.Fatalf("expected UI title in response, got %q", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "CIO Demo Readiness") {
-		t.Fatalf("expected readiness panel in response, got %q", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "Governance Posture") {
+		t.Fatalf("expected posture panel in response, got %q", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "Recent Sessions") || !strings.Contains(rec.Body.String(), "Session Audit Trail") {
+	if !strings.Contains(rec.Body.String(), "Organization Activity") || !strings.Contains(rec.Body.String(), "Session Audit Trail") || !strings.Contains(rec.Body.String(), "Activity Ledger") {
 		t.Fatalf("expected session/audit panels in response, got %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "ledger-table-wrap") {
+		t.Fatalf("expected ledger table container in response, got %q", rec.Body.String())
 	}
 }
 

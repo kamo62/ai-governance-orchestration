@@ -3,6 +3,8 @@ package modelgateway
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -101,7 +103,7 @@ func newTestGatewayWithValidator(validate func(context.Context, string) error) *
 				{Alias: "coding-fast", Provider: "openrouter", ModelID: "x-ai/grok-build-0.1", AllowedClassifications: []string{"public", "internal"}},
 			},
 		}),
-		OpenRouter: &fakeChatClient{
+		Backend: &fakeChatClient{
 			resp: openrouter.ChatCompletionResponse{
 				ID:    "chatcmpl-test",
 				Model: "anthropic/claude-opus-4.7",
@@ -268,6 +270,185 @@ func TestGatewayChatCompletionsPreservesOpenAIToolPayload(t *testing.T) {
 	}
 }
 
+func TestGatewayChatCompletionsNormalizesReasoningEffortForBifrost(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	backend := &rawFakeBackend{
+		chat: []byte(`{"id":"chatcmpl-test","model":"openrouter/openai/gpt-5.5","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"completion_tokens_details":{"reasoning_tokens":2}}}`),
+	}
+	g := NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.New(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+			{
+				Alias:                  "coding-gpt55",
+				Provider:               "openrouter",
+				ModelID:                "openai/gpt-5.5",
+				AllowedClassifications: []string{"public", "internal"},
+				Routes: []catalog.ModelRoute{
+					{
+						Provider:         "openrouter",
+						ModelID:          "openai/gpt-5.5",
+						CredentialSource: "platform-openrouter",
+						Reasoning: catalog.ReasoningMetadata{
+							DefaultEffort:  "medium",
+							MaxEffort:      "high",
+							SupportsEffort: boolPtr(true),
+						},
+					},
+				},
+			},
+		}}),
+		Backend: backend,
+		Audit:   auditStore,
+		NewID:   func(prefix string) string { return prefix + "_test" },
+		LookupSession: func(context.Context, string) (SessionInfo, error) {
+			return SessionInfo{Classification: "internal", ActorSubject: "dev@example.test", Agent: "backend-development", Status: "running"}, nil
+		},
+	})
+	body := []byte(`{"model":"coding-gpt55","messages":[{"role":"user","content":"hello"}],"reasoningEffort":"high"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-test-token")
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_reasoning")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var upstream map[string]any
+	if err := json.Unmarshal(backend.lastRaw.Body, &upstream); err != nil {
+		t.Fatalf("decode upstream request: %v", err)
+	}
+	if _, ok := upstream["reasoningEffort"]; ok {
+		t.Fatalf("expected OpenCode reasoningEffort field removed, got %s", string(backend.lastRaw.Body))
+	}
+	reasoning, ok := upstream["reasoning"].(map[string]any)
+	if !ok || reasoning["effort"] != "high" {
+		t.Fatalf("expected Bifrost reasoning effort high, got %s", string(backend.lastRaw.Body))
+	}
+
+	events, err := auditStore.EventsBySession(context.Background(), "sess_reasoning")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one audit event, got %d", len(events))
+	}
+	if events[0].ReasoningEffortRequested != "high" || events[0].ReasoningEffortApplied != "high" || events[0].ReasoningSource != "client" {
+		t.Fatalf("unexpected reasoning audit fields: %#v", events[0])
+	}
+	if got := numericAuditValue(events[0].TokenUsage["reasoning_tokens"]); got != 2 {
+		t.Fatalf("expected reasoning token usage, got %#v", events[0].TokenUsage)
+	}
+}
+
+func TestGatewayChatCompletionsClampsLeadReasoningEffort(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	backend := &rawFakeBackend{
+		chat: []byte(`{"id":"chatcmpl-test","model":"openrouter/openai/gpt-5.5","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`),
+	}
+	g := NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.New(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+			{
+				Alias:                  "coding-gpt55",
+				Provider:               "openrouter",
+				ModelID:                "openai/gpt-5.5",
+				AllowedClassifications: []string{"public", "internal"},
+				Reasoning: catalog.ReasoningMetadata{
+					DefaultEffort:  "medium",
+					MaxEffort:      "high",
+					SupportsEffort: boolPtr(true),
+				},
+			},
+		}}),
+		Backend: backend,
+		Audit:   auditStore,
+		NewID:   func(prefix string) string { return prefix + "_test" },
+		LookupSession: func(context.Context, string) (SessionInfo, error) {
+			return SessionInfo{Classification: "internal", ActorSubject: "dev@example.test", Agent: "governance-lead", Status: "running"}, nil
+		},
+	})
+	body := []byte(`{"model":"coding-gpt55","messages":[{"role":"user","content":"hello"}],"reasoning":{"effort":"high"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-test-token")
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_clamped")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var upstream map[string]any
+	if err := json.Unmarshal(backend.lastRaw.Body, &upstream); err != nil {
+		t.Fatalf("decode upstream request: %v", err)
+	}
+	reasoning := upstream["reasoning"].(map[string]any)
+	if reasoning["effort"] != "medium" {
+		t.Fatalf("expected governance-lead max medium, got %s", string(backend.lastRaw.Body))
+	}
+	events, err := auditStore.EventsBySession(context.Background(), "sess_clamped")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one audit event, got %d", len(events))
+	}
+	if events[0].ReasoningEffortRequested != "high" || events[0].ReasoningEffortApplied != "medium" || events[0].ReasoningSource != "policy_clamped" {
+		t.Fatalf("unexpected reasoning audit fields: %#v", events[0])
+	}
+}
+
+func TestGatewayChatCompletionsStripsReasoningForUnsupportedRoute(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	backend := &rawFakeBackend{
+		chat: []byte(`{"id":"chatcmpl-test","model":"gpt-5.5","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`),
+	}
+	g := NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.New(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+			{
+				Alias:                  "copilot-gpt-5.5",
+				Provider:               "copilot-user",
+				ModelID:                "gpt-5.5",
+				AllowedClassifications: []string{"public", "internal"},
+				Reasoning: catalog.ReasoningMetadata{
+					DefaultEffort:  "low",
+					MaxEffort:      "medium",
+					SupportsEffort: boolPtr(false),
+				},
+			},
+		}}),
+		Backend: backend,
+		Audit:   auditStore,
+		NewID:   func(prefix string) string { return prefix + "_test" },
+		LookupSession: func(context.Context, string) (SessionInfo, error) {
+			return SessionInfo{Classification: "internal", ActorSubject: "dev@example.test", Agent: "governance-lead", Status: "running"}, nil
+		},
+	})
+	body := []byte(`{"model":"copilot-gpt-5.5","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"high"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-test-token")
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_unsupported_reasoning")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if bytes.Contains(backend.lastRaw.Body, []byte("reasoning")) {
+		t.Fatalf("expected reasoning fields stripped for unsupported route, got %s", string(backend.lastRaw.Body))
+	}
+	events, err := auditStore.EventsBySession(context.Background(), "sess_unsupported_reasoning")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one audit event, got %d", len(events))
+	}
+	if events[0].ReasoningEffortRequested != "high" || events[0].ReasoningEffortApplied != "" || events[0].ReasoningSource != "provider_default" {
+		t.Fatalf("unexpected reasoning audit fields: %#v", events[0])
+	}
+}
+
 func TestGatewayChatCompletionsRequiresSessionID(t *testing.T) {
 	g := newTestGateway()
 	body := []byte(`{"model":"coding-primary","messages":[{"role":"user","content":"hello"}]}`)
@@ -280,6 +461,116 @@ func TestGatewayChatCompletionsRequiresSessionID(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "X-AI-Orch-Session-ID") {
 		t.Fatalf("expected session header error, got: %s", rec.Body.String())
+	}
+}
+
+func TestGatewayChatCompletionsAutoCreatesSession(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	backend := &fakeChatClient{
+		resp: openrouter.ChatCompletionResponse{
+			ID: "chatcmpl-auto",
+			Choices: []struct {
+				Message openrouter.Message `json:"message"`
+			}{
+				{Message: openrouter.Message{Role: "assistant", Content: "Hello"}},
+			},
+			Usage: openrouter.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+		},
+	}
+	body := []byte(`{"model":"coding-primary","messages":[{"role":"user","content":"hello"}]}`)
+	g := NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.New(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+			{Alias: "coding-primary", Provider: "openrouter", ModelID: "anthropic/claude-opus-4.7", AllowedClassifications: []string{"public", "internal"}},
+		}}),
+		Backend: backend,
+		Audit:   auditStore,
+		NewID:   func(prefix string) string { return prefix + "_test" },
+		AutoSession: func(_ context.Context, req AutoSessionRequest) (SessionInfo, error) {
+			if req.ActorSubject != "dev@example.test" || req.ModelAlias != "coding-primary" || req.Endpoint != "chat.completions" {
+				t.Fatalf("unexpected auto session request: %#v", req)
+			}
+			if req.Intent != "Need direct model exploration before choosing a specialist" {
+				t.Fatalf("expected intent reason, got %q", req.Intent)
+			}
+			if !bytes.Equal(req.RawRequestBody, body) {
+				t.Fatalf("expected raw request body passed to auto session")
+			}
+			return SessionInfo{SessionID: "sess_auto", ActorSubject: req.ActorSubject, Classification: req.Classification, Status: "running", GatewayToken: "sgt_auto"}, nil
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-test-token")
+	req.Header.Set("X-AI-Orch-Actor-Subject", "dev@example.test")
+	req.Header.Set("X-AI-Orch-Intent", "Need direct model exploration before choosing a specialist")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-AI-Orch-Session-ID") != "sess_auto" || rec.Header().Get("X-AI-Orch-Session-Token") != "sgt_auto" {
+		t.Fatalf("expected auto-session headers, got session=%q token=%q", rec.Header().Get("X-AI-Orch-Session-ID"), rec.Header().Get("X-AI-Orch-Session-Token"))
+	}
+	events, err := auditStore.EventsBySession(context.Background(), "sess_auto")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 || events[0].EventType != "model.gateway_call" || events[0].Actor != "dev@example.test" {
+		t.Fatalf("unexpected audit events: %#v", events)
+	}
+}
+
+func TestGatewayAutoSessionReturnedTokenBindsSubsequentCalls(t *testing.T) {
+	tokenHash := sha256.Sum256([]byte("sgt_auto"))
+	lookup := map[string]SessionInfo{}
+	g := NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.New(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+			{Alias: "coding-primary", Provider: "openrouter", ModelID: "anthropic/claude-opus-4.7", AllowedClassifications: []string{"public", "internal"}},
+		}}),
+		Backend: &fakeChatClient{resp: openrouter.ChatCompletionResponse{ID: "chatcmpl-test", Choices: []struct {
+			Message openrouter.Message `json:"message"`
+		}{{Message: openrouter.Message{Role: "assistant", Content: "ok"}}}}},
+		AutoSession: func(_ context.Context, req AutoSessionRequest) (SessionInfo, error) {
+			info := SessionInfo{SessionID: "sess_auto_bound", ActorSubject: req.ActorSubject, Classification: "internal", Status: "running", GatewayTokenSHA256: hex.EncodeToString(tokenHash[:]), GatewayToken: "sgt_auto"}
+			lookup[info.SessionID] = info
+			return info, nil
+		},
+		LookupSession: func(_ context.Context, sessionID string) (SessionInfo, error) {
+			info, ok := lookup[sessionID]
+			if !ok {
+				return SessionInfo{}, errors.New("missing")
+			}
+			return info, nil
+		},
+	})
+	body := []byte(`{"model":"coding-primary","messages":[{"role":"user","content":"hello"}]}`)
+	autoReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	autoReq.Header.Set("Authorization", "Bearer runtime-test-token")
+	autoReq.Header.Set("X-AI-Orch-Actor-Subject", "dev@example.test")
+	autoRec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(autoRec, autoReq)
+	if autoRec.Code != http.StatusOK {
+		t.Fatalf("expected auto call 200, got %d: %s", autoRec.Code, autoRec.Body.String())
+	}
+
+	missingTokenReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	missingTokenReq.Header.Set("Authorization", "Bearer runtime-test-token")
+	missingTokenReq.Header.Set("X-AI-Orch-Session-ID", "sess_auto_bound")
+	missingTokenRec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(missingTokenRec, missingTokenReq)
+	if missingTokenRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected missing token 401, got %d: %s", missingTokenRec.Code, missingTokenRec.Body.String())
+	}
+
+	boundReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	boundReq.Header.Set("Authorization", "Bearer runtime-test-token")
+	boundReq.Header.Set("X-AI-Orch-Session-ID", "sess_auto_bound")
+	boundReq.Header.Set("X-AI-Orch-Session-Token", autoRec.Header().Get("X-AI-Orch-Session-Token"))
+	boundRec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(boundRec, boundReq)
+	if boundRec.Code != http.StatusOK {
+		t.Fatalf("expected token-bound call 200, got %d: %s", boundRec.Code, boundRec.Body.String())
 	}
 }
 
@@ -332,7 +623,7 @@ func TestGatewayChatCompletionsIgnoresCallerClassificationHeader(t *testing.T) {
 				{Alias: "coding-primary", Provider: "openrouter", ModelID: "m-internal", AllowedClassifications: []string{"internal"}},
 			},
 		}),
-		OpenRouter: &fakeChatClient{},
+		Backend: &fakeChatClient{},
 		LookupSession: func(context.Context, string) (SessionInfo, error) {
 			return SessionInfo{Classification: "internal"}, nil
 		},
@@ -459,9 +750,9 @@ func TestGatewayStreamTranslatesChunks(t *testing.T) {
 				{Alias: "coding-primary", Provider: "openrouter", ModelID: "m1", AllowedClassifications: []string{"public", "internal"}},
 			},
 		}),
-		OpenRouter: streamClient,
-		Audit:      auditStore,
-		NewID:      func(prefix string) string { return prefix + "_test" },
+		Backend: streamClient,
+		Audit:   auditStore,
+		NewID:   func(prefix string) string { return prefix + "_test" },
 	})
 
 	body := []byte(`{"model":"coding-primary","messages":[{"role":"user","content":"hello"}],"stream":true}`)
@@ -516,6 +807,10 @@ type streamFakeClient struct {
 	lastRequest openrouter.ChatCompletionRequest
 }
 
+func (s *streamFakeClient) Name() string { return "stream-test" }
+
+func (s *streamFakeClient) ResolvedModel(_ string, model string) string { return model }
+
 func newTestGatewayWithBackend(backend *fakeChatClient, auditStore audit.Store) *Gateway {
 	return NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
@@ -569,4 +864,111 @@ func floatAuditValue(value any) float64 {
 	default:
 		return 0
 	}
+}
+
+func TestGatewaySessionTokenBinding(t *testing.T) {
+	tokenHash := sha256.Sum256([]byte("sgt_secret"))
+	gateway := NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.New(catalog.ModelRegistry{
+			Models: []catalog.ModelDefinition{
+				{Alias: "coding-primary", Provider: "openrouter", ModelID: "anthropic/claude-opus-4.7", AllowedClassifications: []string{"public", "internal"}},
+			},
+		}),
+		Backend: &fakeChatClient{
+			resp: openrouter.ChatCompletionResponse{
+				ID: "chatcmpl-test",
+				Choices: []struct {
+					Message openrouter.Message `json:"message"`
+				}{
+					{Message: openrouter.Message{Role: "assistant", Content: "Hello"}},
+				},
+			},
+		},
+		Audit: audit.NewFileStore(""),
+		LookupSession: func(context.Context, string) (SessionInfo, error) {
+			return SessionInfo{Classification: "internal", GatewayTokenSHA256: hex.EncodeToString(tokenHash[:])}, nil
+		},
+	})
+
+	body := []byte(`{"model":"coding-primary","messages":[{"role":"user","content":"hello"}]}`)
+	cases := []struct {
+		name       string
+		token      string
+		wantStatus int
+	}{
+		{name: "missing token", token: "", wantStatus: http.StatusUnauthorized},
+		{name: "wrong token", token: "sgt_wrong", wantStatus: http.StatusUnauthorized},
+		{name: "correct token", token: "sgt_secret", wantStatus: http.StatusOK},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer runtime-test-token")
+		req.Header.Set("X-AI-Orch-Session-ID", "sess_bound")
+		if tc.token != "" {
+			req.Header.Set("X-AI-Orch-Session-Token", tc.token)
+		}
+		rec := httptest.NewRecorder()
+		gateway.Handler().ServeHTTP(rec, req)
+		if rec.Code != tc.wantStatus {
+			t.Fatalf("%s: expected %d, got %d: %s", tc.name, tc.wantStatus, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestGatewaySessionWithoutTokenHashStillWorks(t *testing.T) {
+	gateway := newTestGatewayWithLookup(func(context.Context, string) (SessionInfo, error) {
+		return SessionInfo{Classification: "internal"}, nil
+	})
+	body := []byte(`{"model":"coding-primary","messages":[{"role":"user","content":"hello"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-test-token")
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_legacy")
+	rec := httptest.NewRecorder()
+	gateway.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected legacy session without token hash to pass, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGatewayRejectsTerminalSessionStatus(t *testing.T) {
+	gateway := newTestGatewayWithLookup(func(context.Context, string) (SessionInfo, error) {
+		return SessionInfo{Classification: "internal", Status: "done"}, nil
+	})
+	body := []byte(`{"model":"coding-primary","messages":[{"role":"user","content":"hello"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-test-token")
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_done")
+	rec := httptest.NewRecorder()
+	gateway.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected terminal session to be rejected, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func newTestGatewayWithLookup(lookup func(context.Context, string) (SessionInfo, error)) *Gateway {
+	return NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.New(catalog.ModelRegistry{
+			Models: []catalog.ModelDefinition{
+				{Alias: "coding-primary", Provider: "openrouter", ModelID: "anthropic/claude-opus-4.7", AllowedClassifications: []string{"public", "internal"}},
+			},
+		}),
+		Backend: &fakeChatClient{
+			resp: openrouter.ChatCompletionResponse{
+				ID: "chatcmpl-test",
+				Choices: []struct {
+					Message openrouter.Message `json:"message"`
+				}{
+					{Message: openrouter.Message{Role: "assistant", Content: "Hello"}},
+				},
+			},
+		},
+		Audit:         audit.NewFileStore(""),
+		LookupSession: lookup,
+	})
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }

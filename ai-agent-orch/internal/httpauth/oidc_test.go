@@ -134,6 +134,51 @@ func TestOIDCTokenValidator_ValidatesRS256IDToken(t *testing.T) {
 	}
 }
 
+func TestOIDCTokenValidator_RejectsTokenWithoutSubject(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			writeTestJSON(t, w, map[string]string{"jwks_uri": server.URL + "/jwks"})
+		case "/jwks":
+			writeTestJSON(t, w, map[string]any{
+				"keys": []map[string]string{
+					{
+						"kty": "RSA",
+						"kid": "test-key",
+						"alg": "RS256",
+						"use": "sig",
+						"n":   base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
+						"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.PublicKey.E)).Bytes()),
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	token := signedTestIDToken(t, key, map[string]any{
+		"iss": server.URL,
+		"aud": "client",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	v := NewOIDCTokenValidator(OIDCConfig{
+		IssuerURL: server.URL,
+		ClientID:  "client",
+	}, "")
+
+	if _, ok := v.Validate(context.Background(), "Bearer "+token); ok {
+		t.Fatal("expected token without sub or email to be invalid")
+	}
+}
+
 func TestOIDCTokenValidator_IsOIDCEnabled(t *testing.T) {
 	v := NewOIDCTokenValidator(OIDCConfig{}, "")
 	if v.IsOIDCEnabled() {

@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.18.0-beta - 2026-06-11 (Minor)
+
+Release impact: Minor because this adds backwards-compatible model route metadata, reasoning-effort governance, audit fields, and OpenCode agent defaults without breaking existing session or gateway APIs.
+
+- **Made `coding-gpt55` a capability alias**: the gateway now prefers actor-bound Copilot for enrolled users and falls back to the approved Bifrost/OpenRouter `openai/gpt-5.5` route.
+- **Added provider-pinned GPT-5.5 selection**: `openrouter-openai-gpt55` gives model-only sessions an explicit Bifrost/OpenRouter path for comparison and audit clarity.
+- **Governed OpenCode reasoning effort**: the model gateway accepts `reasoningEffort`, `reasoning_effort`, and `reasoning.effort`, applies route and agent policy, forwards Bifrost-compatible `reasoning.effort`, and strips unsupported reasoning controls.
+- **Expanded model audit metadata**: model events now record requested alias, credential source, requested/applied reasoning effort, and reasoning source alongside existing provider, resolved model, token, cost and hash fields.
+- **Tightened OpenCode agent config**: generated and sandbox configs use `governance-lead` as a low-reasoning primary agent with scoped specialist delegation rather than an unrestricted task permission.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, and changelog now agree on `v0.18.0-beta`.
+
+## v0.17.0-beta - 2026-06-11 (Minor)
+
+Release impact: Minor because this changes the governed OpenCode default entry flow and adds a model-only governed lane without breaking existing specialist/session APIs.
+
+- **Changed OpenCode's default entry point**: `ai-orch opencode` now creates a `governance-lead` run by default, launches OpenCode with the `governance-lead` primary agent, and records the selected specialist separately as `routed_agent`.
+- **Added Copilot-aware default model selection**: governed OpenCode runs default to the `ai-orch/coding-gpt55` capability alias, which resolves through the actor's Copilot entitlement when available and otherwise uses the approved platform route.
+- **Added a governed model-only lane**: developers can choose `--model-only` with a required `--governance-intent`, creating a tracked `model-gateway` session instead of pretending the work started as a delivery specialist.
+- **Added OpenCode subagent config generation**: generated and sandbox configs now define `governance-lead` as the primary agent and delivery agents as subagents with session-token, actor and intent headers.
+- **Cleaned public POC docs**: examples now use org-neutral work-item IDs and stale backend-spike/OpenCode instructions were removed or updated.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, and changelog now agree on `v0.17.0-beta`.
+
+## v0.16.0-beta - 2026-06-10 (Minor)
+
+Release impact: Minor because this hardens auto-session governance and adds ledger UI/API fields without removing existing endpoints or response fields.
+
+- **Governed model-gateway auto sessions**: auto-created sessions now pass through kill switches, work-item requirements, policy evaluation, classification ceilings, secret scanning, and cost-cap checks before they can route model calls.
+- **Bound auto sessions to per-session tokens**: auto-session responses now return `X-AI-Orch-Session-ID` and `X-AI-Orch-Session-Token`; subsequent explicit calls for that session require the token.
+- **Corrected auto-session trust labels**: self-asserted runtime clients record `self_reported/advisory` unless they present the configured trusted-client token.
+- **Added ledger fields**: session list APIs now include additive activity-ledger metadata such as latest event, transport, trust/enforcement, patch state/count, tool-call count, and policy reason.
+- **Made the UI ledger-first**: the Governance UI now opens on an Activity Ledger table with model, token, cost, trust, status, and detail controls.
+- **Safe default environment**: root `.env.example` now boots with Bifrost by default and documents Copilot as opt-in.
+- **Culled redundant direct OpenRouter backend**: Bifrost remains the OpenRouter/provider route for the POC, with per-user Copilot as the actor-bound alternate.
+- **Culled redundant backend spike**: Bifrost now owns shared provider gateway plumbing for the POC; per-user Copilot remains separate for actor-bound entitlements.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, and changelog now agree on `v0.16.0-beta`.
+
 ## v0.15.0-beta - 2026-06-08 (Minor)
 
 Release impact: Minor because this adds scheduled model-pricing refresh, pricing-aware session reporting, streaming token capture and UI reporting fields without breaking existing endpoints.
@@ -73,10 +109,8 @@ Release impact: Beta marks a frozen local integration surface for governed runs,
 
 Release impact: Minor because this adds backwards-compatible gateway runtime paths and a first Governance UI while preserving the existing APIs and Bifrost default.
 
-- **Added an AgentGateway Compose override**: `docker-compose.agentgateway.yml` runs AgentGateway with ai-orch selected as the Governance Shell backend while keeping Bifrost available as the default sidecar path.
-- **Added a native OpenRouter Compose override**: `docker-compose.openrouter.yml` gives the direct OpenRouter backend a concrete run path alongside Bifrost and AgentGateway.
-- **Added local AgentGateway OpenRouter config**: `agentgateway/openrouter.yaml` routes OpenAI-compatible traffic from ai-orch through AgentGateway to OpenRouter without putting provider keys in runtime or OpenCode config.
-- **Removed the hard Bifrost startup dependency**: default Compose still starts Bifrost, but Governance Shell now waits for the selected backend health endpoint itself, so agentgateway runs do not need to start Bifrost.
+- **Explored alternate backend plumbing**: the beta briefly carried extra Compose/backend paths while the provider-gateway boundary was being tested; the active POC path is now Bifrost plus actor-bound Copilot.
+- **Removed the hard Bifrost startup dependency**: Governance Shell now waits for the selected backend health endpoint itself, so local startup can report backend readiness clearly.
 - **Added backend health retry tests**: Governance Shell startup now retries selected backend readiness before failing closed, covering slower sidecar startup.
 - **Added a simple Governance UI**: Governance Shell now serves `/ui/` with service posture, gateway options, metrics, agents, evidence, maturity exports, audit lookup, and use-case/workflow registration backed by existing APIs.
 - **Added system status API**: `GET /v1/system/status` returns version, active backend, model gateway status, policy settings and supported gateway options for the UI and operator checks.
@@ -84,14 +118,13 @@ Release impact: Minor because this adds backwards-compatible gateway runtime pat
 
 ## v0.10.0-alpha - 2026-06-04 (Minor)
 
-Release impact: Minor because this adds a backwards-compatible `agentgateway` model-backend option and configuration surface while preserving the existing Bifrost and native OpenRouter paths.
+Release impact: Minor because this adds a backwards-compatible model-backend option and configuration surface while preserving the existing Bifrost path.
 
-- **Added agentgateway as selectable provider plumbing**: Governance Shell can now use `AI_ORCH_MODEL_BACKEND=agentgateway` with `AI_ORCH_AGENTGATEWAY_BASE_URL` to send governed OpenAI-compatible model calls through agentgateway while ai-orch keeps session, routing and audit ownership.
-- **Kept Bifrost as a proven fallback during the beta spike**: Bifrost remains the default Compose backend until OpenCode E2E and agentgateway smoke evidence prove it can be removed safely.
-- **Added optional agentgateway readiness checks**: `AI_ORCH_AGENTGATEWAY_READINESS_URL` lets local setups fail closed against agentgateway readiness when that management endpoint is available.
+- **Tested alternate provider plumbing**: early beta work validated that ai-orch can keep session, routing and audit ownership while delegating provider compatibility behind the shell.
+- **Kept Bifrost as the proven local sidecar**: Bifrost remains the default provider-plumbing backend for the POC.
 - **Added an OpenCode Docker sandbox path**: Compose now has an opt-in `opencode-sandbox` profile with a session-bound ai-orch OpenCode config, so provider-gateway E2E can be tested without using the local OpenCode install.
 - **Made OpenCode smoke config session-aware**: `opencode-smoke generate-config` now emits `AI_ORCH_RUNTIME_TOKEN` plus `X-AI-Orch-Session-ID` env placeholders, and `opencode-smoke run` can launch local OpenCode when a governed session is supplied.
-- **Reduced backend adapter duplication**: Bifrost and agentgateway now share the same OpenAI-compatible HTTP/streaming adapter core while keeping different model-resolution semantics.
+- **Reduced backend adapter duplication**: OpenAI-compatible HTTP/streaming adapter code is shared where the backend contract allows it.
 - **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README current state and changelog now agree on `v0.10.0-alpha`.
 
 ## v0.9.2-alpha - 2026-06-04 (Patch)
@@ -150,11 +183,11 @@ Release impact: Minor because this adds governed MCP delegation, policy-enforced
 
 ## v0.7.0-alpha - 2026-06-04 (Minor)
 
-Release impact: Minor because this adds a selectable model-backend layer, Bifrost OSS sidecar integration, and managed MCP/doctor trust-labelling improvements while preserving the existing native OpenRouter fallback.
+Release impact: Minor because this adds a selectable model-backend layer, Bifrost OSS sidecar integration, and managed MCP/doctor trust-labelling improvements.
 
-- **Added provider-neutral model backends**: Governance Shell model calls now route through a backend interface with `native-openrouter` and `bifrost` implementations.
+- **Added provider-neutral model backends**: Governance Shell model calls now route through a backend interface, with Bifrost as the retained local sidecar path.
 - **Added Bifrost OSS sidecar support**: Docker Compose now starts a pinned `maximhq/bifrost:v1.5.7` sidecar by default, keeps it off the host network, mounts file-based config, disables Bifrost content logging, and lets Governance Shell use it through `AI_ORCH_MODEL_BACKEND=bifrost`.
-- **Kept OpenRouter as a fallback and health smoke path**: direct OpenRouter calls remain available through `AI_ORCH_MODEL_BACKEND=native-openrouter` and the `openrouter-smoke` tool remains a provider-health check.
+- **Kept OpenRouter health smoke coverage**: the `openrouter-smoke` tool remains a provider-health check while runtime calls route through governed backend plumbing.
 - **Kept provider secrets out of runtimes**: the Orchestrator, VS Code Bridge, MCP clients, and runtime-facing model gateway still call ai-orch endpoints rather than Bifrost or provider APIs directly.
 - **Added Bifrost model mapping**: provider/model registry entries are translated to Bifrost model names such as `openrouter/deepseek/...`, `anthropic/...`, and `bedrock/...`.
 - **Added direct provider smoke aliases**: model registry now includes local Bifrost smoke aliases for direct OpenAI, Anthropic Haiku, and DeepSeek credentials in addition to the OpenRouter DeepSeek smoke path.

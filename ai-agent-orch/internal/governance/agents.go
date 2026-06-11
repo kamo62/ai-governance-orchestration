@@ -2,7 +2,6 @@ package governance
 
 import (
 	"net/http"
-	"path/filepath"
 
 	"ai-agent-orch/internal/catalog"
 )
@@ -31,13 +30,4 @@ func (h *AgentListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"agents": report.Agents,
 	})
-}
-
-// rel returns the path relative to the catalog root for display.
-func rel(root, path string) string {
-	r, err := filepath.Rel(root, path)
-	if err != nil {
-		return path
-	}
-	return filepath.ToSlash(r)
 }

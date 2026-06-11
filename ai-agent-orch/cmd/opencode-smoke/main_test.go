@@ -12,7 +12,7 @@ func TestGenerateOpenCodeConfig(t *testing.T) {
 	if config["$schema"] != "https://opencode.ai/config.json" {
 		t.Fatalf("unexpected schema: %v", config["$schema"])
 	}
-	if config["model"] != "ai-orch/coding-balanced" {
+	if config["model"] != "ai-orch/coding-gpt55" {
 		t.Fatalf("unexpected model: %v", config["model"])
 	}
 
@@ -44,6 +44,18 @@ func TestGenerateOpenCodeConfig(t *testing.T) {
 	if headers["X-AI-Orch-Session-ID"] != "{env:AI_ORCH_SESSION_ID}" {
 		t.Fatalf("unexpected session header: %v", headers["X-AI-Orch-Session-ID"])
 	}
+	if headers["X-AI-Orch-Session-Token"] != "{env:AI_ORCH_SESSION_TOKEN}" {
+		t.Fatalf("unexpected session token header: %v", headers["X-AI-Orch-Session-Token"])
+	}
+	if headers["X-AI-Orch-Actor-Subject"] != "{env:AI_ORCH_ACTOR_SUBJECT}" {
+		t.Fatalf("unexpected actor header: %v", headers["X-AI-Orch-Actor-Subject"])
+	}
+	if headers["X-AI-Orch-Intent"] != "{env:AI_ORCH_INTENT}" {
+		t.Fatalf("unexpected intent header: %v", headers["X-AI-Orch-Intent"])
+	}
+	if headers["X-AI-Orch-Client"] != "opencode" {
+		t.Fatalf("unexpected client header: %v", headers["X-AI-Orch-Client"])
+	}
 
 	models, ok := aiOrch["models"].(map[string]any)
 	if !ok {
@@ -51,6 +63,36 @@ func TestGenerateOpenCodeConfig(t *testing.T) {
 	}
 	if _, ok := models["coding-balanced"]; !ok {
 		t.Fatal("expected coding-balanced model")
+	}
+	if _, ok := models["copilot-gpt-5-mini"]; !ok {
+		t.Fatal("expected copilot-gpt-5-mini model")
+	}
+
+	agents, ok := config["agent"].(map[string]any)
+	if !ok {
+		t.Fatal("expected OpenCode agent config")
+	}
+	lead, ok := agents["governance-lead"].(map[string]any)
+	if !ok || lead["mode"] != "primary" {
+		t.Fatalf("expected governance-lead primary agent, got %#v", lead)
+	}
+	if lead["reasoningEffort"] != "low" {
+		t.Fatalf("expected governance-lead low reasoning, got %#v", lead["reasoningEffort"])
+	}
+	permission, ok := lead["permission"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected governance-lead permission map, got %#v", lead["permission"])
+	}
+	task, ok := permission["task"].([]string)
+	if !ok || !contains(task, "code-review") || !contains(task, "backend-development") {
+		t.Fatalf("expected governance-lead scoped task delegation, got %#v", permission["task"])
+	}
+	codeReview, ok := agents["code-review"].(map[string]any)
+	if !ok || codeReview["mode"] != "subagent" {
+		t.Fatalf("expected code-review subagent, got %#v", codeReview)
+	}
+	if codeReview["reasoningEffort"] != "medium" {
+		t.Fatalf("expected code-review medium reasoning, got %#v", codeReview["reasoningEffort"])
 	}
 }
 
@@ -130,6 +172,59 @@ func TestMergeOpenCodeConfigPreservesExistingSettings(t *testing.T) {
 	}
 	if options["apiKey"] != "{env:AI_ORCH_RUNTIME_TOKEN}" {
 		t.Fatalf("unexpected apiKey: %v", options["apiKey"])
+	}
+	agents := merged["agent"].(map[string]any)
+	if _, ok := agents["governance-lead"]; !ok {
+		t.Fatal("expected governance-lead agent to be installed")
+	}
+}
+
+func TestMergeOpenCodeConfigPreservesExistingAgentDefinitions(t *testing.T) {
+	existing := map[string]any{
+		"agent": map[string]any{
+			"governance-lead": map[string]any{
+				"mode":        "primary",
+				"description": "custom local lead",
+			},
+		},
+	}
+	merged, changed, err := mergeOpenCodeConfig(existing, "http://127.0.0.1:18082", false)
+	if err != nil {
+		t.Fatalf("merge config: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected missing subagents to be added")
+	}
+	lead := merged["agent"].(map[string]any)["governance-lead"].(map[string]any)
+	if lead["description"] != "custom local lead" {
+		t.Fatalf("expected custom lead preserved, got %#v", lead)
+	}
+	if _, ok := merged["agent"].(map[string]any)["unit-tests"]; !ok {
+		t.Fatal("expected unit-tests subagent to be added")
+	}
+}
+
+func TestMergeOpenCodeConfigWithConcreteInstallValues(t *testing.T) {
+	merged, changed, err := mergeOpenCodeConfigWithOptions(map[string]any{}, OpenCodeConfigOptions{
+		GatewayURL:     "http://127.0.0.1:18082",
+		RuntimeToken:   "runtime-token",
+		ActorSubject:   "dev-user",
+		Classification: "internal",
+	}, true)
+	if err != nil {
+		t.Fatalf("merge config: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected config to change")
+	}
+	aiOrch := merged["provider"].(map[string]any)["ai-orch"].(map[string]any)
+	options := aiOrch["options"].(map[string]any)
+	if options["apiKey"] != "runtime-token" {
+		t.Fatalf("expected concrete runtime token, got %v", options["apiKey"])
+	}
+	headers := options["headers"].(map[string]any)
+	if headers["X-AI-Orch-Actor-Subject"] != "dev-user" {
+		t.Fatalf("expected concrete actor header, got %v", headers["X-AI-Orch-Actor-Subject"])
 	}
 }
 

@@ -3,6 +3,7 @@ package governance
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -102,7 +103,13 @@ func (h *PatchDecisionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		EnforcementMode:    trust.EnforcementMode,
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+		// Surface the append failure cause: a hash-chain conflict almost always
+		// means a stale local audit volume from an older stack.
+		log.Printf("patch decision audit append failed for session %s: %v", sessionID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "audit write failed",
+			"hint":  "if running locally against an old Docker volume, the audit hash chain may be stale; reset with: docker compose down -v",
+		})
 		return
 	}
 	h.service.rememberEventID(sessionID, eventID)

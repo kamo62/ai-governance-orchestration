@@ -606,7 +606,7 @@ func (h *RegistryHandler) requireOwnedSession(w http.ResponseWriter, r *http.Req
 		return false
 	}
 	actor := actorFromContext(r.Context())
-	if record.ActorSubject != actor {
+	if record.ActorSubject != actor && actor != AdminOperatorSubject {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
 		return false
 	}
@@ -614,6 +614,10 @@ func (h *RegistryHandler) requireOwnedSession(w http.ResponseWriter, r *http.Req
 }
 
 func (h *RegistryHandler) sessionOwnedByActor(ctx context.Context, sessionID string, actor string) (bool, error) {
+	// The admin operator sees every actor's records for governance oversight.
+	if actor == AdminOperatorSubject {
+		return true, nil
+	}
 	if h.service == nil || h.service.sessions == nil {
 		return false, errors.New("session store unavailable")
 	}

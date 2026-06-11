@@ -4,6 +4,7 @@
 plan.md
 implementation.md
 *.pdf
+reference/
 
 # Local secrets and machine-specific environment
 .env

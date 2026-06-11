@@ -14,6 +14,7 @@ import (
 type httpClient struct {
 	devToken     string
 	runtimeToken string
+	actorSubject string
 	timeout      time.Duration
 }
 
@@ -31,6 +32,9 @@ func (c httpClient) do(ctx context.Context, method, url, token string, body []by
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if c.actorSubject != "" {
+		req.Header.Set("X-AI-Orch-Local-Identity", c.actorSubject)
 	}
 	client := &http.Client{Timeout: c.timeout}
 	resp, err := client.Do(req)

@@ -219,7 +219,7 @@ func RefreshModelPricing(ctx context.Context, store ModelPricingStore, fetcher O
 	return len(records), nil
 }
 
-func StartModelPricingRefresh(ctx context.Context, store ModelPricingStore, fetcher OpenRouterPricingFetcher, interval time.Duration, logf func(string, ...any)) {
+func StartModelPricingRefresh(ctx context.Context, store ModelPricingStore, fetcher OpenRouterPricingFetcher, interval time.Duration, runImmediately bool, logf func(string, ...any)) {
 	if store == nil {
 		return
 	}
@@ -241,7 +241,9 @@ func StartModelPricingRefresh(ctx context.Context, store ModelPricingStore, fetc
 				logf("model pricing refreshed: %d models", count)
 			}
 		}
-		run()
+		if runImmediately {
+			run()
+		}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -264,9 +266,9 @@ type pricingLookup struct {
 // resolving a price. It first tries the exact provider, then falls back to the
 // OpenRouter price book, which is treated as a universal catalog keyed by
 // "<upstream-provider>/<model>". List prices for a given model are effectively
-// the same regardless of how the request is routed, so direct-provider routes
-// (Bifrost, agentgateway) reuse the OpenRouter catalog for the same underlying
-// model instead of reporting zero cost.
+// the same regardless of how the request is routed, so Bifrost-backed provider
+// routes reuse the OpenRouter catalog for the same underlying model instead of
+// reporting zero cost.
 func pricingLookups(provider string, modelID string) []pricingLookup {
 	provider = normalizePricingProvider(provider)
 	model := normalizePricingModelID(provider, modelID)

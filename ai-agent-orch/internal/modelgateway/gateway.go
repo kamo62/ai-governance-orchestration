@@ -8,8 +8,10 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,7 +20,7 @@ import (
 	"sync/atomic"
 
 	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/httpauth"
+	"ai-agent-orch/internal/copilot"
 	"ai-agent-orch/internal/modelbackend"
 	"ai-agent-orch/internal/openrouter"
 	"ai-agent-orch/internal/router"
@@ -29,29 +31,66 @@ type GatewayConfig struct {
 	RuntimeToken    string
 	Router          *router.Router
 	Backend         modelbackend.Backend
-	OpenRouter      openrouter.ChatClient
 	Audit           audit.Store
 	NewID           func(prefix string) string
 	ValidateSession func(context.Context, string) error
 	LookupSession   func(context.Context, string) (SessionInfo, error)
+	AutoSession     func(context.Context, AutoSessionRequest) (SessionInfo, error)
+	// MaxRequestBytes caps inbound request bodies. Coding agents send
+	// multi-megabyte contexts, so the default is deliberately generous.
+	MaxRequestBytes int64
 }
+
+type AutoSessionRequest struct {
+	ActorSubject       string
+	ModelAlias         string
+	PromptSHA256       string
+	Client             string
+	Endpoint           string
+	Classification     string
+	RawRequestBody     []byte
+	TrustedClientToken string
+	UseCaseID          string
+	WorkflowID         string
+	WorkItemID         string
+	WorkItemType       string
+	RepoURL            string
+	Branch             string
+	CommitSHA          string
+	Intent             string
+	ActorHint          string
+	SourceSystem       string
+	EstimatedCostUSD   float64
+}
+
+const defaultMaxRequestBytes = 20 << 20 // 20 MiB
 
 // SessionInfo is server-side session context used by runtime model routing.
 type SessionInfo struct {
+	SessionID      string
 	Classification string
-	ActorSubject   string
-	Agent          string
-	RunID          string
-	WorkItemID     string
-	WorkItemType   string
-	RepoURL        string
-	Branch         string
-	CommitSHA      string
-	ActorHint      string
-	SourceSystem   string
-	PermissionMode string
-	ApprovalMode   string
-	WorkspaceMode  string
+	Status         string
+	// GatewayTokenSHA256, when set, requires callers to present the matching
+	// per-session secret via X-AI-Orch-Session-Token. The runtime variant is
+	// minted at dispatch for server-side runtimes; either hash is accepted.
+	GatewayTokenSHA256        string
+	RuntimeGatewayTokenSHA256 string
+	ActorSubject              string
+	Agent                     string
+	RunID                     string
+	UseCaseID                 string
+	WorkflowID                string
+	WorkItemID                string
+	WorkItemType              string
+	RepoURL                   string
+	Branch                    string
+	CommitSHA                 string
+	ActorHint                 string
+	SourceSystem              string
+	PermissionMode            string
+	ApprovalMode              string
+	WorkspaceMode             string
+	GatewayToken              string
 }
 
 // Gateway is an OpenAI-compatible model endpoint owned by the Governance Shell.
@@ -63,6 +102,8 @@ type Gateway struct {
 	newID           func(prefix string) string
 	validateSession func(context.Context, string) error
 	lookupSession   func(context.Context, string) (SessionInfo, error)
+	autoSession     func(context.Context, AutoSessionRequest) (SessionInfo, error)
+	maxRequestBytes int64
 }
 
 // NewGateway creates a new model compatibility gateway.
@@ -71,18 +112,20 @@ func NewGateway(cfg GatewayConfig) *Gateway {
 	if newID == nil {
 		newID = randomID
 	}
-	backend := cfg.Backend
-	if backend == nil && cfg.OpenRouter != nil {
-		backend = modelbackend.NewOpenRouterBackend(cfg.OpenRouter)
+	maxRequestBytes := cfg.MaxRequestBytes
+	if maxRequestBytes <= 0 {
+		maxRequestBytes = defaultMaxRequestBytes
 	}
 	return &Gateway{
 		runtimeToken:    cfg.RuntimeToken,
 		router:          cfg.Router,
-		backend:         backend,
+		backend:         cfg.Backend,
 		audit:           cfg.Audit,
 		newID:           newID,
 		validateSession: cfg.ValidateSession,
 		lookupSession:   cfg.LookupSession,
+		autoSession:     cfg.AutoSession,
+		maxRequestBytes: maxRequestBytes,
 	}
 }
 
@@ -109,7 +152,17 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	classification := r.URL.Query().Get("classification")
+	// Prefer the governed session's classification when the runtime supplies a
+	// session header; the query parameter remains a fallback for bare listings.
+	classification := ""
+	if sessionID := strings.TrimSpace(r.Header.Get("X-AI-Orch-Session-ID")); sessionID != "" && g.lookupSession != nil {
+		if info, err := g.lookupSession(r.Context(), sessionID); err == nil && sessionTokenMatches(r, info.GatewayTokenSHA256, info.RuntimeGatewayTokenSHA256) {
+			classification = strings.TrimSpace(info.Classification)
+		}
+	}
+	if classification == "" {
+		classification = r.URL.Query().Get("classification")
+	}
 	if classification == "" {
 		classification = "internal" // default for runtime listings
 	}
@@ -149,16 +202,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "gateway unavailable"})
 		return
 	}
-	sessionID, ok := requiredSessionID(w, r)
-	if !ok {
-		return
-	}
-	session, ok := g.sessionInfo(w, r, sessionID)
-	if !ok {
-		return
-	}
-
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20)) // 1 MiB max
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, g.maxRequestBytes))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "read body: " + err.Error()})
 		return
@@ -177,14 +221,24 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "messages are required"})
 		return
 	}
+	sessionID, session, ok := g.resolveSession(w, r, req.Model, body, "chat.completions")
+	if !ok {
+		return
+	}
 
 	decision, err := g.router.Route(r.Context(), router.Request{
 		TaskType:       inferTaskType(req.Messages),
 		Classification: session.Classification,
 		PreferredAlias: req.Model,
+		ActorSubject:   session.ActorSubject,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
+		return
+	}
+	body, decision, err = applyGovernedReasoning(body, decision, session)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 
@@ -203,7 +257,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		})
 		if err != nil {
 			g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, nil, nil, err.Error())
-			writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
+			writeJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 			return
 		}
 		respBody = rewriteTopLevelModel(respBody, decision.SelectedAlias)
@@ -223,11 +277,14 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
 	}
+	if decision.ReasoningSupportsEffort && decision.ReasoningEffortApplied != "" {
+		upstream.Reasoning = &openrouter.ReasoningConfig{Effort: decision.ReasoningEffortApplied}
+	}
 
 	resp, err := g.backend.ChatCompletion(r.Context(), upstream)
 	if err != nil {
 		g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, nil, nil, err.Error())
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
+		writeJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 		return
 	}
 
@@ -255,7 +312,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, req openA
 	streamReader, err := startChatStream(r.Context(), g.backend, decision, req, session.ActorSubject, streamBody)
 	if err != nil {
 		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", err.Error())
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("stream start failed: %v", err)})
+		writeJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("stream start failed: %v", err)})
 		return
 	}
 	defer streamReader.Close()
@@ -328,16 +385,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "gateway unavailable"})
 		return
 	}
-	sessionID, ok := requiredSessionID(w, r)
-	if !ok {
-		return
-	}
-	session, ok := g.sessionInfo(w, r, sessionID)
-	if !ok {
-		return
-	}
-
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, g.maxRequestBytes))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "read body: " + err.Error()})
 		return
@@ -356,14 +404,24 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "input is required"})
 		return
 	}
+	sessionID, session, ok := g.resolveSession(w, r, req.Model, body, "responses")
+	if !ok {
+		return
+	}
 
 	decision, err := g.router.Route(r.Context(), router.Request{
 		TaskType:       inferTaskTypeFromInput(req.Input),
 		Classification: session.Classification,
 		PreferredAlias: req.Model,
+		ActorSubject:   session.ActorSubject,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
+		return
+	}
+	body, decision, err = applyGovernedReasoning(body, decision, session)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 
@@ -381,7 +439,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_responses", body, nil, nil, err.Error())
-			writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
+			writeJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 			return
 		}
 		respBody = rewriteTopLevelModel(respBody, decision.SelectedAlias)
@@ -404,11 +462,14 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		Model:      decision.SelectedModelID,
 		Messages:   convertResponsesInput(req.Input),
 	}
+	if decision.ReasoningSupportsEffort && decision.ReasoningEffortApplied != "" {
+		upstream.Reasoning = &openrouter.ReasoningConfig{Effort: decision.ReasoningEffortApplied}
+	}
 
 	resp, err := g.backend.ChatCompletion(r.Context(), upstream)
 	if err != nil {
 		g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_responses", body, nil, nil, err.Error())
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
+		writeJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 		return
 	}
 
@@ -449,7 +510,7 @@ func (g *Gateway) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 	})
 	if err != nil {
 		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.failed", reqHash, "", err.Error())
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("responses stream start failed: %v", err)})
+		writeJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("responses stream start failed: %v", err)})
 		return
 	}
 	defer streamReader.Close()
@@ -509,13 +570,72 @@ func (g *Gateway) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 	g.auditModelCallHashesWithUsage(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.completed", reqHash, respHash, streamUsage, "")
 }
 
-func requiredSessionID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	sessionID := strings.TrimSpace(r.Header.Get("X-AI-Orch-Session-ID"))
-	if sessionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
-		return "", false
+func (g *Gateway) resolveSession(w http.ResponseWriter, r *http.Request, modelAlias string, body []byte, endpoint string) (string, SessionInfo, bool) {
+	if sessionID := strings.TrimSpace(r.Header.Get("X-AI-Orch-Session-ID")); sessionID != "" {
+		info, ok := g.sessionInfo(w, r, sessionID)
+		return sessionID, info, ok
 	}
-	return sessionID, true
+	if g.autoSession == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
+		return "", SessionInfo{}, false
+	}
+	actor := strings.TrimSpace(r.Header.Get("X-AI-Orch-Actor-Subject"))
+	if actor == "" {
+		actor = strings.TrimSpace(r.Header.Get("X-AI-Orch-Local-Identity"))
+	}
+	if actor == "" {
+		// Composite API key "<runtime-token>.<actor>" carries identity for
+		// clients that cannot send custom headers.
+		actor, _ = g.runtimeAuth(r)
+	}
+	if actor == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "actor identity is required for auto sessions: send X-AI-Orch-Actor-Subject or use the composite API key <runtime-token>.<actor>"})
+		return "", SessionInfo{}, false
+	}
+	classification := strings.TrimSpace(r.Header.Get("X-AI-Orch-Classification"))
+	if classification == "" {
+		classification = "internal"
+	}
+	info, err := g.autoSession(r.Context(), AutoSessionRequest{
+		ActorSubject:       actor,
+		ModelAlias:         modelAlias,
+		PromptSHA256:       sha256Hex(body),
+		Client:             strings.TrimSpace(r.Header.Get("X-AI-Orch-Client")),
+		Endpoint:           endpoint,
+		Classification:     classification,
+		RawRequestBody:     body,
+		TrustedClientToken: strings.TrimSpace(r.Header.Get("X-AI-Orch-Trusted-Client-Token")),
+		UseCaseID:          strings.TrimSpace(r.Header.Get("X-AI-Orch-Use-Case-ID")),
+		WorkflowID:         strings.TrimSpace(r.Header.Get("X-AI-Orch-Workflow-ID")),
+		WorkItemID:         strings.TrimSpace(r.Header.Get("X-AI-Orch-Work-Item-ID")),
+		WorkItemType:       strings.TrimSpace(r.Header.Get("X-AI-Orch-Work-Item-Type")),
+		RepoURL:            strings.TrimSpace(r.Header.Get("X-AI-Orch-Repo-URL")),
+		Branch:             strings.TrimSpace(r.Header.Get("X-AI-Orch-Branch")),
+		CommitSHA:          strings.TrimSpace(r.Header.Get("X-AI-Orch-Commit-SHA")),
+		Intent:             strings.TrimSpace(r.Header.Get("X-AI-Orch-Intent")),
+		ActorHint:          strings.TrimSpace(r.Header.Get("X-AI-Orch-Actor-Hint")),
+		SourceSystem:       strings.TrimSpace(r.Header.Get("X-AI-Orch-Source-System")),
+		EstimatedCostUSD:   parseOptionalFloatHeader(r.Header.Get("X-AI-Orch-Estimated-Cost-USD")),
+	})
+	if err != nil {
+		writeJSON(w, statusCodeFromAutoSessionError(err), map[string]any{"error": err.Error()})
+		return "", SessionInfo{}, false
+	}
+	if info.SessionID == "" {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "auto session missing session ID"})
+		return "", SessionInfo{}, false
+	}
+	if strings.TrimSpace(info.Classification) == "" {
+		info.Classification = "internal"
+	}
+	if strings.TrimSpace(info.ActorSubject) == "" {
+		info.ActorSubject = actor
+	}
+	w.Header().Set("X-AI-Orch-Session-ID", info.SessionID)
+	if strings.TrimSpace(info.GatewayToken) != "" {
+		w.Header().Set("X-AI-Orch-Session-Token", info.GatewayToken)
+	}
+	return info.SessionID, info, true
 }
 
 func (g *Gateway) sessionInfo(w http.ResponseWriter, r *http.Request, sessionID string) (SessionInfo, bool) {
@@ -523,6 +643,14 @@ func (g *Gateway) sessionInfo(w http.ResponseWriter, r *http.Request, sessionID 
 		info, err := g.lookupSession(r.Context(), sessionID)
 		if err != nil {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			return SessionInfo{}, false
+		}
+		if !sessionTokenMatches(r, info.GatewayTokenSHA256, info.RuntimeGatewayTokenSHA256) {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "X-AI-Orch-Session-Token missing or invalid for this session"})
+			return SessionInfo{}, false
+		}
+		if !sessionStatusAllowsModelCalls(info.Status) {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "session is not active for model calls"})
 			return SessionInfo{}, false
 		}
 		if strings.TrimSpace(info.Classification) == "" {
@@ -539,6 +667,78 @@ func (g *Gateway) sessionInfo(w http.ResponseWriter, r *http.Request, sessionID 
 	return SessionInfo{Classification: "internal"}, true
 }
 
+func sessionStatusAllowsModelCalls(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "", "created", "awaiting_confirmation", "confirming", "confirmed", "running":
+		return true
+	default:
+		return false
+	}
+}
+
+func statusCodeFromAutoSessionError(err error) int {
+	if err == nil {
+		return http.StatusInternalServerError
+	}
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "kill switch"):
+		return http.StatusLocked
+	case strings.Contains(message, "work item") || strings.Contains(message, "feature branch") || strings.Contains(message, "protected branch"):
+		return http.StatusPreconditionRequired
+	case strings.Contains(message, "cost cap"):
+		return http.StatusPaymentRequired
+	case strings.Contains(message, "secret detected") || strings.Contains(message, "classification") || strings.Contains(message, "policy denied"):
+		return http.StatusForbidden
+	case strings.Contains(message, "valid actor"):
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func parseOptionalFloatHeader(value string) float64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed < 0 {
+		return 0
+	}
+	return parsed
+}
+
+// sessionTokenMatches verifies the per-session gateway secret against any of
+// the stored hashes (client token, dispatch-time runtime token). Sessions
+// with no stored hash predate token binding and pass unchanged.
+func sessionTokenMatches(r *http.Request, wantHashesHex ...string) bool {
+	anyConfigured := false
+	presented := strings.TrimSpace(r.Header.Get("X-AI-Orch-Session-Token"))
+	var sum [sha256.Size]byte
+	if presented != "" {
+		sum = sha256.Sum256([]byte(presented))
+	}
+	for _, wantHashHex := range wantHashesHex {
+		wantHashHex = strings.TrimSpace(wantHashHex)
+		if wantHashHex == "" {
+			continue
+		}
+		anyConfigured = true
+		if presented == "" {
+			continue
+		}
+		got, err := hex.DecodeString(wantHashHex)
+		if err != nil {
+			continue
+		}
+		if subtle.ConstantTimeCompare(sum[:], got) == 1 {
+			return true
+		}
+	}
+	return !anyConfigured
+}
+
 func randomID(prefix string) string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -553,7 +753,222 @@ var fallbackIDCounter atomic.Uint64
 // comparison has a single implementation shared across every endpoint. An empty
 // runtime token always fails closed.
 func (g *Gateway) authorized(r *http.Request) bool {
-	return httpauth.AuthorizedBearer(r.Header.Get("Authorization"), g.runtimeToken)
+	_, ok := g.runtimeAuth(r)
+	return ok
+}
+
+// runtimeAuth validates the runtime bearer and extracts the optional actor
+// suffix from a composite key "<runtime-token>.<actor>". The composite form
+// exists for OpenAI-compatible clients that cannot send custom headers (for
+// example Cline), so identity can travel in the only field every client
+// reliably forwards. The plain runtime token remains valid.
+func (g *Gateway) runtimeAuth(r *http.Request) (string, bool) {
+	const prefix = "Bearer "
+	header := r.Header.Get("Authorization")
+	if g.runtimeToken == "" || !strings.HasPrefix(header, prefix) {
+		return "", false
+	}
+	token := strings.TrimPrefix(header, prefix)
+	if subtle.ConstantTimeCompare([]byte(token), []byte(g.runtimeToken)) == 1 {
+		return "", true
+	}
+	sep := g.runtimeToken + "."
+	if len(token) > len(sep) && subtle.ConstantTimeCompare([]byte(token[:len(sep)]), []byte(sep)) == 1 {
+		actor := strings.TrimSpace(token[len(sep):])
+		if compositeActorLabelOK(actor) {
+			return actor, true
+		}
+	}
+	return "", false
+}
+
+// compositeActorLabelOK keeps API-key-borne identities to safe label
+// characters so they cannot smuggle header or log injection payloads.
+func compositeActorLabelOK(actor string) bool {
+	if actor == "" || len(actor) > 64 {
+		return false
+	}
+	for _, r := range actor {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_' || r == '@':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// providerErrorStatus distinguishes caller-fixable failures from upstream
+// outages so runtimes see an actionable status instead of a blanket 502.
+// A missing or revoked Copilot enrollment is the caller's problem to fix.
+func providerErrorStatus(err error) int {
+	if errors.Is(err, copilot.ErrTokenNotFound) || errors.Is(err, copilot.ErrTokenRevoked) {
+		return http.StatusForbidden
+	}
+	return http.StatusBadGateway
+}
+
+func applyGovernedReasoning(body []byte, decision router.Decision, session SessionInfo) ([]byte, router.Decision, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil, decision, fmt.Errorf("decode request for reasoning policy: %w", err)
+	}
+	requested, requestedPresent, err := extractReasoningEffort(obj)
+	if err != nil {
+		return nil, decision, err
+	}
+	applied, source := chooseReasoningEffort(requested, requestedPresent, decision, session)
+	decision.ReasoningEffortRequested = requested
+	decision.ReasoningEffortApplied = applied
+	decision.ReasoningSource = source
+	encoded, err := rewriteReasoningEffort(obj, decision.ReasoningSupportsEffort, applied)
+	if err != nil {
+		return nil, decision, err
+	}
+	return encoded, decision, nil
+}
+
+func extractReasoningEffort(obj map[string]json.RawMessage) (string, bool, error) {
+	for _, key := range []string{"reasoningEffort", "reasoning_effort"} {
+		if raw, ok := obj[key]; ok {
+			effort, err := reasoningEffortFromRaw(raw)
+			if err != nil {
+				return "", true, fmt.Errorf("%s must be one of low, medium, high", key)
+			}
+			return effort, true, nil
+		}
+	}
+	if raw, ok := obj["reasoning"]; ok {
+		var reasoning map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &reasoning); err == nil {
+			if effortRaw, ok := reasoning["effort"]; ok {
+				effort, err := reasoningEffortFromRaw(effortRaw)
+				if err != nil {
+					return "", true, errors.New("reasoning.effort must be one of low, medium, high")
+				}
+				return effort, true, nil
+			}
+		}
+	}
+	return "", false, nil
+}
+
+func reasoningEffortFromRaw(raw json.RawMessage) (string, error) {
+	var effort string
+	if err := json.Unmarshal(raw, &effort); err != nil {
+		return "", err
+	}
+	effort = normalizeReasoningEffort(effort)
+	if effort == "" {
+		return "", errors.New("invalid reasoning effort")
+	}
+	return effort, nil
+}
+
+func chooseReasoningEffort(requested string, requestedPresent bool, decision router.Decision, session SessionInfo) (string, string) {
+	agentDefault, agentMax := agentReasoningPolicy(session.Agent)
+	if !decision.ReasoningSupportsEffort {
+		if requestedPresent || agentDefault != "" || decision.ReasoningDefaultEffort != "" {
+			return "", "provider_default"
+		}
+		return "", ""
+	}
+	applied := ""
+	source := ""
+	if requestedPresent {
+		applied = requested
+		source = "client"
+	} else if agentDefault != "" {
+		applied = agentDefault
+		source = "agent_default"
+	} else if decision.ReasoningDefaultEffort != "" {
+		applied = decision.ReasoningDefaultEffort
+		source = "route_default"
+	}
+	maxEffort := stricterReasoningMax(decision.ReasoningMaxEffort, agentMax)
+	if applied != "" && maxEffort != "" && reasoningRank(applied) > reasoningRank(maxEffort) {
+		applied = maxEffort
+		source = "policy_clamped"
+	}
+	return applied, source
+}
+
+func rewriteReasoningEffort(obj map[string]json.RawMessage, supportsEffort bool, applied string) ([]byte, error) {
+	delete(obj, "reasoningEffort")
+	delete(obj, "reasoning_effort")
+	if !supportsEffort {
+		delete(obj, "reasoning")
+		return json.Marshal(obj)
+	}
+	if applied == "" {
+		return json.Marshal(obj)
+	}
+	reasoning := map[string]json.RawMessage{}
+	if raw, ok := obj["reasoning"]; ok {
+		_ = json.Unmarshal(raw, &reasoning)
+	}
+	effortJSON, err := json.Marshal(applied)
+	if err != nil {
+		return nil, fmt.Errorf("encode reasoning effort: %w", err)
+	}
+	reasoning["effort"] = effortJSON
+	reasoningJSON, err := json.Marshal(reasoning)
+	if err != nil {
+		return nil, fmt.Errorf("encode reasoning object: %w", err)
+	}
+	obj["reasoning"] = reasoningJSON
+	return json.Marshal(obj)
+}
+
+func agentReasoningPolicy(agent string) (defaultEffort string, maxEffort string) {
+	switch strings.TrimSpace(agent) {
+	case "governance-lead":
+		return "low", "medium"
+	case "code-review", "unit-tests", "backend-development", "frontend-development", "documentation", "refactor":
+		return "medium", "high"
+	case "security-review", "security-scan", "architecture-review", "terraform-review":
+		return "medium", "high"
+	default:
+		return "", ""
+	}
+}
+
+func stricterReasoningMax(routeMax string, agentMax string) string {
+	routeMax = normalizeReasoningEffort(routeMax)
+	agentMax = normalizeReasoningEffort(agentMax)
+	if routeMax == "" {
+		return agentMax
+	}
+	if agentMax == "" {
+		return routeMax
+	}
+	if reasoningRank(agentMax) < reasoningRank(routeMax) {
+		return agentMax
+	}
+	return routeMax
+}
+
+func normalizeReasoningEffort(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "low", "medium", "high":
+		return strings.ToLower(strings.TrimSpace(effort))
+	default:
+		return ""
+	}
+}
+
+func reasoningRank(effort string) int {
+	switch normalizeReasoningEffort(effort) {
+	case "low":
+		return 1
+	case "medium":
+		return 2
+	case "high":
+		return 3
+	default:
+		return 0
+	}
 }
 
 func (g *Gateway) auditModelCall(ctx context.Context, sessionID string, session SessionInfo, decision router.Decision, eventType string, reqBody, respBody []byte, usage map[string]any, errMsg string) {
@@ -587,34 +1002,39 @@ func (g *Gateway) auditModelCallHashesWithUsage(ctx context.Context, sessionID s
 		actor = "runtime"
 	}
 	_, _ = g.audit.Append(ctx, audit.Event{
-		EventID:            g.newID("evt"),
-		SessionID:          sessionID,
-		EventType:          eventType,
-		Actor:              actor,
-		Agent:              session.Agent,
-		Classification:     session.Classification,
-		Provider:           decision.Provider,
-		ModelAlias:         decision.SelectedAlias,
-		ModelResolved:      g.resolvedModel(decision),
-		RequestSHA256:      reqHash,
-		ResponseSHA256:     respHash,
-		TokenUsage:         usage,
-		GatewayBackend:     g.backendName(),
-		RunID:              session.RunID,
-		PermissionMode:     session.PermissionMode,
-		ApprovalMode:       session.ApprovalMode,
-		WorkspaceMode:      session.WorkspaceMode,
-		WorkItemID:         session.WorkItemID,
-		WorkItemType:       session.WorkItemType,
-		CommitSHA:          session.CommitSHA,
-		ActorHint:          session.ActorHint,
-		SourceSystem:       session.SourceSystem,
-		TrustLevel:         "gateway_enforced",
-		EnforcementMode:    "gateway",
-		Reason:             reason,
-		RawPromptStored:    false,
-		RawResponseStored:  false,
-		CorrelationSubject: "model-gateway",
+		EventID:                  g.newID("evt"),
+		SessionID:                sessionID,
+		EventType:                eventType,
+		Actor:                    actor,
+		Agent:                    session.Agent,
+		Classification:           session.Classification,
+		Provider:                 decision.Provider,
+		ModelAlias:               decision.SelectedAlias,
+		ModelResolved:            g.resolvedModel(decision),
+		RequestedModelAlias:      decision.RequestedAlias,
+		CredentialSource:         decision.CredentialSource,
+		ReasoningEffortRequested: decision.ReasoningEffortRequested,
+		ReasoningEffortApplied:   decision.ReasoningEffortApplied,
+		ReasoningSource:          decision.ReasoningSource,
+		RequestSHA256:            reqHash,
+		ResponseSHA256:           respHash,
+		TokenUsage:               usage,
+		GatewayBackend:           g.backendName(),
+		RunID:                    session.RunID,
+		PermissionMode:           session.PermissionMode,
+		ApprovalMode:             session.ApprovalMode,
+		WorkspaceMode:            session.WorkspaceMode,
+		WorkItemID:               session.WorkItemID,
+		WorkItemType:             session.WorkItemType,
+		CommitSHA:                session.CommitSHA,
+		ActorHint:                session.ActorHint,
+		SourceSystem:             session.SourceSystem,
+		TrustLevel:               "gateway_enforced",
+		EnforcementMode:          "gateway",
+		Reason:                   reason,
+		RawPromptStored:          false,
+		RawResponseStored:        false,
+		CorrelationSubject:       "model-gateway",
 	})
 }
 
@@ -641,7 +1061,7 @@ func startChatStream(ctx context.Context, backend modelbackend.Backend, decision
 			ActorSubject: actorSubject,
 		})
 	}
-	return backend.ChatCompletionStream(ctx, openrouter.ChatCompletionRequest{
+	upstream := openrouter.ChatCompletionRequest{
 		Provider:      decision.Provider,
 		ModelAlias:    decision.SelectedAlias,
 		Model:         decision.SelectedModelID,
@@ -650,7 +1070,11 @@ func startChatStream(ctx context.Context, backend modelbackend.Backend, decision
 		MaxTokens:     req.MaxTokens,
 		Stream:        true,
 		StreamOptions: &openrouter.StreamOptions{IncludeUsage: true},
-	})
+	}
+	if decision.ReasoningSupportsEffort && decision.ReasoningEffortApplied != "" {
+		upstream.Reasoning = &openrouter.ReasoningConfig{Effort: decision.ReasoningEffortApplied}
+	}
+	return backend.ChatCompletionStream(ctx, upstream)
 }
 
 func ensureChatStreamOptions(body []byte) []byte {
@@ -746,8 +1170,24 @@ func usageFromRawResponse(body []byte) map[string]any {
 }
 
 func usageFromRawObject(obj map[string]json.RawMessage) map[string]any {
+	var usage map[string]any
 	if usageRaw, ok := obj["usage"]; ok {
-		return usageMapFromRaw(usageRaw)
+		usage = usageMapFromRaw(usageRaw)
+	}
+	// Copilot reports AI-unit consumption outside the standard usage block.
+	if copilotRaw, ok := obj["copilot_usage"]; ok {
+		var copilotUsage map[string]any
+		if err := json.Unmarshal(copilotRaw, &copilotUsage); err == nil {
+			if v, numOK := numericValue(copilotUsage["total_nano_aiu"]); numOK {
+				if usage == nil {
+					usage = make(map[string]any)
+				}
+				usage["copilot_nano_aiu"] = v
+			}
+		}
+	}
+	if usage != nil {
+		return usage
 	}
 	if responseRaw, ok := obj["response"]; ok {
 		var response map[string]json.RawMessage
@@ -835,28 +1275,6 @@ func numericValue(value any) (float64, bool) {
 		return n, err == nil
 	default:
 		return 0, false
-	}
-}
-
-func usageHasValues(usage *openrouter.Usage) bool {
-	if usage == nil {
-		return false
-	}
-	return usage.PromptTokens > 0 ||
-		usage.CompletionTokens > 0 ||
-		usage.TotalTokens > 0 ||
-		usage.Cost > 0 ||
-		usage.CompletionTokensDetails.ReasoningTokens > 0
-}
-
-func openAIUsageFromOpenRouter(usage *openrouter.Usage) *openAIUsage {
-	if usage == nil {
-		return nil
-	}
-	return &openAIUsage{
-		PromptTokens:     usage.PromptTokens,
-		CompletionTokens: usage.CompletionTokens,
-		TotalTokens:      usage.TotalTokens,
 	}
 }
 
@@ -1023,25 +1441,6 @@ type openAIUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
-}
-
-type openAIStreamChunk struct {
-	ID      string               `json:"id"`
-	Object  string               `json:"object"`
-	Model   string               `json:"model"`
-	Choices []openAIStreamChoice `json:"choices"`
-	Usage   *openAIUsage         `json:"usage,omitempty"`
-}
-
-type openAIStreamChoice struct {
-	Index        int                `json:"index"`
-	Delta        openAIMessageDelta `json:"delta"`
-	FinishReason *string            `json:"finish_reason,omitempty"`
-}
-
-type openAIMessageDelta struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
 }
 
 // OpenAI Responses API types.

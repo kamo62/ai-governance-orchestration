@@ -155,6 +155,10 @@ func (h *TurnsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.service.rememberEventID(sessionID, eventID)
 
 	if !req.AutoConfirm {
+		if err := h.service.setRoutedAgent(r.Context(), sessionID, specialist); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "routed agent update failed"})
+			return
+		}
 		if err := h.service.sessions.UpdateStatus(r.Context(), sessionID, "awaiting_confirmation"); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "session status update failed"})
 			return

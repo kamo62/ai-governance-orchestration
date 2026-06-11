@@ -13,7 +13,7 @@ func TestDispatcherBetaSmokeUsesEchoRuntime(t *testing.T) {
 
 	root := filepath.Join("..", "..")
 	d := NewDispatcher(root)
-	handle, err := d.Dispatch(context.Background(), "sess_beta_1", "unit-tests", "write tests for login")
+	handle, err := d.Dispatch(context.Background(), "sess_beta_1", "unit-tests", "write tests for login", "")
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}

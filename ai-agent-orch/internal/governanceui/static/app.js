@@ -3,6 +3,7 @@
     baseUrl: localStorage.getItem("ai_orch_base_url") || window.location.origin,
     devToken: localStorage.getItem("ai_orch_dev_token") || "",
     adminToken: localStorage.getItem("ai_orch_admin_token") || "",
+    actorSubject: localStorage.getItem("ai_orch_actor_subject") || "",
     lastReady: null,
     lastStatus: null,
     lastMetrics: null,
@@ -13,7 +14,6 @@
 
   const el = {
     baseUrl: document.getElementById("baseUrl"),
-    devToken: document.getElementById("devToken"),
     adminToken: document.getElementById("adminToken"),
     saveConnection: document.getElementById("saveConnection"),
     refresh: document.getElementById("refresh"),
@@ -30,11 +30,7 @@
     versionBadge: document.getElementById("versionBadge"),
     gatewayList: document.getElementById("gatewayList"),
     backendCommandList: document.getElementById("backendCommandList"),
-    copilotStatusBadge: document.getElementById("copilotStatusBadge"),
-    copilotStatusText: document.getElementById("copilotStatusText"),
-    copilotLogin: document.getElementById("copilotLogin"),
-    copilotModels: document.getElementById("copilotModels"),
-    copilotOutput: document.getElementById("copilotOutput"),
+    copilotEnrollments: document.getElementById("copilotEnrollments"),
     sessionList: document.getElementById("sessionList"),
     sessionBadge: document.getElementById("sessionBadge"),
     auditSessionTitle: document.getElementById("auditSessionTitle"),
@@ -52,10 +48,16 @@
     auditList: document.getElementById("auditList"),
     activityLog: document.getElementById("activityLog"),
     clearLog: document.getElementById("clearLog"),
+    envBadge: document.getElementById("envBadge"),
+    autoRefresh: document.getElementById("autoRefresh"),
+    killSwitchBadge: document.getElementById("killSwitchBadge"),
+    killSwitchGlobalOn: document.getElementById("killSwitchGlobalOn"),
+    killSwitchGlobalOff: document.getElementById("killSwitchGlobalOff"),
+    killSwitchAgentForm: document.getElementById("killSwitchAgentForm"),
+    killSwitchList: document.getElementById("killSwitchList"),
   };
 
   el.baseUrl.value = state.baseUrl;
-  el.devToken.value = state.devToken;
   el.adminToken.value = state.adminToken;
 
   function baseUrl() {
@@ -64,7 +66,14 @@
 
   function devHeaders() {
     const headers = { "Content-Type": "application/json" };
+    // The admin token is a superset credential server-side, so an
+    // operator-only console works without any dev token.
     if (state.devToken) headers.Authorization = "Bearer " + state.devToken;
+    else if (state.adminToken) headers.Authorization = "Bearer " + state.adminToken;
+    // Sessions, audit, and Copilot enrollment are actor-scoped. Without this
+    // header a dev-token UI views the empty "local-dev" actor instead of the
+    // operator's own governed activity.
+    if (state.actorSubject) headers["X-AI-Orch-Local-Identity"] = state.actorSubject;
     return headers;
   }
 
@@ -106,7 +115,15 @@
   }
 
   function hasDevToken() {
-    return state.devToken.trim().length > 0;
+    return state.devToken.trim().length > 0 || hasAdminToken();
+  }
+
+  function hasAdminToken() {
+    return state.adminToken.trim().length > 0;
+  }
+
+  function hasAnyAuth() {
+    return hasDevToken() || hasAdminToken();
   }
 
   function emptyList(target, message) {
@@ -132,6 +149,7 @@
 
   function renderReadiness() {
     const patchDecisions = metricNumber("patches_applied") + metricNumber("patches_rejected");
+    const evidenceRecords = Number(el.evidenceBadge.textContent || 0);
     const checks = [
       {
         label: "Service",
@@ -139,9 +157,9 @@
         value: state.lastReady && state.lastReady.service ? state.lastReady.service : "pending",
       },
       {
-        label: "Auth",
-        ok: hasDevToken(),
-        value: hasDevToken() ? "token set" : "token required",
+        label: "Operator access",
+        ok: hasAnyAuth(),
+        value: hasAdminToken() ? "org-wide" : hasDevToken() ? "actor-scoped" : "token required",
       },
       {
         label: "Gateway",
@@ -161,15 +179,15 @@
         value: state.lastAgents.length > 0 ? String(state.lastAgents.length) : "pending",
       },
       {
-        label: "Smoke",
-        ok: metricNumber("sessions_created") > 0 && patchDecisions > 0,
-        value: metricNumber("sessions_created") + " sessions / " + patchDecisions + " patches",
+        label: "Evidence",
+        ok: evidenceRecords > 0 || patchDecisions > 0,
+        value: evidenceRecords + " records / " + patchDecisions + " patch decisions",
       },
     ];
     const passed = checks.filter((check) => check.ok).length;
     const allPassed = passed === checks.length;
     const authPending = !hasDevToken();
-    el.readinessBadge.textContent = allPassed ? "Demo ready" : authPending ? "Auth pending" : "Needs smoke";
+    el.readinessBadge.textContent = allPassed ? "Governed" : authPending ? "Auth pending" : "Needs evidence";
     el.readinessSummary.textContent = passed + "/" + checks.length + " checks clear";
     el.readinessList.innerHTML = "";
     checks.forEach((check) => {
@@ -193,8 +211,8 @@
     el.agentCount.textContent = "-";
     el.agentBadge.textContent = "0";
     el.evidenceCount.textContent = "-";
-    emptyList(el.gatewayList, "Developer token required");
-    emptyList(el.agentList, "Developer token required");
+    emptyList(el.gatewayList, "Operator token required");
+    emptyList(el.agentList, "Operator token required");
     renderSessions([]);
     renderAuditTrail({ session_id: "", events: [] });
     renderRecords(el.evidenceList, el.evidenceBadge, [], ["evidence_type", "description"]);
@@ -207,13 +225,21 @@
       return true;
     }
     setStatus("Token required", "warn");
-    log(action + " requires developer token");
+    log(action + " requires operator token");
     renderProtectedPending();
     return false;
   }
 
+  function renderEnvironment(status) {
+    const env = (status && status.environment) || "local";
+    el.envBadge.textContent = env;
+    el.envBadge.className = "badge env-badge" + (env === "production" ? " prod" : "");
+    document.title = (env === "production" ? "[PROD] " : "") + "AI Orch Governance";
+  }
+
   function renderGatewayStatus(status) {
     state.lastStatus = status || null;
+    renderEnvironment(status);
     el.modelBackend.textContent = status.model_backend || "-";
     el.versionBadge.textContent = status.version || "-";
     el.gatewayList.innerHTML = "";
@@ -234,7 +260,7 @@
       el.gatewayList.appendChild(card);
     });
     loadBackends().catch((err) => log("backend commands unavailable: " + err.message));
-    loadCopilotStatus().catch(() => {});
+    loadCopilotFleet().catch(() => {});
   }
 
   async function loadBackends() {
@@ -271,41 +297,78 @@
         body: JSON.stringify({ backend, action }),
       });
       log("backend " + action + " completed: " + backend);
-      if (el.copilotOutput) el.copilotOutput.textContent = result.output || "ok";
       refreshAll();
     } catch (err) {
       log("backend " + action + " failed: " + err.message);
-      if (el.copilotOutput) el.copilotOutput.textContent = err.message;
     }
   }
 
-  async function loadCopilotStatus() {
+  // Enrollment is developer self-service from each machine; the console only
+  // observes fleet adoption via the enrollment count.
+  async function loadCopilotFleet() {
     if (!hasDevToken()) return;
     try {
       const status = await api("/v1/copilot/status", { headers: devHeaders() });
-      el.copilotStatusBadge.textContent = status.configured ? "Configured" : "Not configured";
-      el.copilotStatusText.textContent = status.configured
-        ? "GitHub " + (status.github_login || "unknown") + " for " + status.actor_subject
-        : "No Copilot token for " + (status.actor_subject || "current actor") + ".";
-    } catch (err) {
-      el.copilotStatusBadge.textContent = "Unavailable";
-      el.copilotStatusText.textContent = err.message;
+      el.copilotEnrollments.textContent = String(status.enrollments ?? 0);
+    } catch (_err) {
+      el.copilotEnrollments.textContent = "-";
     }
   }
 
-  async function startCopilotLogin() {
-    if (!requireDevToken("Copilot login")) return;
-    const login = await api("/v1/copilot/login/start", { method: "POST", headers: devHeaders() });
-    const url = login.verification_uri_complete || login.verification_uri;
-    el.copilotOutput.textContent = "Open: " + url + "\nCode: " + login.user_code + "\nLogin ID: " + login.login_id;
-    log("copilot login started");
+
+  async function loadKillSwitches() {
+    if (!state.adminToken.trim()) {
+      el.killSwitchBadge.textContent = "-";
+      emptyList(el.killSwitchList, "Admin token required");
+      return;
+    }
+    try {
+      const data = await api("/v1/admin/killswitch", { headers: adminHeaders() });
+      const switches = data.killswitches || {};
+      const entries = [];
+      Object.keys(switches).sort().forEach((scope) => {
+        (switches[scope] || []).forEach((id) => entries.push({ scope, id }));
+      });
+      el.killSwitchBadge.textContent = String(entries.length);
+      el.killSwitchList.innerHTML = "";
+      if (!entries.length) {
+        emptyList(el.killSwitchList, "No active kill switches");
+        return;
+      }
+      entries.forEach((entry) => {
+        const item = document.createElement("div");
+        item.className = "item kill-switch-item";
+        item.innerHTML = [
+          "<strong>" + escapeHtml(entry.scope + " / " + entry.id) + "</strong>",
+          "<span><button type=\"button\" data-scope=\"" + escapeHtml(entry.scope) + "\" data-id=\"" + escapeHtml(entry.id) + "\">Unblock</button></span>",
+        ].join("");
+        el.killSwitchList.appendChild(item);
+      });
+      el.killSwitchList.querySelectorAll("button[data-scope]").forEach((button) => {
+        button.addEventListener("click", () => toggleKillSwitch(button.dataset.scope, button.dataset.id, false));
+      });
+    } catch (err) {
+      el.killSwitchBadge.textContent = "-";
+      emptyList(el.killSwitchList, "Kill switch status unavailable: " + err.message);
+    }
   }
 
-  async function listCopilotModels() {
-    if (!requireDevToken("Copilot models")) return;
-    const models = await api("/v1/copilot/models", { headers: devHeaders() });
-    el.copilotOutput.textContent = JSON.stringify(models, null, 2);
-    log("copilot models loaded");
+  async function toggleKillSwitch(scope, id, enable) {
+    if (!state.adminToken.trim()) {
+      setStatus("Admin token required", "warn");
+      log("kill switch change requires admin token");
+      return;
+    }
+    try {
+      await api("/v1/admin/killswitch/" + encodeURIComponent(scope) + "/" + encodeURIComponent(id), {
+        method: enable ? "POST" : "DELETE",
+        headers: adminHeaders(),
+      });
+      log("kill switch " + (enable ? "enabled" : "disabled") + ": " + scope + "/" + id);
+      loadKillSwitches();
+    } catch (err) {
+      log("kill switch change failed: " + err.message);
+    }
   }
 
   function renderAgents(agents) {
@@ -331,49 +394,64 @@
 
   function renderMetrics(metrics) {
     state.lastMetrics = metrics || {};
-    const sessions = Number(metrics.sessions_created || 0);
     const applied = Number(metrics.patches_applied || 0);
     const rejected = Number(metrics.patches_rejected || 0);
     const hits = Number(metrics.cache_hits || 0);
     const misses = Number(metrics.cache_misses || 0);
     const rate = hits + misses === 0 ? "-" : Math.round((hits / (hits + misses)) * 100) + "%";
-    el.sessionCount.textContent = String(sessions);
     el.cacheRate.textContent = rate;
     el.patchCount.textContent = String(applied + rejected);
   }
 
   function renderSessions(sessions) {
-	const list = Array.isArray(sessions) ? sessions : [];
-	state.lastSessions = list;
-	el.sessionCount.textContent = String(list.length);
-	el.sessionBadge.textContent = String(list.length);
+  const list = Array.isArray(sessions) ? sessions : [];
+  state.lastSessions = list;
+  el.sessionCount.textContent = String(list.length);
+  el.sessionBadge.textContent = String(list.length);
     el.sessionList.innerHTML = "";
     if (!list.length) {
       emptyList(el.sessionList, "No governed sessions");
       return;
     }
-	list.slice(0, 20).forEach((session) => {
-	  const button = document.createElement("button");
-	  button.type = "button";
-	  button.className = "session-item" + (session.session_id === state.selectedSessionID ? " selected" : "");
-	  button.dataset.sessionId = session.session_id;
-	  const created = formatDate(session.created_at);
-	  const summary = session.usage_summary || {};
-	  const mode = formatModeLabels(session);
-	  const model = formatModelSummary(summary);
-	  const tokens = formatTokenSummary(summary);
-	  const cost = formatCostSummary(summary);
-	  button.innerHTML = [
-	    "<strong>" + escapeHtml(session.agent || "session") + "</strong>",
-	    "<span>" + escapeHtml(session.status || "-") + "</span>",
-	    "<code>" + escapeHtml(session.session_id || "") + "</code>",
-	    "<p>" + escapeHtml([created, mode].filter(Boolean).join(" - ")) + "</p>",
-	    "<p>" + escapeHtml(model) + "</p>",
-	    "<p>" + escapeHtml(tokens + " - " + cost) + "</p>",
-	  ].join("");
-	  button.addEventListener("click", () => loadAuditTrail(session.session_id));
-	  el.sessionList.appendChild(button);
-	});
+  const table = document.createElement("table");
+  table.className = "ledger-table";
+  table.innerHTML = [
+    "<thead><tr>",
+    "<th>Time</th>",
+    "<th>Actor / Source</th>",
+    "<th>Work item</th>",
+    "<th>Agent</th>",
+    "<th>Model / Backend</th>",
+    "<th>Status</th>",
+    "<th>Tokens</th>",
+    "<th>Cost</th>",
+    "<th>Trust</th>",
+    "</tr></thead><tbody></tbody>",
+  ].join("");
+  const tbody = table.querySelector("tbody");
+  list.slice(0, 50).forEach((session) => {
+    const summary = session.usage_summary || {};
+    const row = document.createElement("tr");
+    row.className = session.session_id === state.selectedSessionID ? "selected" : "";
+    row.innerHTML = [
+      cell(formatShortDate(session.latest_event_at || session.created_at), session.latest_event_type || "created"),
+      cell(session.actor_subject || "-", session.source_system || session.actor_hint || "-"),
+      cell(session.work_item_id || "-", [session.repo_url, session.branch].filter(Boolean).join(" / ") || session.use_case_id || "-"),
+      cell(session.routed_agent || session.agent || "-", formatModeLabels(session) || "-"),
+      cell(summary.model_alias || "-", [summary.model_resolved, summary.gateway_backend].filter(Boolean).join(" / ") || "-"),
+      cell(session.status || "-", session.patch_state ? "patch " + session.patch_state : (session.tool_call_count ? session.tool_call_count + " tool calls" : "-")),
+      cell(String(summary.total_tokens || 0), (summary.prompt_tokens || 0) + " in / " + (summary.completion_tokens || 0) + " out"),
+      cell(formatCostValue(summary.estimated_cost_usd), costSourceLabel(summary.cost_source) || "unpriced"),
+      cell(session.trust_level || "-", session.enforcement_mode || "-"),
+    ].join("");
+    row.addEventListener("click", () => loadAuditTrail(session.session_id));
+    tbody.appendChild(row);
+  });
+  el.sessionList.appendChild(table);
+      }
+
+      function cell(primary, secondary) {
+  return "<td><strong>" + escapeHtml(primary || "-") + "</strong><span>" + escapeHtml(secondary || "") + "</span></td>";
       }
 
   function renderAuditTrail(audit) {
@@ -418,9 +496,10 @@
     }
     state.selectedSessionID = sessionID;
     renderSessions(state.lastSessions);
-    const audit = await api("/v1/audit/sessions/" + encodeURIComponent(sessionID), {
-      headers: devHeaders(),
-    });
+    const orgWide = hasAdminToken();
+    const audit = orgWide
+      ? await api("/v1/admin/audit/sessions/" + encodeURIComponent(sessionID), { headers: adminHeaders() })
+      : await api("/v1/audit/sessions/" + encodeURIComponent(sessionID), { headers: devHeaders() });
     renderAuditTrail(audit);
     log("audit loaded: " + sessionID);
   }
@@ -430,6 +509,13 @@
 	const date = new Date(value);
 	if (Number.isNaN(date.getTime())) return String(value);
 	return date.toLocaleString();
+      }
+
+      function formatShortDate(value) {
+	if (!value) return "";
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) return String(value);
+	return date.toLocaleString([], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
       }
 
       function formatModeLabels(session) {
@@ -525,6 +611,11 @@
 	return "$" + value.toFixed(2);
       }
 
+      function formatCostValue(value) {
+	const cost = Number(value || 0);
+	return cost > 0 ? formatCost(cost) : "$0";
+      }
+
       function costSourceLabel(value) {
 	switch (value) {
 	  case "provider_reported":
@@ -575,6 +666,91 @@
     });
   }
 
+  async function loadOrgSessions() {
+    try {
+      // With an admin token the console shows every actor's sessions
+      // (governance oversight); otherwise it shows the configured actor's own.
+      const orgWide = hasAdminToken();
+      const response = orgWide
+        ? await api("/v1/admin/sessions?limit=20", { headers: adminHeaders() })
+        : await api("/v1/sessions?limit=20", { headers: devHeaders() });
+      const sessions = response.sessions || [];
+      const selectedStillExists = sessions.some((session) => session.session_id === state.selectedSessionID);
+      renderSessions(sessions);
+      const nextSessionID = selectedStillExists ? state.selectedSessionID : (sessions[0] && sessions[0].session_id) || "";
+      if (nextSessionID) {
+        await loadAuditTrail(nextSessionID);
+      } else {
+        state.selectedSessionID = "";
+        renderAuditTrail({ session_id: "", events: [] });
+      }
+    } catch (err) {
+      renderSessions([]);
+      renderAuditTrail({ session_id: "", events: [] });
+      log("sessions failed: " + err.message);
+    }
+  }
+
+  async function loadOrgEvidenceAndReporting() {
+    if (hasAdminToken()) {
+      try {
+        const evidence = await api("/v1/admin/evidence", { headers: adminHeaders() });
+        const records = evidence.evidence || [];
+        el.evidenceCount.textContent = String(records.length);
+        renderRecords(el.evidenceList, el.evidenceBadge, records, ["evidence_type", "description"]);
+      } catch (err) {
+        el.evidenceCount.textContent = "-";
+        renderRecords(el.evidenceList, el.evidenceBadge, [], ["evidence_type", "description"]);
+        log("org evidence failed: " + err.message);
+      }
+      try {
+        const maturity = await api("/v1/admin/reporting/maturity-governance", { headers: adminHeaders() });
+        const records = maturity.exports || [];
+        renderRecords(el.maturityList, el.maturityBadge, records, ["workflow_id", "use_case_id", "session_id"]);
+      } catch (err) {
+        renderRecords(el.maturityList, el.maturityBadge, [], ["workflow_id", "use_case_id", "session_id"]);
+        log("org maturity export failed: " + err.message);
+      }
+      try {
+        const cache = await api("/v1/admin/cache-outcomes", { headers: adminHeaders() });
+        const outcomes = cache.outcomes || [];
+        renderCacheRate(outcomes);
+      } catch (err) {
+        log("org cache outcomes failed: " + err.message);
+      }
+      return;
+    }
+
+    try {
+      const evidence = await api("/v1/evidence", { headers: devHeaders() });
+      const records = evidence.evidence || evidence.records || evidence.items || [];
+      el.evidenceCount.textContent = String(records.length);
+      renderRecords(el.evidenceList, el.evidenceBadge, records, ["evidence_type", "description"]);
+    } catch (err) {
+      el.evidenceCount.textContent = "-";
+      renderRecords(el.evidenceList, el.evidenceBadge, [], ["evidence_type", "description"]);
+      log("evidence failed: " + err.message);
+    }
+
+    try {
+      const maturity = await api("/v1/reporting/maturity-governance", { headers: devHeaders() });
+      const records = maturity.exports || maturity.records || maturity.items || [];
+      renderRecords(el.maturityList, el.maturityBadge, records, ["workflow_id", "use_case_id", "session_id"]);
+    } catch (err) {
+      renderRecords(el.maturityList, el.maturityBadge, [], ["workflow_id", "use_case_id", "session_id"]);
+      log("maturity export failed: " + err.message);
+    }
+  }
+
+  function renderCacheRate(outcomes) {
+    const list = Array.isArray(outcomes) ? outcomes : [];
+    if (!list.length) {
+      return;
+    }
+    const hits = list.filter((outcome) => Boolean(outcome.hit)).length;
+    el.cacheRate.textContent = Math.round((hits / list.length) * 100) + "%";
+  }
+
   async function refreshAll() {
     setStatus("Refreshing", "");
     try {
@@ -594,7 +770,7 @@
       log("metrics failed: " + err.message);
     }
 
-    if (!hasDevToken()) {
+    if (!hasAnyAuth()) {
       setStatus(state.lastReady ? "Token required" : "Health failed", state.lastReady ? "warn" : "bad");
       renderProtectedPending();
       return;
@@ -622,44 +798,11 @@
       log("agents failed: " + err.message);
     }
 
-    try {
-      const evidence = await api("/v1/evidence", { headers: devHeaders() });
-      const records = evidence.evidence || evidence.records || evidence.items || [];
-      el.evidenceCount.textContent = String(records.length);
-      renderRecords(el.evidenceList, el.evidenceBadge, records, ["evidence_type", "description"]);
-    } catch (err) {
-      el.evidenceCount.textContent = "-";
-      renderRecords(el.evidenceList, el.evidenceBadge, [], ["evidence_type", "description"]);
-      log("evidence failed: " + err.message);
-    }
+    await loadOrgEvidenceAndReporting();
 
-    try {
-      const maturity = await api("/v1/reporting/maturity-governance", { headers: devHeaders() });
-      const records = maturity.exports || maturity.records || maturity.items || [];
-      renderRecords(el.maturityList, el.maturityBadge, records, ["workflow_id", "use_case_id", "session_id"]);
-    } catch (err) {
-      renderRecords(el.maturityList, el.maturityBadge, [], ["workflow_id", "use_case_id", "session_id"]);
-      log("maturity export failed: " + err.message);
-    }
+    await loadOrgSessions();
 
-    try {
-      const response = await api("/v1/sessions?limit=20", { headers: devHeaders() });
-      const sessions = response.sessions || [];
-      const selectedStillExists = sessions.some((session) => session.session_id === state.selectedSessionID);
-      renderSessions(sessions);
-      const nextSessionID = selectedStillExists ? state.selectedSessionID : (sessions[0] && sessions[0].session_id) || "";
-      if (nextSessionID) {
-        await loadAuditTrail(nextSessionID);
-      } else {
-        state.selectedSessionID = "";
-        renderAuditTrail({ session_id: "", events: [] });
-      }
-    } catch (err) {
-      renderSessions([]);
-      renderAuditTrail({ session_id: "", events: [] });
-      log("sessions failed: " + err.message);
-    }
-
+    loadKillSwitches();
     renderReadiness();
   }
 
@@ -674,29 +817,121 @@
 
   el.saveConnection.addEventListener("click", () => {
     state.baseUrl = el.baseUrl.value.trim() || window.location.origin;
-    state.devToken = el.devToken.value.trim();
     state.adminToken = el.adminToken.value.trim();
     localStorage.setItem("ai_orch_base_url", state.baseUrl);
     localStorage.setItem("ai_orch_dev_token", state.devToken);
     localStorage.setItem("ai_orch_admin_token", state.adminToken);
+    localStorage.setItem("ai_orch_actor_subject", state.actorSubject);
     log("connection saved");
     refreshAll();
   });
 
   el.refresh.addEventListener("click", refreshAll);
-  if (el.copilotLogin) {
-    el.copilotLogin.addEventListener("click", () => {
-      startCopilotLogin().catch((err) => log("copilot login failed: " + err.message));
-    });
-  }
-  if (el.copilotModels) {
-    el.copilotModels.addEventListener("click", () => {
-      listCopilotModels().catch((err) => log("copilot models failed: " + err.message));
-    });
-  }
   el.clearLog.addEventListener("click", () => {
     el.activityLog.innerHTML = "";
   });
+
+  if (el.killSwitchGlobalOn) {
+    el.killSwitchGlobalOn.addEventListener("click", () => toggleKillSwitch("global", "sessions", true));
+  }
+  if (el.killSwitchGlobalOff) {
+    el.killSwitchGlobalOff.addEventListener("click", () => toggleKillSwitch("global", "sessions", false));
+  }
+  if (el.killSwitchAgentForm) {
+    el.killSwitchAgentForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const agent = (new FormData(el.killSwitchAgentForm).get("agent") || "").toString().trim();
+      if (!agent) return;
+      const action = event.submitter && event.submitter.dataset.action === "unblock" ? false : true;
+      toggleKillSwitch("agent", agent, action);
+      el.killSwitchAgentForm.reset();
+    });
+  }
+
+  // Auto-refresh keeps the dashboard live without manual clicks. Paused via
+  // the toggle so an operator can inspect a moment in time.
+  setInterval(() => {
+    if (el.autoRefresh && el.autoRefresh.checked) {
+      refreshAll();
+    }
+  }, 15000);
+
+  // Hash router: each sidebar entry maps to a page section. All sections stay
+  // in the DOM so render targets always exist; routing only toggles classes.
+  const pageTitles = {
+    overview: "Overview",
+    sessions: "Activity Ledger",
+    gateways: "Gateways",
+    governance: "Risk Controls",
+    catalog: "Evidence & Reporting",
+    settings: "Settings",
+  };
+
+  function currentPage() {
+    const raw = (window.location.hash || "").replace(/^#\/?/, "").trim();
+    return pageTitles[raw] ? raw : "sessions";
+  }
+
+  function renderRoute() {
+    const page = currentPage();
+    document.querySelectorAll(".page").forEach((section) => {
+      section.classList.toggle("active", section.dataset.page === page);
+    });
+    document.querySelectorAll("[data-page-link]").forEach((link) => {
+      link.classList.toggle("active", link.dataset.pageLink === page);
+    });
+    const title = document.getElementById("pageTitle");
+    if (title) title.textContent = pageTitles[page];
+  }
+
+  // Evidence exports: fetch with the admin credential and hand the browser a
+  // blob download, since a bare link cannot carry the Authorization header.
+  async function downloadExport(path, filename) {
+    if (!hasAdminToken()) {
+      setStatus("Admin token required", "warn");
+      log("export requires admin token");
+      return;
+    }
+    try {
+      const response = await fetch(baseUrl() + path, { headers: adminHeaders() });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      log("export downloaded: " + filename);
+    } catch (err) {
+      log("export failed: " + err.message);
+    }
+  }
+
+  const exportStamp = () => new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const exportCsvButton = document.getElementById("exportCsv");
+  const exportJsonButton = document.getElementById("exportJson");
+  const exportTrailButton = document.getElementById("exportTrail");
+  if (exportCsvButton) {
+    exportCsvButton.addEventListener("click", () => downloadExport("/v1/admin/sessions/export?format=csv", "ai-orch-sessions-" + exportStamp() + ".csv"));
+  }
+  if (exportJsonButton) {
+    exportJsonButton.addEventListener("click", () => downloadExport("/v1/admin/sessions/export?format=json", "ai-orch-sessions-" + exportStamp() + ".json"));
+  }
+  if (exportTrailButton) {
+    exportTrailButton.addEventListener("click", () => {
+      if (!state.selectedSessionID) {
+        log("select a session before downloading its trail");
+        return;
+      }
+      downloadExport("/v1/admin/audit/sessions/" + encodeURIComponent(state.selectedSessionID), "ai-orch-audit-" + state.selectedSessionID + ".json");
+    });
+  }
+
+  window.addEventListener("hashchange", renderRoute);
+  renderRoute();
 
   el.useCaseForm.addEventListener("submit", async (event) => {
     event.preventDefault();

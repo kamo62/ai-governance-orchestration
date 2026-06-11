@@ -14,8 +14,8 @@ func TestValidateCatalogAcceptsCurrentPhase0Catalog(t *testing.T) {
 		t.Fatalf("Validate returned error: %v", err)
 	}
 
-	if len(report.Agents) != 11 {
-		t.Fatalf("expected 11 agents, got %d: %#v", len(report.Agents), report.Agents)
+	if len(report.Agents) != 12 {
+		t.Fatalf("expected 12 agents, got %d: %#v", len(report.Agents), report.Agents)
 	}
 	requiredAliases := []string{
 		"coding-primary",

@@ -223,11 +223,16 @@ func (s *SSEWriter) WriteComment(comment string) error {
 
 // EventsHandler serves GET /v1/sessions/{id}/events as SSE.
 type EventsHandler struct {
-	store *EventStore
+	store   *EventStore
+	service *SessionService
 }
 
-func NewEventsHandler(store *EventStore) http.Handler {
-	return &EventsHandler{store: store}
+func NewEventsHandler(store *EventStore, service ...*SessionService) http.Handler {
+	var svc *SessionService
+	if len(service) > 0 {
+		svc = service[0]
+	}
+	return &EventsHandler{store: store, service: svc}
 }
 
 func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -250,6 +255,17 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if sessionID == "" || strings.Contains(sessionID, "/") {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
 		return
+	}
+	if h.service != nil && h.service.sessions != nil {
+		record, err := h.service.sessions.Get(r.Context(), sessionID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			return
+		}
+		if record.ActorSubject != actorFromContext(r.Context()) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
+			return
+		}
 	}
 
 	sse, err := NewSSEWriter(w)

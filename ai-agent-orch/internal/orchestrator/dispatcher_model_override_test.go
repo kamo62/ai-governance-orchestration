@@ -19,7 +19,7 @@ func TestDispatcherUsesModelAliasOverride(t *testing.T) {
 		},
 	}
 
-	_, err := dispatcher.Dispatch(context.Background(), "sess_test", "unit-tests", "write tests")
+	_, err := dispatcher.Dispatch(context.Background(), "sess_test", "unit-tests", "write tests", "")
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}

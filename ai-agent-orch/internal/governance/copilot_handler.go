@@ -77,12 +77,18 @@ func (h *CopilotHandler) status(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"configured": false, "error": "copilot token store unavailable"})
 		return
 	}
+	// Fleet-level enrollment count for operator dashboards: enrollment itself
+	// stays developer self-service, the console only observes adoption.
+	enrollments := 0
+	if count, countErr := h.store.EnrollmentCount(r.Context()); countErr == nil {
+		enrollments = count
+	}
 	rec, err := h.store.Load(r.Context(), actor)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"configured": false, "actor_subject": actor})
+		writeJSON(w, http.StatusOK, map[string]any{"configured": false, "actor_subject": actor, "enrollments": enrollments})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"configured": true, "actor_subject": actor, "github_login": rec.GitHubLogin, "token_fingerprint": rec.Fingerprint})
+	writeJSON(w, http.StatusOK, map[string]any{"configured": true, "actor_subject": actor, "github_login": rec.GitHubLogin, "token_fingerprint": rec.Fingerprint, "refresh_configured": rec.RefreshToken != "", "access_expires_at": rec.AccessExpiresAt, "enrollments": enrollments})
 }
 
 func (h *CopilotHandler) loginStart(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +111,7 @@ func (h *CopilotHandler) loginStart(w http.ResponseWriter, r *http.Request) {
 	}
 	loginID := h.newID("copilot_login")
 	h.mu.Lock()
+	h.pruneLoginsLocked()
 	h.logins[loginID] = copilotLoginState{ActorSubject: actor, Device: device, StartedAt: time.Now().UTC()}
 	h.mu.Unlock()
 	go h.completeLogin(loginID)
@@ -131,7 +138,17 @@ func (h *CopilotHandler) completeLogin(loginID string) {
 		if userErr != nil {
 			err = userErr
 		} else {
-			err = h.store.Save(ctx, copilot.TokenRecord{ActorSubject: state.ActorSubject, GitHubLogin: user.Login, GitHubUserID: fmt.Sprintf("%d", user.ID), BaseURL: copilot.DefaultCopilotBaseURL, AccessToken: token.AccessToken})
+			now := time.Now().UTC()
+			err = h.store.Save(ctx, copilot.TokenRecord{
+				ActorSubject:     state.ActorSubject,
+				GitHubLogin:      user.Login,
+				GitHubUserID:     fmt.Sprintf("%d", user.ID),
+				BaseURL:          copilot.DefaultCopilotBaseURL,
+				AccessToken:      token.AccessToken,
+				RefreshToken:     token.RefreshToken,
+				AccessExpiresAt:  token.AccessExpiresAt(now),
+				RefreshExpiresAt: token.RefreshExpiresAt(now),
+			})
 			state.GitHubLogin = user.Login
 		}
 	}
@@ -142,6 +159,18 @@ func (h *CopilotHandler) completeLogin(loginID string) {
 	}
 	h.logins[loginID] = state
 	h.mu.Unlock()
+}
+
+// pruneLoginsLocked drops device-flow attempts past any plausible authorization
+// window so abandoned logins do not accumulate. Callers must hold h.mu.
+func (h *CopilotHandler) pruneLoginsLocked() {
+	cutoff := time.Now().UTC().Add(-1 * time.Hour)
+	for id, state := range h.logins {
+		expiry := state.StartedAt.Add(time.Duration(state.Device.ExpiresIn+300) * time.Second)
+		if expiry.Before(time.Now().UTC()) || state.StartedAt.Before(cutoff) {
+			delete(h.logins, id)
+		}
+	}
 }
 
 func (h *CopilotHandler) loginStatus(w http.ResponseWriter, r *http.Request) {
@@ -178,7 +207,7 @@ func (h *CopilotHandler) models(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "copilot token missing"})
 		return
 	}
-	body, err := h.client.Models(r.Context(), rec.AccessToken)
+	body, err := h.client.Models(r.Context(), h.copilotBearer(r.Context(), rec))
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
@@ -186,6 +215,22 @@ func (h *CopilotHandler) models(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+func (h *CopilotHandler) copilotBearer(ctx context.Context, rec copilot.TokenRecord) string {
+	if h.store != nil && rec.RefreshToken != "" && !rec.AccessExpiresAt.IsZero() && time.Now().UTC().After(rec.AccessExpiresAt.Add(-5*time.Minute)) {
+		refreshed, err := h.client.RefreshAccessToken(ctx, rec.RefreshToken)
+		if err == nil {
+			if updated, updateErr := h.store.UpdateOAuthToken(ctx, rec.ActorSubject, refreshed, time.Now().UTC()); updateErr == nil {
+				rec = updated
+			}
+		}
+	}
+	session, err := h.client.ExchangeSessionToken(ctx, rec.AccessToken)
+	if err != nil {
+		return rec.AccessToken
+	}
+	return session.Token
 }
 
 func (h *CopilotHandler) logout(w http.ResponseWriter, r *http.Request) {

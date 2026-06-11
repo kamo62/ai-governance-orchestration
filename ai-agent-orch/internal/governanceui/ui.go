@@ -16,7 +16,13 @@ func Handler() http.Handler {
 			http.Error(w, "governance ui unavailable", http.StatusInternalServerError)
 		})
 	}
-	return http.FileServer(http.FS(staticFiles))
+	fileServer := http.FileServer(http.FS(staticFiles))
+	// Embedded assets carry no modtime, so browsers cache them heuristically
+	// and operators see stale UI after upgrades. Force revalidation.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 func Redirect() http.Handler {

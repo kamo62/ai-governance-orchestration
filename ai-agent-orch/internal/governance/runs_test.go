@@ -125,6 +125,6 @@ func (r *routeCaptureOrchestrator) AcceptSession(context.Context, string, string
 	return nil
 }
 
-func (r *routeCaptureOrchestrator) Dispatch(context.Context, string, string, string) (DispatchResult, error) {
+func (r *routeCaptureOrchestrator) Dispatch(context.Context, string, string, string, string) (DispatchResult, error) {
 	return DispatchResult{}, nil
 }

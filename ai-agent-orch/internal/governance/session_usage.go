@@ -9,18 +9,22 @@ import (
 
 // SessionUsageSummary aggregates token and cost signals for a governed session.
 type SessionUsageSummary struct {
-	TotalTokens      int     `json:"total_tokens"`
-	PromptTokens     int     `json:"prompt_tokens"`
-	CompletionTokens int     `json:"completion_tokens"`
-	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
-	ModelProxyCalls  int     `json:"model_proxy_calls"`
-	MCPProxyCalls    int     `json:"mcp_proxy_calls"`
-	TurnCount        int     `json:"turn_count"`
-	ModelAlias       string  `json:"model_alias,omitempty"`
-	ModelResolved    string  `json:"model_resolved,omitempty"`
-	Provider         string  `json:"provider,omitempty"`
-	GatewayBackend   string  `json:"gateway_backend,omitempty"`
-	CostSource       string  `json:"cost_source,omitempty"`
+	TotalTokens              int     `json:"total_tokens"`
+	PromptTokens             int     `json:"prompt_tokens"`
+	CompletionTokens         int     `json:"completion_tokens"`
+	EstimatedCostUSD         float64 `json:"estimated_cost_usd"`
+	ModelProxyCalls          int     `json:"model_proxy_calls"`
+	MCPProxyCalls            int     `json:"mcp_proxy_calls"`
+	TurnCount                int     `json:"turn_count"`
+	ModelAlias               string  `json:"model_alias,omitempty"`
+	ModelResolved            string  `json:"model_resolved,omitempty"`
+	Provider                 string  `json:"provider,omitempty"`
+	CredentialSource         string  `json:"credential_source,omitempty"`
+	ReasoningEffortRequested string  `json:"reasoning_effort_requested,omitempty"`
+	ReasoningEffortApplied   string  `json:"reasoning_effort_applied,omitempty"`
+	ReasoningSource          string  `json:"reasoning_source,omitempty"`
+	GatewayBackend           string  `json:"gateway_backend,omitempty"`
+	CostSource               string  `json:"cost_source,omitempty"`
 }
 
 func SummarizeSessionUsage(events []audit.Event) SessionUsageSummary {
@@ -78,6 +82,18 @@ func rememberModelAttribution(summary *SessionUsageSummary, event audit.Event) {
 	}
 	if event.Provider != "" {
 		summary.Provider = event.Provider
+	}
+	if event.CredentialSource != "" {
+		summary.CredentialSource = event.CredentialSource
+	}
+	if event.ReasoningEffortRequested != "" {
+		summary.ReasoningEffortRequested = event.ReasoningEffortRequested
+	}
+	if event.ReasoningEffortApplied != "" {
+		summary.ReasoningEffortApplied = event.ReasoningEffortApplied
+	}
+	if event.ReasoningSource != "" {
+		summary.ReasoningSource = event.ReasoningSource
 	}
 	if event.GatewayBackend != "" {
 		summary.GatewayBackend = event.GatewayBackend

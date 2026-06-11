@@ -70,7 +70,8 @@ func (h *DispatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// still producing governed evidence.
 	runtimeCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
 	defer cancel()
-	handle, err := h.dispatcher.Dispatch(runtimeCtx, sessionID, req.Agent, req.Prompt)
+	gatewayToken := r.Header.Get("X-AI-Orch-Session-Token")
+	handle, err := h.dispatcher.Dispatch(runtimeCtx, sessionID, req.Agent, req.Prompt, gatewayToken)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("dispatch failed: %v", err)})
 		return

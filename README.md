@@ -52,7 +52,7 @@ This repo is an attempt to answer those questions without rebuilding the whole d
 
 ## Current State
 
-Current version: `v0.15.0-beta`.
+Current version: `v0.18.0-beta`.
 
 This is a **local beta** for the Governance Shell vertical slice. It is suitable for team-local evaluation, not production deployment.
 
@@ -60,10 +60,9 @@ What exists today:
 
 - Go Governance Shell and Orchestrator services.
 - Agent catalogue using `agent.md` plus `agent.config.yaml`.
-- Selectable model backend owned by the Governance Shell: Bifrost OSS by default in Compose, native OpenRouter as fallback, and AgentGateway as an additional candidate gateway.
+- Selectable model backend owned by the Governance Shell: Bifrost OSS by default in Compose, with per-user Copilot as the actor-bound alternate.
 - Model compatibility gateway MVP for OpenAI-compatible `/v1/models`, `/v1/chat/completions`, `/v1/responses`, and streaming calls.
 - Bifrost OSS sidecar for provider plumbing across OpenRouter, OpenAI, Anthropic and direct DeepSeek today, with optional Bedrock, Vertex, Azure, Ollama or vLLM-style routes later.
-- AgentGateway backend adapter for testing AgentGateway as an LLM/MCP/security plumbing layer while keeping ai-orch as the session, routing, audit, patch and evidence authority.
 - Separate developer, admin, service and runtime-token boundaries for local testing.
 - Local CLI smoke path.
 - VS Code Bridge scaffold with first-run setup, connection checks, bounded workspace-context packaging, and tested workflow helpers. This is useful, but optional.
@@ -80,9 +79,9 @@ What exists today:
 - Local MCP gateway CLI scaffold with stdio client config generation, fail-closed local HTTP transport, and `start_governed_run` for MCP clients.
 - Audit trust labels for gateway-enforced, managed-client and self-reported activity.
 - Command allow-list and tool-loop cap enforcement.
-- Docker Compose local runner, Bifrost sidecar and direct OpenRouter smoke tooling.
+- Docker Compose local runner, Bifrost sidecar and direct OpenRouter provider-health smoke tooling.
 - OpenCode config install tooling and local E2E smoke for testing the governed provider endpoint without putting provider keys in OpenCode.
-- AgentGateway Compose override and OpenRouter config for testing AgentGateway as an alternative provider gateway without starting Bifrost for that run.
+- Governed OpenCode launcher defaults to a read-only, low-reasoning `governance-lead` primary agent, starts on the `ai-orch/coding-gpt55` capability alias, and records the routed specialist separately when work is delegated.
 - Beta verification path: `scripts/beta-verify.sh`, CIO demo verification path `scripts/cio-demo-verify.sh`, Compose profile `beta`, offline router golden-case tests, and frozen API contract in `docs/api-contract-v1.md`.
 - Governed-run Compose smoke without provider API keys (`AI_ORCH_BETA_SMOKE` uses EchoRuntime for CI and local beta checks).
 
@@ -125,23 +124,76 @@ OpenCode local install path:
 cd ai-agent-orch
 ./scripts/install-opencode-ai-orch.sh --scope global
 mkdir -p /tmp/ai-orch-opencode-e2e
-AI_ORCH_GOVERNANCE_URL=http://127.0.0.1:18081 \
-AI_ORCH_MODEL_GATEWAY_URL=http://127.0.0.1:18083 \
+AI_ORCH_GOVERNANCE_URL=http://127.0.0.1:18080 \
+AI_ORCH_MODEL_GATEWAY_URL=http://127.0.0.1:18082 \
 AI_ORCH_DEV_TOKEN=local-dev \
 AI_ORCH_RUNTIME_TOKEN=local-runtime-token \
 go run ./cmd/opencode-smoke e2e --dir /tmp/ai-orch-opencode-e2e
+```
+
+Copilot-backed local enrollment for governed OpenCode:
+
+```sh
+cd ai-agent-orch
+scripts/enroll-developer-copilot-opencode.sh
 ```
 
 Windows PowerShell:
 
 ```powershell
 cd ai-agent-orch
-.\scripts\install-opencode-ai-orch.ps1 -Scope global
+.\scripts\enroll-developer-copilot-opencode.ps1
+```
+
+The developer completes GitHub device auth on their own machine. ai-orch stores the Copilot credential encrypted for that actor. OpenCode config receives only the ai-orch provider plus session headers; it does not store the Copilot credential.
+
+For repo operators, local settings can live in `.env.dev` at the repository root. Start from `.env.example`; `.env.dev` is machine-local and ignored by git. Application developers do not need this file after enrollment because the OpenCode provider config contains the ai-orch URL, runtime token, actor subject and classification header.
+
+Direct OpenCode or T3 Code launch works after enrollment when these environment variables are set:
+
+```sh
+export AI_ORCH_RUNTIME_TOKEN=local-runtime-token
+export AI_ORCH_ACTOR_SUBJECT=$(whoami)
+export AI_ORCH_INTENT="local model-only exploration"
+opencode .
+```
+
+PowerShell:
+
+```powershell
+$env:AI_ORCH_RUNTIME_TOKEN = "local-runtime-token"
+$env:AI_ORCH_ACTOR_SUBJECT = $env:USERNAME
+$env:AI_ORCH_INTENT = "local model-only exploration"
+opencode .
+```
+
+If OpenCode/T3 does not provide `AI_ORCH_SESSION_ID` and `AI_ORCH_SESSION_TOKEN`, the model gateway creates an auto session on the first model call and records audit against that actor. This is the ergonomic default for local beta. `AI_ORCH_INTENT` is optional for direct launches, but it is the right place to capture why a developer chose a model-only path.
+
+Launch governed OpenCode through ai-orch so the session headers are created automatically:
+
+```sh
+cd ai-agent-orch
+scripts/opencode-governed.sh -- run "Write a small test"
+```
+
+Windows PowerShell:
+
+```powershell
+cd ai-agent-orch
+.\scripts\opencode-governed.ps1 run "Write a small test"
+```
+
+The wrapper creates a governed run with `agent=governance-lead`, receives `gateway_token`, exports `AI_ORCH_SESSION_ID` and `AI_ORCH_SESSION_TOKEN` for the child OpenCode process, then starts OpenCode with `--agent governance-lead` and `--model ai-orch/coding-gpt55` unless the user already chose a model. The `coding-gpt55` alias prefers the actor's enrolled Copilot credential when available and falls back to the approved Bifrost/OpenRouter route. The ledger records both the lead and the selected specialist as `routed_agent` when delegation occurs. Developers do not copy those values manually.
+
+Developers who deliberately want a governed model-only session can use an explicit intent reason:
+
+```sh
+cd ai-agent-orch
+scripts/opencode-governed.sh --model-only --governance-intent "Need direct model exploration before choosing an agent" -- run --model ai-orch/coding-gpt55 "Compare two approaches"
 ```
 
 Still pending for V1:
 
-- live AgentGateway backend smoke through the Compose override and OpenCode E2E evidence for both supported gateway paths;
 - durable multi-instance audit-chain state;
 - dedicated team registry storage or Postgres option;
 - real user OAuth acquisition for user-scoped MCPs;
@@ -152,7 +204,7 @@ Still pending for V1:
 - stronger skills/config factory support that makes those clients route meaningful work through the governed path by default without overwriting existing project files unexpectedly;
 - a Governance Router that selects model tier by task, risk, workflow, cost and evidence needs;
 - a GitHub App spike that attaches governed sessions to issues, PRs, checks and review evidence;
-- broader local OpenCode rollout hardening across managed global config, project config, MCP tools, and patch/diff evidence;
+- broader local OpenCode rollout hardening across managed global config, project config, and MCP tools;
 - richer VS Code Bridge chat/tool-loop ergonomics beyond the current active-file or selection context;
 - a CLine-style IDE agent experience or adapter path behind the Governance Shell;
 - a fuller governance UI with team reporting, workflow review queues, and operational controls.
@@ -167,7 +219,7 @@ This repo is not trying to become:
 - a new autonomous agent product;
 - a central source-code access service that can browse every developer repository;
 - a Backstage, Jira, ServiceNow, or documentation portal clone;
-- a model gateway competing with Bifrost, agentgateway, OpenRouter, LiteLLM, or provider-native gateways;
+- a model gateway competing with Bifrost, OpenRouter, LiteLLM, or provider-native gateways;
 - an enterprise identity, secrets, or device-management system;
 - a production deployment template.
 
@@ -192,7 +244,7 @@ The first build priority is therefore not the workbench. It is the plumbing that
 
 - session identity and ownership;
 - policy decisions that fail closed;
-- model calls through the Governance Shell, with Bifrost, AgentGateway, or native OpenRouter used as provider plumbing when selected;
+- model calls through the Governance Shell, with Bifrost or per-user Copilot used as provider plumbing when selected;
 - OpenAI-compatible runtime model calls through a model compatibility gateway;
 - MCP tool calls through a gateway;
 - patch content through the staged buffer;
@@ -238,9 +290,9 @@ The patch story is still deliberately split:
 
 - CLI smoke `applied` means a patch decision was recorded. It does not mutate the workspace.
 - VS Code Bridge `Apply` means the Bridge fetched the buffered patch and changed the local workspace.
-- OpenCode-style patching, where OpenCode edits locally and ai-orch receives governed model traffic plus patch/diff evidence, is still pending.
+- OpenCode/ACP local editing can now produce governed model traffic and patch/diff evidence in the implemented runtime paths, but managed rollout hardening and client-specific setup are still beta work.
 
-That distinction matters. The POC should not claim CLine/OpenCode-like editing until the runtime adapter can prove it end to end.
+That distinction matters. The POC should only claim local-client editing where the runtime path can prove model calls, permissions, and patch evidence end to end.
 
 The newer thought is that the next serious adapter should probably be `ai-orch-mcp`: a governed MCP gateway plus a small skills/config factory. The gateway would expose governed tools and delegation into CLine, Copilot, Claude Code, Codex, Cursor and similar clients. The skills factory would generate the client-specific instructions and MCP config that nudge those clients to start a governed session, attach a use case, delegate substantial work, submit patches through the buffer and record evidence.
 
@@ -272,8 +324,6 @@ Factory Router is interesting because it validates that model routing is becomin
 
 Bifrost is useful in a different way. It is good open-source provider plumbing: OpenAI-compatible routing, provider translation, streaming, retries and multiple backend families. The important thing is not to confuse that with the governance plane. In this POC, Bifrost sits behind ai-orch. Runtimes do not call Bifrost directly, Bifrost does not own session authority, Bifrost content logging is disabled locally, and Bifrost governance or enterprise features are not the thing being proved here. The current local smoke setup proves OpenRouter, direct OpenAI, direct Anthropic and direct DeepSeek routes through the Governance Shell.
 
-AgentGateway now looks like another strong candidate for that plumbing layer because it covers LLM gateway, MCP gateway, A2A, auth, RBAC, rate limiting, guardrails and telemetry in one open-source proxy. The right test is not "replace ai-orch with AgentGateway". The right test is "can Bifrost and AgentGateway both sit underneath ai-orch as selectable gateway plumbing while ai-orch remains the governance authority?" This branch now has an `agentgateway` model-backend adapter and an opt-in Compose override so that question can be tested with real traffic without starting Bifrost for the AgentGateway run. Bifrost remains supported as the default local Compose gateway.
-
 ## External Work I Am Watching
 
 This POC is not being built in isolation. The point is to borrow useful ideas without letting this repo become a wrapper around somebody else's agent stack.
@@ -294,8 +344,6 @@ The Microsoft write-up on [securing MCP with a control plane](https://developer.
 [Factory Router](https://factory.ai/news/factory-router) is interesting for the model-routing question. I am not reading it as something to copy; I am reading it as proof that "which model should do this work?" is becoming a decision layer in its own right. This POC should make that decision auditable and policy-aware.
 
 [Bifrost](https://github.com/maximhq/bifrost) is interesting for the provider-plumbing question. It already does the OpenAI-compatible gateway work across provider families. That makes it a good sidecar candidate behind the Governance Shell, as long as this repo keeps policy, session identity, audit, patch buffering, evidence, and model-routing decisions in ai-orch.
-
-[AgentGateway](https://github.com/agentgateway/agentgateway) is now a gateway-plumbing candidate to test before beta alongside Bifrost. It overlaps with the generic LLM and MCP gateway work, so ai-orch should not keep growing that generic layer blindly. The useful split is gateway tooling for protocol/provider/tool security plumbing, and ai-orch for engineering-work governance, evidence and decisions.
 
 The [GitHub Copilot app preview](https://github.com/features/preview/github-app) is interesting for the delivery-surface question. It points at an issue-to-merge workbench rather than just an IDE extension. That matters because governance has to show up where code is reviewed and merged, not only where prompts are typed.
 

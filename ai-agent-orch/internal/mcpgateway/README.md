@@ -95,7 +95,7 @@ Governance Shell (http://127.0.0.1:18080)
     |
     |-- Audit and Evidence
     |-- Patch Buffer
-    |-- Model Backend (Bifrost by default, native OpenRouter fallback)
+    |-- Model Backend (Bifrost by default, Copilot optional)
     |-- Policy Engine
 ```
 

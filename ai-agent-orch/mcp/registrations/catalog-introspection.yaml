@@ -6,6 +6,7 @@ auth_mode: local-dev-token
 credential_scope: local
 allowed_agents:
   - router-agent
+  - governance-lead
 tool_policy:
   default_approval: auto
   allow:
