@@ -54,7 +54,18 @@ This repo is an attempt to answer those questions without rebuilding the whole d
 
 Current version: `v0.18.0-beta`.
 
-This is a **local beta** for the Governance Shell vertical slice. It is suitable for team-local evaluation, not production deployment.
+This is a **local beta** for the Governance Shell vertical slice. It is useful for team-local evaluation and demos, but it is not a production deployment.
+
+Honest read as of 2026-06-11:
+
+- The core control-plane shape is now real: sessions, policy gates, model routing, patch decisions, cost metadata, audit records, and the local Governance UI all run in the beta stack.
+- The strongest implemented path is OpenCode or a similar OpenAI-compatible client pointing at ai-orch, with ai-orch owning the model endpoint and Bifrost sitting behind it as provider plumbing.
+- Per-user Copilot is now an actor-bound route rather than a global shared model secret. `ai-orch/coding-gpt55` prefers that route when the developer is enrolled and falls back to the approved Bifrost/OpenRouter route.
+- The agent story is no longer "start every session as unit-tests". OpenCode now starts through a low-reasoning `governance-lead` and delegates to known specialists when the work is clear enough.
+- The UI is good enough to inspect a local beta run, audit trail, gateway posture and session ledger. It is not yet an operator console for a shared service.
+- The MCP direction is sensible, but client-specific MCP setup for Cline, Copilot, Claude Code, Codex and Cursor is still adapter work, not a finished rollout path.
+- State is still mostly local SQLite plus process-local pieces. That is fine for the POC, but production needs durable multi-instance audit-chain handling, stronger identity, secret management, release automation and operational controls.
+- The repo should be read as a public POC with working beta paths and visible open questions, not as a packaged enterprise product.
 
 What exists today:
 
@@ -192,7 +203,7 @@ cd ai-agent-orch
 scripts/opencode-governed.sh --model-only --governance-intent "Need direct model exploration before choosing an agent" -- run --model ai-orch/coding-gpt55 "Compare two approaches"
 ```
 
-Still pending for V1:
+Known gaps before V1 or production:
 
 - durable multi-instance audit-chain state;
 - dedicated team registry storage or Postgres option;
@@ -208,6 +219,8 @@ Still pending for V1:
 - richer VS Code Bridge chat/tool-loop ergonomics beyond the current active-file or selection context;
 - a CLine-style IDE agent experience or adapter path behind the Governance Shell;
 - a fuller governance UI with team reporting, workflow review queues, and operational controls.
+
+These are not theoretical polish items. They are the line between a useful local beta and something a team could safely run as shared infrastructure.
 
 One design point I want to keep explicit: trust labels are reporting labels, not permission knobs. `gateway_enforced`, `managed_client` and `self_reported` should describe how the work actually ran. They should not become an allow-list that tells a developer which client they are allowed to use.
 
