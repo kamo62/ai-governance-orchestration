@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.20.2-beta - 2026-06-12 (Patch)
+
+Release impact: Patch because this fixes a CI-only staticcheck failure and clarifies README readiness without changing runtime contracts.
+
+- **Fixed GitHub Actions staticcheck**: removed the unused `chatToolCallName` helper left behind after tool-call audit parsing moved to `chatToolCallFunction`.
+- **Revalidated the application north star**: README now states the product boundary explicitly and gives an honest local beta, team beta, V1 and production readiness read.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.20.2-beta.
+
 ## v0.20.1-beta - 2026-06-12 (Patch)
 
 Release impact: Patch because this fixes OpenCode config installation to preserve default provider visibility without changing public APIs or model gateway contracts.

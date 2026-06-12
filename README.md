@@ -52,7 +52,7 @@ This repo is an attempt to answer those questions without rebuilding the whole d
 
 ## Current State
 
-Current version: `v0.20.1-beta`.
+Current version: `v0.20.2-beta`.
 
 This is a **local beta** for the Governance Shell vertical slice. It is useful for team-local evaluation and demos, but it is not a production deployment.
 
@@ -95,6 +95,27 @@ What exists today:
 - Governed OpenCode launcher defaults to a read-only, low-reasoning `governance-lead` primary agent, starts on the `ai-orch/coding-gpt55` capability alias, and records the routed specialist separately when work is delegated.
 - Beta verification path: `scripts/beta-verify.sh`, CIO demo verification path `scripts/cio-demo-verify.sh`, Compose profile `beta`, offline router golden-case tests, and frozen API contract in `docs/api-contract-v1.md`.
 - Governed-run Compose smoke without provider API keys (`AI_ORCH_BETA_SMOKE` uses EchoRuntime for CI and local beta checks).
+
+## North Star And Readiness
+
+The north star is not a better single coding agent. The north star is a governance/control plane that lets teams keep using OpenCode, Cline, Copilot, Claude Code, Codex, Cursor, VS Code, CI and later GitHub or Azure DevOps while routing meaningful model, tool, patch and evidence decisions through one enforceable boundary.
+
+The shape I am aiming for is:
+
+- local tools keep repository access and developer ergonomics;
+- ai-orch owns session identity, policy, model routing, runtime tokens, audit, cost and evidence;
+- Bifrost, OpenRouter, Copilot, Azure, Bedrock or other provider plumbing stays behind the Governance Shell rather than becoming the product;
+- MCP becomes the governed tool boundary where clients support it;
+- GitHub or Azure DevOps becomes the delivery evidence boundary when the local contract is boring enough to trust.
+
+Honest closeness as of 2026-06-12:
+
+- **Core bet:** close. The local beta now proves governed sessions, policy gates, model gateway routing, actor-bound Copilot, Bifrost/OpenRouter fallback, cost attribution, audit, patch decisions, OpenCode model traffic, and a useful local ledger UI.
+- **Team beta:** partly there. A small technical team could evaluate it with a central ai-orch server and developer-owned clients, but onboarding, MCP ergonomics, operational controls and support scripts still need hardening.
+- **V1:** not there yet. V1 needs durable shared state, stronger identity and secret operations, better client-event forwarding or MCP coverage, GitHub/Azure DevOps delivery evidence, cleaner admin workflows and a more intentional Governance Router.
+- **Production:** deliberately not claimed. Production would need multi-instance persistence, tenant isolation, release automation, monitoring, backup/restore, incident runbooks and security review.
+
+In plain terms: this is now close to proving the product direction, but not close enough to sell as shared infrastructure without the next hardening pass. The useful thing is that the remaining work is less about inventing the concept and more about making the boundary reliable across real clients.
 
 ### Beta quick start
 

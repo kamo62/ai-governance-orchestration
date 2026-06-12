@@ -305,11 +305,6 @@ func summarizeResponseToolCalls(body []byte) toolCallAuditSummary {
 	return tracker.Summary()
 }
 
-func chatToolCallName(call map[string]json.RawMessage) string {
-	name, _ := chatToolCallFunction(call)
-	return name
-}
-
 func chatToolCallFunction(call map[string]json.RawMessage) (string, string) {
 	if call == nil {
 		return "", ""
