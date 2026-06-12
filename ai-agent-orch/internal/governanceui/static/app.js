@@ -437,7 +437,7 @@
       cell(formatShortDate(session.latest_event_at || session.created_at), session.latest_event_type || "created"),
       cell(session.actor_subject || "-", session.source_system || session.actor_hint || "-"),
       cell(session.work_item_id || "-", [session.repo_url, session.branch].filter(Boolean).join(" / ") || session.use_case_id || "-"),
-      cell(session.routed_agent || session.agent || "-", formatModeLabels(session) || "-"),
+      cell(session.routed_agent || session.agent || "-", [session.parent_session_id ? "child of " + session.parent_session_id : "", formatModeLabels(session)].filter(Boolean).join(" / ") || "-"),
       cell(summary.model_alias || "-", [summary.model_resolved, summary.gateway_backend].filter(Boolean).join(" / ") || "-"),
       cell(session.status || "-", session.patch_state ? "patch " + session.patch_state : (session.tool_call_count ? session.tool_call_count + " tool calls" : "-")),
       cell(String(summary.total_tokens || 0), (summary.prompt_tokens || 0) + " in / " + (summary.completion_tokens || 0) + " out"),
@@ -473,9 +473,11 @@
       item.className = "audit-event";
 	  const detail = [
 	    event.agent ? "agent " + event.agent : "",
+	    event.parent_session_id ? "parent " + event.parent_session_id : "",
 	    event.model_alias ? "model " + event.model_alias : "",
 	    event.model_resolved ? "resolved " + event.model_resolved : "",
 	    event.gateway_backend ? "gateway " + event.gateway_backend : "",
+	    formatToolCallSummary(event),
 	    formatEventUsage(event),
 	    event.reason ? "reason " + event.reason : "",
 	  ].filter(Boolean).join(" | ");
@@ -643,6 +645,18 @@
 	});
 	const cost = Number(usage.cost_usd || 0);
 	return cost > 0 ? tokens + " / cost " + formatCost(cost) : tokens;
+      }
+
+      function formatToolCallSummary(event) {
+	const count = Number((event && event.tool_call_count) || 0);
+	const names = Array.isArray(event && event.tool_call_names)
+	  ? event.tool_call_names.filter(Boolean).slice(0, 6)
+	  : [];
+	if (!count && !names.length) {
+	  return "";
+	}
+	const label = count === 1 ? "1 tool call" : count + " tool calls";
+	return names.length ? label + " (" + names.join(", ") + ")" : label;
       }
 
       function renderRecords(target, badge, records, fields) {

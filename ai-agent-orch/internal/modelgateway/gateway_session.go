@@ -72,6 +72,7 @@ func (g *Gateway) resolveSession(w http.ResponseWriter, r *http.Request, modelAl
 	if strings.TrimSpace(info.ActorSubject) == "" {
 		info.ActorSubject = actor
 	}
+	info.AutoCreated = true
 	w.Header().Set("X-AI-Orch-Session-ID", info.SessionID)
 	if strings.TrimSpace(info.GatewayToken) != "" {
 		w.Header().Set("X-AI-Orch-Session-Token", info.GatewayToken)

@@ -27,6 +27,33 @@ type Backend interface {
 	ChatCompletionStream(context.Context, openrouter.ChatCompletionRequest) (io.ReadCloser, error)
 }
 
+// ModelCatalogBackend is implemented by actor-bound backends that can expose
+// their upstream model catalog for a specific enrolled actor.
+type ModelCatalogBackend interface {
+	Models(context.Context, string) ([]byte, error)
+}
+
+// ProviderSupport is implemented by backends that can report whether they can
+// serve a selected model-provider route. It prevents a single-provider backend
+// such as copilot-user from accidentally receiving OpenRouter, Anthropic, or
+// other platform-provider routes.
+type ProviderSupport interface {
+	SupportsProvider(string) bool
+}
+
+// BackendSupportsProvider returns whether backend can execute a route for the
+// selected provider. Backends that do not advertise support are treated as
+// broadly compatible for backwards compatibility with OpenAI-compatible gateways.
+func BackendSupportsProvider(backend Backend, provider string) bool {
+	if backend == nil {
+		return false
+	}
+	if support, ok := backend.(ProviderSupport); ok {
+		return support.SupportsProvider(provider)
+	}
+	return true
+}
+
 // RawRequest carries an OpenAI-compatible request body that should be forwarded
 // without narrowing provider-specific fields such as tools, tool calls,
 // response_format, reasoning metadata, or multimodal content arrays.
@@ -195,6 +222,10 @@ func (b *openAICompatibleBackend) Name() string {
 		return ""
 	}
 	return b.name
+}
+
+func (b *openAICompatibleBackend) SupportsProvider(string) bool {
+	return b != nil
 }
 
 func (b *openAICompatibleBackend) ResolvedModel(provider string, model string) string {

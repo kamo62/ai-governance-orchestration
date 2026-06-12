@@ -22,6 +22,7 @@ type Store interface {
 type Event struct {
 	EventID                  string         `json:"event_id"`
 	ParentEventID            string         `json:"parent_event_id,omitempty"`
+	ParentSessionID          string         `json:"parent_session_id,omitempty"`
 	PrevEventHash            string         `json:"prev_event_hash,omitempty"`
 	EventHash                string         `json:"event_hash,omitempty"`
 	SessionID                string         `json:"session_id,omitempty"`
@@ -58,6 +59,7 @@ type Event struct {
 	EventCount               int            `json:"event_count,omitempty"`
 	PatchCount               int            `json:"patch_count,omitempty"`
 	ToolCallCount            int            `json:"tool_call_count,omitempty"`
+	ToolCallNames            []string       `json:"tool_call_names,omitempty"`
 	WorkspaceSHA256          string         `json:"workspace_sha256,omitempty"`
 	OpencodeVersion          string         `json:"opencode_version,omitempty"`
 	TokenUsage               map[string]any `json:"token_usage,omitempty"`

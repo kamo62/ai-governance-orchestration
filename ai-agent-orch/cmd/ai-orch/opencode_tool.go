@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +37,12 @@ type OpenCodeConfigOptions struct {
 	ActorSubject       string
 	Classification     string
 	UseEnvPlaceholders bool
+	DiscoveredModels   []OpenCodeProviderModel
+}
+
+type OpenCodeProviderModel struct {
+	ID   string
+	Name string
 }
 
 func GenerateOpenCodeConfigWithOptions(opts OpenCodeConfigOptions) map[string]any {
@@ -90,13 +97,24 @@ func installOpenCodeConfig(gatewayURL string, args []string) error {
 	if err != nil {
 		return err
 	}
-	merged, changed, err := mergeOpenCodeConfigWithOptions(existing, OpenCodeConfigOptions{
+	opts := OpenCodeConfigOptions{
 		GatewayURL:         gatewayURL,
 		RuntimeToken:       *runtimeToken,
 		ActorSubject:       *actorSubject,
 		Classification:     *classification,
 		UseEnvPlaceholders: *envPlaceholders,
-	}, *force)
+	}
+	if !*envPlaceholders {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		discovered, discoverErr := fetchGatewayModelsForOpenCode(ctx, gatewayURL, *runtimeToken, *actorSubject, *classification)
+		if discoverErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not import dynamic gateway models for OpenCode config: %v\n", discoverErr)
+		} else {
+			opts.DiscoveredModels = discovered
+		}
+	}
+	merged, changed, err := mergeOpenCodeConfigWithOptions(existing, opts, *force)
 	if err != nil {
 		return err
 	}
@@ -122,6 +140,7 @@ func installOpenCodeConfig(gatewayURL string, args []string) error {
 	} else {
 		fmt.Println("Runtime token source: stored in OpenCode config")
 		fmt.Printf("Actor subject: %s\n", *actorSubject)
+		fmt.Printf("Imported gateway models: %d\n", len(opts.DiscoveredModels))
 	}
 	fmt.Println("Session headers: optional; gateway auto-creates sessions when absent")
 	return nil
@@ -257,10 +276,12 @@ func mergeOpenCodeConfigWithOptions(config map[string]any, opts OpenCodeConfigOp
 		changed = true
 	}
 
-	enabled, enabledChanged := ensureStringListIncludes(config["enabled_providers"], "ai-orch")
-	if enabledChanged {
-		config["enabled_providers"] = enabled
-		changed = true
+	if _, hasEnabledProviders := config["enabled_providers"]; hasEnabledProviders {
+		enabled, enabledChanged := ensureStringListIncludes(config["enabled_providers"], "ai-orch")
+		if enabledChanged {
+			config["enabled_providers"] = enabled
+			changed = true
+		}
 	}
 	disabled, disabledChanged := removeStringListValue(config["disabled_providers"], "ai-orch")
 	if disabledChanged {
@@ -320,6 +341,18 @@ func defaultOpenCodeAgentConfig() map[string]any {
 		"edit": "ask",
 		"bash": "ask",
 	}
+	delegatedTasks := map[string]any{
+		"code-review":          "ask",
+		"unit-tests":           "ask",
+		"backend-development":  "ask",
+		"frontend-development": "ask",
+		"security-review":      "ask",
+		"architecture-review":  "ask",
+		"documentation":        "ask",
+		"refactor":             "ask",
+		"security-scan":        "ask",
+		"terraform-review":     "ask",
+	}
 	return map[string]any{
 		"governance-lead": map[string]any{
 			"description":     "Clarifies intent, classifies risk, attaches context, and chooses the next ai-orch specialist.",
@@ -335,24 +368,14 @@ func defaultOpenCodeAgentConfig() map[string]any {
 				"glob": "allow",
 				"edit": "deny",
 				"bash": "deny",
-				"task": []string{
-					"code-review",
-					"unit-tests",
-					"backend-development",
-					"frontend-development",
-					"security-review",
-					"architecture-review",
-					"documentation",
-					"refactor",
-					"security-scan",
-					"terraform-review",
-				},
+				"task": delegatedTasks,
 			},
-			"prompt": "You are the ai-orch governance lead. Clarify intent, classify risk, attach work-item context, and choose a specialist subagent. Do not edit files or run shell commands.",
+			"prompt": "You are the ai-orch governance lead. Clarify intent, classify risk, attach work-item context, and choose a specialist subagent. For requests to add or improve tests, recommend the unit-tests subagent and ask before launching it with the Task tool. Do not edit files or run shell commands.",
 		},
 		"code-review": map[string]any{
 			"description":     "Reviews code and diffs for bugs, regressions, and missing tests.",
 			"mode":            "subagent",
+			"model":           "ai-orch/coding-gpt55",
 			"reasoningEffort": "medium",
 			"permission":      readOnly,
 			"prompt":          "Review code with severity-ordered findings. Do not edit files.",
@@ -360,23 +383,26 @@ func defaultOpenCodeAgentConfig() map[string]any {
 		"unit-tests": map[string]any{
 			"description":     "Adds or updates focused tests using existing project patterns.",
 			"mode":            "subagent",
+			"model":           "ai-orch/copilot-gpt-5-mini",
 			"reasoningEffort": "medium",
 			"permission":      writeWithReview,
-			"prompt":          "Add focused tests for the requested behavior. Follow existing test patterns and avoid unrelated refactors.",
+			"prompt":          "Add focused tests for the requested behavior. Follow existing test patterns and avoid unrelated refactors. Use OpenCode edit operations for file changes; never run apply_patch or shell patch heredocs.",
 		},
 		"backend-development": map[string]any{
 			"description":     "Implements backend code, APIs, data access, and server-side tests.",
 			"mode":            "subagent",
+			"model":           "ai-orch/coding-gpt55",
 			"reasoningEffort": "medium",
 			"permission":      writeWithReview,
-			"prompt":          "Implement backend changes narrowly, with tests and existing project conventions.",
+			"prompt":          "Implement backend changes narrowly, with tests and existing project conventions. Use OpenCode edit operations for file changes; never run apply_patch or shell patch heredocs.",
 		},
 		"frontend-development": map[string]any{
 			"description":     "Implements frontend UI, client behavior, and browser-facing tests.",
 			"mode":            "subagent",
+			"model":           "ai-orch/coding-gpt55",
 			"reasoningEffort": "medium",
 			"permission":      writeWithReview,
-			"prompt":          "Implement frontend changes narrowly, preserving accessibility and existing design patterns.",
+			"prompt":          "Implement frontend changes narrowly, preserving accessibility and existing design patterns. Use OpenCode edit operations for file changes; never run apply_patch or shell patch heredocs.",
 		},
 		"security-review": map[string]any{
 			"description":     "Reviews security-sensitive code, dependencies, containers, and data exposure risks.",
@@ -395,16 +421,18 @@ func defaultOpenCodeAgentConfig() map[string]any {
 		"documentation": map[string]any{
 			"description":     "Improves developer-facing documentation.",
 			"mode":            "subagent",
+			"model":           "ai-orch/copilot-gpt-5-mini",
 			"reasoningEffort": "medium",
 			"permission":      writeWithReview,
-			"prompt":          "Update documentation to reflect implemented behavior. Remove stale instructions.",
+			"prompt":          "Update documentation to reflect implemented behavior. Remove stale instructions. Use OpenCode edit operations for file changes; never run apply_patch or shell patch heredocs.",
 		},
 		"refactor": map[string]any{
 			"description":     "Performs scoped behavior-preserving cleanup.",
 			"mode":            "subagent",
+			"model":           "ai-orch/coding-gpt55",
 			"reasoningEffort": "medium",
 			"permission":      writeWithReview,
-			"prompt":          "Refactor narrowly without changing public behavior.",
+			"prompt":          "Refactor narrowly without changing public behavior. Use OpenCode edit operations for file changes; never run apply_patch or shell patch heredocs.",
 		},
 		"security-scan": map[string]any{
 			"description":     "Scans for likely secret exposure and auth or data handling issues.",
@@ -449,36 +477,116 @@ func aiOrchProviderConfig(opts OpenCodeConfigOptions) map[string]any {
 				"X-AI-Orch-Classification": classification,
 			},
 		},
-		"models": map[string]any{
-			"coding-gpt55": map[string]any{
-				"name": "Governed GPT-5.5 Capability Route",
-			},
-			"openrouter-openai-gpt55": map[string]any{
-				"name": "Governed OpenRouter OpenAI GPT-5.5",
-			},
-			"copilot-gpt-5-mini": map[string]any{
-				"name": "Governed Copilot GPT-5 Mini",
-			},
-			"copilot-gpt-5.3-codex": map[string]any{
-				"name": "Governed Copilot GPT-5.3 Codex",
-			},
-			"copilot-gpt-5.5": map[string]any{
-				"name": "Governed Copilot GPT-5.5",
-			},
-			"coding-primary": map[string]any{
-				"name": "Governed Coding Primary",
-			},
-			"coding-balanced": map[string]any{
-				"name": "Governed Coding Balanced",
-			},
-			"coding-fast": map[string]any{
-				"name": "Governed Coding Fast",
-			},
-			"coding-economy": map[string]any{
-				"name": "Governed Coding Economy",
-			},
+		"models": openCodeProviderModels(opts.DiscoveredModels),
+	}
+}
+
+func openCodeProviderModels(discovered []OpenCodeProviderModel) map[string]any {
+	staticModels := map[string]any{
+		"coding-gpt55": map[string]any{
+			"name": "Governed GPT-5.5 Capability Route",
+		},
+		"openrouter-openai-gpt55": map[string]any{
+			"name": "Governed OpenRouter OpenAI GPT-5.5",
+		},
+		"copilot-gpt-5-mini": map[string]any{
+			"name": "Governed Copilot GPT-5 Mini",
+		},
+		"copilot-gpt-5.3-codex": map[string]any{
+			"name": "Governed Copilot GPT-5.3 Codex",
+		},
+		"copilot-gpt-5.5": map[string]any{
+			"name": "Governed Copilot GPT-5.5",
+		},
+		"coding-primary": map[string]any{
+			"name": "Governed Coding Primary",
+		},
+		"coding-balanced": map[string]any{
+			"name": "Governed Coding Balanced",
+		},
+		"coding-fast": map[string]any{
+			"name": "Governed Coding Fast",
+		},
+		"coding-economy": map[string]any{
+			"name": "Governed Coding Economy",
 		},
 	}
+	if len(discovered) == 0 {
+		return staticModels
+	}
+	models := map[string]any{}
+	for _, model := range discovered {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		if static, exists := staticModels[id]; exists {
+			models[id] = static
+			continue
+		}
+		name := strings.TrimSpace(model.Name)
+		if name == "" {
+			name = "Governed " + id
+		}
+		models[id] = map[string]any{"name": name}
+	}
+	return models
+}
+
+func fetchGatewayModelsForOpenCode(ctx context.Context, gatewayURL string, runtimeToken string, actorSubject string, classification string) ([]OpenCodeProviderModel, error) {
+	runtimeToken = strings.TrimSpace(runtimeToken)
+	if runtimeToken == "" {
+		return nil, errors.New("runtime token is required")
+	}
+	url := openCodeBaseURL(gatewayURL) + "/models"
+	classification = strings.TrimSpace(classification)
+	if classification != "" {
+		url += "?classification=" + classification
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+runtimeToken)
+	if actor := strings.TrimSpace(actorSubject); actor != "" {
+		req.Header.Set("X-AI-Orch-Actor-Subject", actor)
+	}
+	if classification != "" {
+		req.Header.Set("X-AI-Orch-Classification", classification)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("gateway models returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return parseGatewayModelsForOpenCode(body)
+}
+
+func parseGatewayModelsForOpenCode(body []byte) ([]OpenCodeProviderModel, error) {
+	var root map[string]any
+	if err := json.Unmarshal(body, &root); err != nil {
+		return nil, err
+	}
+	items, _ := root["data"].([]any)
+	models := make([]OpenCodeProviderModel, 0, len(items))
+	for _, item := range items {
+		obj, _ := item.(map[string]any)
+		id, _ := obj["id"].(string)
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		name, _ := obj["name"].(string)
+		models = append(models, OpenCodeProviderModel{ID: id, Name: strings.TrimSpace(name)})
+	}
+	return models, nil
 }
 
 func ensureStringListIncludes(value any, item string) ([]string, bool) {

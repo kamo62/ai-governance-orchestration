@@ -23,13 +23,14 @@ func TestSQLiteSessionStoreLifecycle(t *testing.T) {
 
 	ctx := context.Background()
 	rec := SessionRecord{
-		SessionID:      "sess_test",
-		ActorSubject:   "user-1",
-		Agent:          "unit-tests",
-		Classification: "internal",
-		PromptSHA256:   "abc123",
-		Status:         "created",
-		CreatedAt:      time.Now().UTC(),
+		SessionID:       "sess_test",
+		ParentSessionID: "sess_parent",
+		ActorSubject:    "user-1",
+		Agent:           "unit-tests",
+		Classification:  "internal",
+		PromptSHA256:    "abc123",
+		Status:          "created",
+		CreatedAt:       time.Now().UTC(),
 	}
 
 	if err := store.Create(ctx, rec); err != nil {
@@ -42,6 +43,9 @@ func TestSQLiteSessionStoreLifecycle(t *testing.T) {
 	}
 	if got.ActorSubject != "user-1" {
 		t.Fatalf("expected actor user-1, got %s", got.ActorSubject)
+	}
+	if got.ParentSessionID != "sess_parent" {
+		t.Fatalf("expected parent session sess_parent, got %s", got.ParentSessionID)
 	}
 	if got.Status != "created" {
 		t.Fatalf("expected status created, got %s", got.Status)
@@ -77,7 +81,7 @@ func TestSQLiteSessionStoreListRecentFiltersActorAndOrdersNewestFirst(t *testing
 	records := []SessionRecord{
 		{SessionID: "sess_old", ActorSubject: "local-dev", Agent: "unit-tests", Classification: "internal", PromptSHA256: "old", Status: "done", CreatedAt: base},
 		{SessionID: "sess_other", ActorSubject: "other-dev", Agent: "code-review", Classification: "internal", PromptSHA256: "other", Status: "done", CreatedAt: base.Add(1 * time.Minute)},
-		{SessionID: "sess_new", ActorSubject: "local-dev", Agent: "code-review", Classification: "internal", PromptSHA256: "new", Status: "running", CreatedAt: base.Add(2 * time.Minute), RunID: "run_new", PermissionMode: "reviewed", ApprovalMode: "manual"},
+		{SessionID: "sess_new", ParentSessionID: "sess_parent", ActorSubject: "local-dev", Agent: "code-review", Classification: "internal", PromptSHA256: "new", Status: "running", CreatedAt: base.Add(2 * time.Minute), RunID: "run_new", PermissionMode: "reviewed", ApprovalMode: "manual"},
 	}
 	for _, record := range records {
 		if err := store.Create(ctx, record); err != nil {
@@ -95,7 +99,7 @@ func TestSQLiteSessionStoreListRecentFiltersActorAndOrdersNewestFirst(t *testing
 	if got[0].SessionID != "sess_new" || got[1].SessionID != "sess_old" {
 		t.Fatalf("expected newest local sessions first, got %#v", got)
 	}
-	if got[0].PromptSHA256 != "new" || got[0].RunID != "run_new" {
+	if got[0].PromptSHA256 != "new" || got[0].RunID != "run_new" || got[0].ParentSessionID != "sess_parent" {
 		t.Fatalf("expected stored fields on newest session, got %#v", got[0])
 	}
 
@@ -167,7 +171,7 @@ func TestSQLiteSessionStoreReadsLegacyRowsAfterMigration(t *testing.T) {
 	if got.SessionID != "sess_legacy" {
 		t.Fatalf("unexpected session id: %s", got.SessionID)
 	}
-	if got.UseCaseID != "" || got.StoryPoints != 0 || got.BaselineCostUSD != 0 {
+	if got.ParentSessionID != "" || got.UseCaseID != "" || got.StoryPoints != 0 || got.BaselineCostUSD != 0 {
 		t.Fatalf("expected zero-value migrated fields, got %#v", got)
 	}
 }

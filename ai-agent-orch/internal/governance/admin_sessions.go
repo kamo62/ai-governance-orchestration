@@ -163,7 +163,7 @@ func NewAdminSessionsExportHandler(service *SessionService) http.Handler {
 		w.Header().Set("Content-Disposition", `attachment; filename="ai-orch-sessions-`+stamp+`.csv"`)
 		writer := csv.NewWriter(w)
 		_ = writer.Write([]string{
-			"session_id", "created_at", "actor", "agent", "routed_agent", "status",
+			"session_id", "parent_session_id", "created_at", "actor", "agent", "routed_agent", "status",
 			"classification", "work_item_id", "repo_url", "branch",
 			"model_alias", "model_resolved", "gateway_backend",
 			"prompt_tokens", "completion_tokens", "total_tokens",
@@ -172,7 +172,7 @@ func NewAdminSessionsExportHandler(service *SessionService) http.Handler {
 		for _, s := range summaries {
 			u := s.UsageSummary
 			_ = writer.Write([]string{
-				s.SessionID, s.CreatedAt.UTC().Format(time.RFC3339), s.ActorSubject, s.Agent, s.RoutedAgent, s.Status,
+				s.SessionID, s.ParentSessionID, s.CreatedAt.UTC().Format(time.RFC3339), s.ActorSubject, s.Agent, s.RoutedAgent, s.Status,
 				s.Classification, s.WorkItemID, s.RepoURL, s.Branch,
 				u.ModelAlias, u.ModelResolved, u.GatewayBackend,
 				strconv.Itoa(u.PromptTokens), strconv.Itoa(u.CompletionTokens), strconv.Itoa(u.TotalTokens),

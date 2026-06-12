@@ -41,7 +41,7 @@ When `AI_ORCH_REQUIRE_WORK_ITEM=true`, the shell rejects governed runs unless th
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/sessions` | List recent actor-scoped session summaries for UI/client audit discovery; raw prompts and prompt hashes are not returned. Summaries include `usage_summary` and optional ledger fields when audit events are available |
+| `GET` | `/v1/sessions` | List recent actor-scoped session summaries for UI/client audit discovery; raw prompts and prompt hashes are not returned. Summaries include `usage_summary`, optional `parent_session_id` for delegated child sessions, and optional ledger fields when audit events are available |
 | `POST` | `/v1/sessions` | Create session (legacy; prefer `/v1/runs`) |
 | `POST` | `/v1/sessions/{id}/messages` | Route prompt to specialist (initial `created` state only) |
 | `POST` | `/v1/sessions/{id}/turns` | Same-session follow-up dispatch (`done` / `failed` / `patch_ready`) |
@@ -66,7 +66,7 @@ Required headers for runtime calls:
 - `X-AI-Orch-Session-ID: <session_id>`
 - `X-AI-Orch-Session-Token: <gateway_token>` when the session was created with token binding (any session created via `/v1/runs` or `/v1/sessions` on current builds); calls without it receive `401`
 
-Session-less auto mode: when `X-AI-Orch-Session-ID` is absent and auto sessions are enabled, the gateway creates a governed `model-gateway` session from `X-AI-Orch-Actor-Subject` (falling back to `X-AI-Orch-Local-Identity`) plus optional `X-AI-Orch-Classification`, `X-AI-Orch-Intent` and work context headers. Auto sessions are subject to kill switches, work-item requirements, policy checks, classification ceilings, secret scanning and cost caps. The gateway echoes the new session ID and one-time session token in `X-AI-Orch-Session-ID` and `X-AI-Orch-Session-Token`; subsequent calls for that session must present the token. Model calls are rejected with `409` once a session reaches a terminal status (`done`, `failed`, `aborted`). Use `X-AI-Orch-Intent` to capture the business reason when a developer chooses a governed model-only lane instead of a routed specialist.
+Session-less auto mode: when `X-AI-Orch-Session-ID` is absent and auto sessions are enabled, the gateway creates a governed `model-gateway` session from `X-AI-Orch-Actor-Subject` (falling back to `X-AI-Orch-Local-Identity`) plus optional `X-AI-Orch-Classification`, `X-AI-Orch-Intent` and work context headers. Auto sessions are subject to kill switches, work-item requirements, policy checks, classification ceilings, secret scanning and cost caps. The gateway echoes the new session ID and one-time session token in `X-AI-Orch-Session-ID` and `X-AI-Orch-Session-Token`; subsequent calls for that session must present the token. Model calls are rejected with `409` once a session reaches a terminal status (`done`, `failed`, `aborted`). Use `X-AI-Orch-Intent` to capture the business reason when a developer chooses a governed model-only lane instead of a routed specialist. If the gateway later observes an OpenCode-style `task` tool call for a known catalog agent, it creates a non-executable `delegated` child session linked by `parent_session_id`; the child proves delegation lineage, not local tool transcript capture.
 
 Streaming chat calls set `stream_options.include_usage=true` upstream. When the selected backend returns a usage-only final SSE chunk, the gateway forwards the usage frame to the client and records token/cost data in audit.
 
@@ -90,7 +90,7 @@ MCP tool `start_governed_run` mirrors `POST /v1/runs` for MCP-native clients.
 | `GET` | `/v1/copilot/status` | Copilot token status for current actor: `configured`, `github_login`, `token_fingerprint`, `refresh_configured`, `access_expires_at` (zero time means GitHub reported no expiry) |
 | `GET` | `/v1/copilot/models` | Live Copilot models for current actor (proxied with the actor's enrolled credential) |
 | `POST` | `/v1/copilot/logout` | Remove the current actor's Copilot enrollment; subsequent `copilot-*` model calls fail `403` until re-enrollment |
-| `GET` | `/v1/audit/sessions/{id}` | Session audit events (hashes only; no raw prompts) + `usage_summary` |
+| `GET` | `/v1/audit/sessions/{id}` | Session audit events (hashes only; no raw prompts) + `usage_summary`; delegation events may include `parent_session_id` |
 | `GET` | `/v1/use-cases` | List registered use cases (Bridge/POC seed defaults) |
 | `GET` | `/v1/workflows` | List registered workflows |
 | `GET` | `/v1/mcp/catalog` | MCP tool catalog for session (requires `X-AI-Orch-Session-ID`) |

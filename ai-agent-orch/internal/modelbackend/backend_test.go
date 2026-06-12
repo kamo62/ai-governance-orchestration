@@ -230,6 +230,21 @@ func TestRoutedBackendRoutesRawChatByProvider(t *testing.T) {
 	}
 }
 
+func TestRoutedBackendReportsProviderSupport(t *testing.T) {
+	defaultBackend := NewCopilotUserBackend(nil, fakeCopilotResolver{})
+	bifrostBackend := NewBifrostBackend(BifrostConfig{BaseURL: "http://bifrost.test"})
+	routed := NewRoutedBackend(defaultBackend, map[string]Backend{"openrouter": bifrostBackend})
+	if !routed.SupportsProvider("openrouter") {
+		t.Fatal("expected explicit OpenRouter route to be supported")
+	}
+	if routed.SupportsProvider("anthropic") {
+		t.Fatal("did not expect Copilot default backend to support unconfigured Anthropic provider")
+	}
+	if !BackendSupportsProvider(defaultBackend, BackendCopilotUser) || BackendSupportsProvider(defaultBackend, "openrouter") {
+		t.Fatal("unexpected Copilot provider support")
+	}
+}
+
 type recordRawBackend struct {
 	name  string
 	calls int

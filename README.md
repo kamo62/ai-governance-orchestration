@@ -52,11 +52,11 @@ This repo is an attempt to answer those questions without rebuilding the whole d
 
 ## Current State
 
-Current version: `v0.18.5-beta`.
+Current version: `v0.20.1-beta`.
 
 This is a **local beta** for the Governance Shell vertical slice. It is useful for team-local evaluation and demos, but it is not a production deployment.
 
-Honest read as of 2026-06-11:
+Honest read as of 2026-06-12:
 
 - The core control-plane shape is now real: sessions, policy gates, model routing, patch decisions, cost metadata, audit records, and the local Governance UI all run in the beta stack.
 - The strongest implemented path is OpenCode or a similar OpenAI-compatible client pointing at ai-orch, with ai-orch owning the model endpoint and Bifrost sitting behind it as provider plumbing.
@@ -85,7 +85,7 @@ What exists today:
 - Scheduled OpenRouter model-pricing refresh into a durable `model_pricing` table, used to estimate session cost when provider-reported cost is absent but token counts are present.
 - Use-case, workflow, context-manifest, cache-outcome, evidence, and maturity-export APIs.
 - Simple Governance UI served by the Governance Shell at `/ui/`, covering service posture, gateway selection, metrics, agents, evidence, maturity exports, audit lookup, and basic use-case/workflow registration.
-- Recent-session and audit-trail UI backed by `GET /v1/sessions` plus `/v1/audit/sessions/{id}`, including readable runtime mode labels, model attribution, token counts and cost source, so a demo can show governed activity without pasting session IDs by hand.
+- Recent-session and audit-trail UI backed by `GET /v1/sessions` plus `/v1/audit/sessions/{id}`, including readable runtime mode labels, model attribution, token counts, cost source, delegated child-session lineage and sanitized model-emitted tool-call counts/names, so a demo can show governed activity without pasting session IDs by hand.
 - MCP proxy with session-bound tool authorisation, policy-filtered tool catalogues, credential-safe forwarding, and `oauth-user` fail-closed behaviour.
 - Local MCP gateway CLI scaffold with stdio client config generation, fail-closed local HTTP transport, and `start_governed_run` for MCP clients.
 - Audit trust labels for gateway-enforced, managed-client and self-reported activity.
@@ -129,23 +129,57 @@ Nightly CI runs gateway + governed-run provider smoke when the repository secret
 
 Team-local OIDC: use `docker-compose.team-beta.yml` with `OIDC_ISSUER_URL` and `OIDC_CLIENT_ID`.
 
-OpenCode local install path:
+### Developer entry paths against a central ai-orch server
+
+In the team shape, developers do **not** run the ai-orch Docker stack locally. A central ai-orch server exposes two URLs:
+
+- Governance URL, for enrollment, session, audit and UI calls, for example `https://ai-orch.example.com`.
+- Model Gateway root URL, for OpenAI-compatible model traffic, for example `https://models.ai-orch.example.com`. Client provider UIs use the `/v1` base URL under that root.
+
+Operators run the Governance Shell with `AI_ORCH_MODEL_BACKEND=copilot-user` and a durable encrypted Copilot token store. Developers either run the setup script against those server URLs or configure their client manually. Their local coding tool keeps repository access; the server sees model traffic, actor identity, usage, cost and audit evidence.
+
+Scripted OpenCode enrollment and config install:
 
 ```sh
 cd ai-agent-orch
-./scripts/install-opencode-ai-orch.sh --scope global
-mkdir -p /tmp/ai-orch-opencode-e2e
-AI_ORCH_GOVERNANCE_URL=http://127.0.0.1:18080 \
-AI_ORCH_MODEL_GATEWAY_URL=http://127.0.0.1:18082 \
-AI_ORCH_DEV_TOKEN=local-dev \
-AI_ORCH_RUNTIME_TOKEN=local-runtime-token \
-go run ./cmd/ai-orch opencode e2e --dir /tmp/ai-orch-opencode-e2e
+AI_ORCH_GOVERNANCE_URL=https://ai-orch.example.com \
+AI_ORCH_MODEL_GATEWAY_URL=https://models.ai-orch.example.com \
+AI_ORCH_DEV_TOKEN=<developer-enrollment-token-or-id-token> \
+AI_ORCH_RUNTIME_TOKEN=<runtime-token> \
+AI_ORCH_ACTOR_SUBJECT=$(whoami) \
+scripts/enroll-developer-copilot-opencode.sh
 ```
 
-Copilot-backed local enrollment for governed OpenCode:
+The developer completes GitHub device auth on their own machine. ai-orch stores the Copilot credential encrypted for that actor on the central server. OpenCode config receives only the ai-orch provider endpoint, runtime token, actor label and optional session headers; it does not store the Copilot credential.
+
+During install, the OpenCode setup imports the actor-bound gateway model list from `/v1/models`. That means Copilot picker models such as Claude Opus, Claude Sonnet, Gemini and GPT variants appear when the developer's Copilot account exposes them, instead of relying on a stale hard-coded OpenCode model list.
+
+Manual OpenCode or Cline configuration:
+
+```text
+Provider: OpenAI Compatible / Custom
+Base URL: https://models.ai-orch.example.com/v1
+API key:  <runtime-token>.<actor-subject>
+Model:    coding-gpt55
+```
+
+Use the composite API key when configuring a generic provider UI because those clients may not send ai-orch-specific actor headers. The actor suffix lets the gateway auto-create governed sessions and resolve that developer's Copilot enrollment. For local testing, the same shape is:
+
+```text
+Base URL: http://127.0.0.1:18082/v1
+API key:  local-runtime-token.kamogelo
+Model:    coding-gpt55
+```
+
+OpenCode's native GitHub Copilot provider sends Copilot GPT-5-class non-mini models through `/responses`, while `gpt-5-mini`, Claude/Anthropic, Gemini-style and GPT-4-class Copilot models stay on `/chat/completions`. When teams configure OpenCode or Cline as a generic Custom/OpenAI-compatible provider against ai-orch, the client may only know how to call `/v1/chat/completions`. ai-orch mirrors the Copilot route rule centrally: Copilot `gpt-5.5` and `gpt-5.3-codex` are sent upstream through Responses and translated back into chat-completion SSE, including Responses function-call events translated back into chat `tool_calls` chunks so OpenCode can run its local file tools. Anthropic/Claude, Gemini-style and `gpt-5-mini` models stay on chat. Teams should still point clients at ai-orch, not at Copilot or provider APIs directly.
+
+Local operator quick path for testing the Copilot route:
 
 ```sh
 cd ai-agent-orch
+export AI_ORCH_MODEL_BACKEND=copilot-user
+export AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY="$(cat ~/.ai-orch/copilot-token.key)"
+docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d orchestrator governance-shell
 scripts/enroll-developer-copilot-opencode.sh
 ```
 
@@ -155,8 +189,6 @@ Windows PowerShell:
 cd ai-agent-orch
 .\scripts\enroll-developer-copilot-opencode.ps1
 ```
-
-The developer completes GitHub device auth on their own machine. ai-orch stores the Copilot credential encrypted for that actor. OpenCode config receives only the ai-orch provider plus session headers; it does not store the Copilot credential.
 
 For repo operators, local settings can live in `.env.dev` at the repository root. Start from `.env.example`; `.env.dev` is machine-local and ignored by git. Application developers do not need this file after enrollment because the OpenCode provider config contains the ai-orch URL, runtime token, actor subject and classification header.
 
@@ -194,7 +226,7 @@ cd ai-agent-orch
 .\scripts\opencode-governed.ps1 run "Write a small test"
 ```
 
-The wrapper creates a governed run with `agent=governance-lead`, receives `gateway_token`, exports `AI_ORCH_SESSION_ID` and `AI_ORCH_SESSION_TOKEN` for the child OpenCode process, then starts OpenCode with `--agent governance-lead` and `--model ai-orch/coding-gpt55` unless the user already chose a model. The `coding-gpt55` alias prefers the actor's enrolled Copilot credential when available and falls back to the approved Bifrost/OpenRouter route. The ledger records both the lead and the selected specialist as `routed_agent` when delegation occurs. Developers do not copy those values manually.
+The wrapper creates a governed run with `agent=governance-lead`, receives `gateway_token`, exports `AI_ORCH_SESSION_ID` and `AI_ORCH_SESSION_TOKEN` for the child OpenCode process, then starts OpenCode with `--agent governance-lead` and `--model ai-orch/coding-gpt55` unless the user already chose a model. The `coding-gpt55` alias prefers the actor's enrolled Copilot credential when available and falls back to the approved Bifrost/OpenRouter route. The ledger records the lead, the selected specialist as `routed_agent` when delegation occurs, and gateway-observed OpenCode `task` calls as `delegated` child sessions linked by `parent_session_id` when the requested specialist exists in the ai-orch catalog. Model gateway events still record sanitized counts/names for model-emitted tool calls such as `task`, `read` or `edit`. The exact local OpenCode Task/Read/Edit transcript still lives on the client side unless an ACP, MCP or client-event lane forwards those events deliberately. Developers do not copy those values manually.
 
 Developers who deliberately want a governed model-only session can use an explicit intent reason:
 

@@ -1154,3 +1154,85 @@ type staticContextResolver struct {
 func (r staticContextResolver) Resolve() SessionContext {
 	return r.context
 }
+
+func TestCreateDelegatedTaskSessionLinksChildToParent(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	parentCreatedAt := time.Date(2026, 6, 12, 13, 0, 0, 0, time.UTC)
+	store := &recordingSessionStore{created: []SessionRecord{{
+		SessionID:      "sess_parent",
+		ActorSubject:   "dev@example.test",
+		Agent:          "governance-lead",
+		Classification: "internal",
+		PromptSHA256:   "sha256:parent",
+		Status:         "completed",
+		CreatedAt:      parentCreatedAt,
+		PermissionMode: "reviewed",
+		ApprovalMode:   "self_reported",
+		WorkspaceMode:  "client-local",
+		UseCaseID:      "uc-1",
+		WorkflowID:     "wf-1",
+		WorkItemID:     "WORK-123",
+		WorkItemType:   "issue",
+		RepoURL:        "https://example.test/repo.git",
+		Branch:         "feat/WORK-123-task-lineage",
+		CommitSHA:      "abc123",
+		Intent:         "Parent work",
+		ActorHint:      "dev-box",
+		SourceSystem:   "opencode",
+	}}}
+	service := NewSessionService(SessionConfig{
+		Audit:             auditStore,
+		Sessions:          store,
+		ClassificationMax: "internal",
+		NewID: fixedIDs(
+			"sess_task_1",
+			"evt_task_1",
+		),
+	})
+
+	result, err := service.CreateDelegatedTaskSession(context.Background(), DelegatedTaskSessionRequest{
+		ParentSessionID:     "sess_parent",
+		Agent:               "security-review",
+		Description:         "Security pass",
+		Prompt:              "Review auth boundaries",
+		ModelAlias:          "coding-gpt55",
+		RequestedModelAlias: "coding-gpt55",
+		Provider:            "copilot-user",
+		ToolCallID:          "id:call_task_1",
+		SourceSystem:        "opencode-task",
+	})
+	if err != nil {
+		t.Fatalf("create delegated task session: %v", err)
+	}
+	if result.Record.SessionID != "sess_task_1" || result.Record.ParentSessionID != "sess_parent" {
+		t.Fatalf("expected linked child record, got %#v", result.Record)
+	}
+	if result.Record.Agent != "security-review" || result.Record.ActorSubject != "dev@example.test" || result.Record.Status != "delegated" {
+		t.Fatalf("unexpected child session record: %#v", result.Record)
+	}
+	if result.Record.PermissionMode != "reviewed" || result.Record.ApprovalMode != "self_reported" || result.Record.WorkspaceMode != "client-local" {
+		t.Fatalf("expected runtime modes copied from parent, got %#v", result.Record)
+	}
+	if result.Record.WorkItemID != "WORK-123" || result.Record.RepoURL != "https://example.test/repo.git" || result.Record.Branch != "feat/WORK-123-task-lineage" {
+		t.Fatalf("expected control-plane context copied from parent, got %#v", result.Record)
+	}
+	if result.Record.PromptSHA256 == "" || result.Record.PromptSHA256 == "sha256:parent" {
+		t.Fatalf("expected child prompt hash, got %q", result.Record.PromptSHA256)
+	}
+	if len(store.created) != 2 {
+		t.Fatalf("expected parent plus child in store, got %#v", store.created)
+	}
+	events, err := auditStore.EventsBySession(context.Background(), "sess_task_1")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one child audit event, got %#v", events)
+	}
+	if events[0].EventType != "session.delegated" || events[0].ParentSessionID != "sess_parent" || events[0].Agent != "security-review" {
+		t.Fatalf("unexpected child audit event: %#v", events[0])
+	}
+	if events[0].TrustLevel != "gateway_enforced" || events[0].EnforcementMode != "gateway" || events[0].RawPromptStored {
+		t.Fatalf("unexpected trust/raw-prompt metadata: %#v", events[0])
+	}
+}

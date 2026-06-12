@@ -1,5 +1,62 @@
 # Changelog
 
+## v0.20.1-beta - 2026-06-12 (Patch)
+
+Release impact: Patch because this fixes OpenCode config installation to preserve default provider visibility without changing public APIs or model gateway contracts.
+
+- **Preserved existing OpenCode provider visibility**: `ai-orch opencode install-config` no longer creates a new `enabled_providers` allowlist when the user's config did not already have one, so credential-backed providers such as GitHub Copilot, Moonshot AI, OpenCode Go and xAI remain visible after installing the ai-orch provider.
+- **Kept explicit allowlists intentional**: configs that already define `enabled_providers` still have `ai-orch` added to that existing allowlist, preserving the user's deliberate restriction.
+- **Added regression coverage for installer merges**: focused OpenCode config tests now cover the default no-allowlist shape that exposed this issue.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.20.1-beta.
+
+## v0.20.0-beta - 2026-06-12 (Minor)
+
+Release impact: Minor because this adds backward-compatible session-lineage fields and governed child-session markers for model-observed Task delegations without breaking existing request contracts.
+
+- **Linked OpenCode Task delegations into the governed ledger**: when the model gateway observes an OpenCode-style `task` tool call for a known catalog agent, it now creates a `delegated` child session with `parent_session_id`, inherited work context, and a `session.delegated` audit event.
+- **Kept the transcript boundary honest**: delegated child sessions prove the model-route and agent handoff, but they do not claim to store the local child agent's Read/Edit/Bash transcript; that still requires ACP, MCP or explicit client-event forwarding.
+- **Exposed lineage in APIs, exports and UI**: session records, session-list JSON, audit events, admin CSV export and the local ledger UI now surface `parent_session_id` so parent model sessions and specialist child markers can be followed together.
+- **Added regression coverage for task-delegation routing**: gateway tests cover streamed and non-streamed `task` tool calls, governance tests cover linked child-session creation, and session-store tests cover durable `parent_session_id` migration.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.20.0-beta.
+
+## v0.19.0-beta - 2026-06-12 (Minor)
+
+Release impact: Minor because this adds backward-compatible model-gateway audit metadata and visible ledger detail for model-emitted tool calls without changing existing request contracts.
+
+- **Recorded model-emitted tool calls in gateway audit events**: streamed and non-streamed model gateway events now include sanitized `tool_call_count` and `tool_call_names` metadata when the model asks the client to run tools such as OpenCode `task`, without storing arguments, prompt text, tool output or file contents.
+- **Surfaced tool-call detail in the local ledger UI**: the audit trail now shows the gateway-observed tool-call count and names, while the sessions table can use the existing aggregate count for direct OpenCode sessions.
+- **Clarified the observability boundary**: docs now distinguish model-stream tool-call evidence from the local OpenCode Task/Read/Edit execution transcript, which still requires ACP, MCP or deliberate client-event forwarding.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.19.0-beta.
+
+## v0.18.8-beta - 2026-06-12 (Patch)
+
+Release impact: Patch because this fixes Copilot-profile route availability, OpenCode subagent prompting, and ledger cost estimates without changing public API contracts.
+
+- **Filtered OpenCode model imports to executable routes**: `/v1/models` now lists static governed aliases only when the current gateway backend and actor can actually execute the selected route, so Copilot-only servers no longer advertise OpenRouter-only aliases such as `coding-fast`.
+- **Failed closed on provider/backend mismatches**: the Copilot backend now rejects non-Copilot providers locally instead of forwarding unsupported OpenRouter or Anthropic model IDs to Copilot and surfacing confusing upstream 400s.
+- **Restored governed subagent prompting**: generated OpenCode configs now ask before launching specialist subagents, bind write-capable specialists to governed ai-orch model aliases, and explicitly tell write agents to use OpenCode edit operations rather than shell `apply_patch`.
+- **Estimated Copilot model cost from equivalent pricing**: session usage now preserves `copilot-user` attribution while estimating GPT-5.5 token cost from the equivalent OpenRouter pricing row when Copilot reports tokens but no USD.
+- **Closed auto-created gateway sessions**: generic OpenAI-compatible client sessions created by the model gateway now move to `completed` or `failed` when the request finishes instead of accumulating as `running` in the ledger.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.18.8-beta.
+
+## v0.18.7-beta - 2026-06-12 (Patch)
+
+Release impact: Patch because this fixes actor-bound Copilot model discovery and OpenCode tool-call streaming without changing public API contracts.
+
+- **Imported dynamic Copilot picker models**: /v1/models now augments governed registry aliases with the enrolled actor's live Copilot picker chat models, and ai-orch opencode install-config imports that list into OpenCode config so models such as Claude Opus and Sonnet appear when Copilot exposes them.
+- **Routed dynamic Copilot aliases**: actor-bound aliases such as copilot-claude-opus-4.8 resolve to the current Copilot model catalog at request time while preserving the existing static governed aliases.
+- **Restored OpenCode tool-call loops on Copilot GPT-5-class routes**: the chat-to-Responses bridge now translates Responses function-call stream events back into chat-completion tool_calls chunks with finish_reason=tool_calls, so OpenCode can execute its local read/list/grep tools instead of receiving plain text only.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.18.7-beta.
+
+## v0.18.6-beta - 2026-06-12 (Patch)
+
+Release impact: Patch because this fixes generated OpenCode configuration compatibility, bridges a Copilot model-endpoint mismatch, and clarifies central-server client entry paths without changing public API contracts.
+
+- **Fixed generated OpenCode task permissions**: `governance-lead.permission.task` now uses OpenCode's accepted permission-object shape instead of a string list, and the docs examples use the same shape, so generated and manual configs validate in OpenCode 1.16.x.
+- **Bridged Copilot GPT-5-class models for chat clients**: the gateway mirrors OpenCode's Copilot route rule by sending Copilot GPT-5-class non-mini models through Responses, keeping Anthropic/Claude and `gpt-5-mini` on chat completions, and translating Responses streams back into chat-completion SSE while preserving OpenAI-style function tools and tool-result turns.
+- **Clarified central-server onboarding**: README and deployment docs now separate operator-owned server startup from developer-owned OpenCode/Cline configuration, including the composite runtime-key path for manual Custom/OpenAI-compatible providers.
+- **Aligned version references**: root VERSION, README, and changelog now agree on v0.18.6-beta.
+
 ## v0.18.5-beta - 2026-06-12 (Patch)
 
 Release impact: Patch because this fixes session-usage accounting, Responses stream audit labels, direct-runtime route selection, OpenCode wrapper reporting, and launcher argument forwarding without breaking public API contracts or deployment compatibility.

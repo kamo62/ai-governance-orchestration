@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,6 +44,10 @@ func NewCopilotUserBackend(client *copilot.Client, resolver CopilotTokenResolver
 }
 
 func (b *CopilotUserBackend) Name() string { return BackendCopilotUser }
+
+func (b *CopilotUserBackend) SupportsProvider(provider string) bool {
+	return strings.TrimSpace(provider) == BackendCopilotUser
+}
 
 func (b *CopilotUserBackend) ResolvedModel(_ string, model string) string { return model }
 
@@ -89,6 +94,9 @@ func (b *CopilotUserBackend) ResponsesStreamRaw(ctx context.Context, req RawRequ
 func (b *CopilotUserBackend) prepare(ctx context.Context, req RawRequest) (string, []byte, error) {
 	if b == nil || b.resolver == nil {
 		return "", nil, errors.New("copilot token resolver unavailable")
+	}
+	if !b.SupportsProvider(req.Provider) {
+		return "", nil, fmt.Errorf("copilot-user backend cannot serve provider %q", req.Provider)
 	}
 	if req.ActorSubject == "" {
 		return "", nil, errors.New("actor subject is required for copilot-user")

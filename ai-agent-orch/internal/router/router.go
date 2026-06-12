@@ -157,6 +157,24 @@ func (r *Router) Aliases(classification string) []catalog.ModelDefinition {
 	return out
 }
 
+// AvailableAliases returns classification-compatible aliases that have at least
+// one executable route for the current request context.
+func (r *Router) AvailableAliases(ctx context.Context, req Request) []catalog.ModelDefinition {
+	var out []catalog.ModelDefinition
+	if r == nil {
+		return out
+	}
+	for _, m := range r.registry.Models {
+		if req.Classification != "" && !m.AllowsClassification(req.Classification) {
+			continue
+		}
+		if _, ok := r.selectRoute(ctx, m, req); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func (r *Router) applyRoute(ctx context.Context, decision *Decision, model catalog.ModelDefinition, req Request) error {
 	route, ok := r.selectRoute(ctx, model, req)
 	if !ok {
@@ -194,13 +212,11 @@ func (r *Router) selectRoute(ctx context.Context, model catalog.ModelDefinition,
 		if route.Reasoning.SupportsEffort == nil {
 			route.Reasoning.SupportsEffort = model.Reasoning.SupportsEffort
 		}
-		if route.RequiresActorToken {
-			if strings.TrimSpace(req.ActorSubject) == "" {
-				continue
-			}
-			if r.routeAvailable != nil && !r.routeAvailable(ctx, route, req) {
-				continue
-			}
+		if route.RequiresActorToken && strings.TrimSpace(req.ActorSubject) == "" {
+			continue
+		}
+		if r.routeAvailable != nil && !r.routeAvailable(ctx, route, req) {
+			continue
 		}
 		return route, true
 	}

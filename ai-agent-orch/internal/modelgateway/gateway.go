@@ -28,17 +28,33 @@ import (
 
 // GatewayConfig holds the configuration for the model compatibility gateway.
 type GatewayConfig struct {
-	RuntimeToken    string
-	Router          *router.Router
-	Backend         modelbackend.Backend
-	Audit           audit.Store
-	NewID           func(prefix string) string
-	ValidateSession func(context.Context, string) error
-	LookupSession   func(context.Context, string) (SessionInfo, error)
-	AutoSession     func(context.Context, AutoSessionRequest) (SessionInfo, error)
+	RuntimeToken      string
+	Router            *router.Router
+	Backend           modelbackend.Backend
+	Audit             audit.Store
+	NewID             func(prefix string) string
+	ValidateSession   func(context.Context, string) error
+	LookupSession     func(context.Context, string) (SessionInfo, error)
+	AutoSession       func(context.Context, AutoSessionRequest) (SessionInfo, error)
+	FinishAutoSession func(context.Context, string, string) error
+	DelegateTask      func(context.Context, TaskDelegationRequest) error
 	// MaxRequestBytes caps inbound request bodies. Coding agents send
 	// multi-megabyte contexts, so the default is deliberately generous.
 	MaxRequestBytes int64
+}
+
+type TaskDelegationRequest struct {
+	ParentSessionID     string
+	ActorSubject        string
+	ParentAgent         string
+	Agent               string
+	Description         string
+	Prompt              string
+	ModelAlias          string
+	RequestedModelAlias string
+	Provider            string
+	ToolCallID          string
+	SourceSystem        string
 }
 
 type AutoSessionRequest struct {
@@ -91,19 +107,22 @@ type SessionInfo struct {
 	ApprovalMode              string
 	WorkspaceMode             string
 	GatewayToken              string
+	AutoCreated               bool
 }
 
 // Gateway is an OpenAI-compatible model endpoint owned by the Governance Shell.
 type Gateway struct {
-	runtimeToken    string
-	router          *router.Router
-	backend         modelbackend.Backend
-	audit           audit.Store
-	newID           func(prefix string) string
-	validateSession func(context.Context, string) error
-	lookupSession   func(context.Context, string) (SessionInfo, error)
-	autoSession     func(context.Context, AutoSessionRequest) (SessionInfo, error)
-	maxRequestBytes int64
+	runtimeToken      string
+	router            *router.Router
+	backend           modelbackend.Backend
+	audit             audit.Store
+	newID             func(prefix string) string
+	validateSession   func(context.Context, string) error
+	lookupSession     func(context.Context, string) (SessionInfo, error)
+	autoSession       func(context.Context, AutoSessionRequest) (SessionInfo, error)
+	finishAutoSession func(context.Context, string, string) error
+	delegateTask      func(context.Context, TaskDelegationRequest) error
+	maxRequestBytes   int64
 }
 
 // NewGateway creates a new model compatibility gateway.
@@ -117,15 +136,17 @@ func NewGateway(cfg GatewayConfig) *Gateway {
 		maxRequestBytes = defaultMaxRequestBytes
 	}
 	return &Gateway{
-		runtimeToken:    cfg.RuntimeToken,
-		router:          cfg.Router,
-		backend:         cfg.Backend,
-		audit:           cfg.Audit,
-		newID:           newID,
-		validateSession: cfg.ValidateSession,
-		lookupSession:   cfg.LookupSession,
-		autoSession:     cfg.AutoSession,
-		maxRequestBytes: maxRequestBytes,
+		runtimeToken:      cfg.RuntimeToken,
+		router:            cfg.Router,
+		backend:           cfg.Backend,
+		audit:             cfg.Audit,
+		newID:             newID,
+		validateSession:   cfg.ValidateSession,
+		lookupSession:     cfg.LookupSession,
+		autoSession:       cfg.AutoSession,
+		finishAutoSession: cfg.FinishAutoSession,
+		delegateTask:      cfg.DelegateTask,
+		maxRequestBytes:   maxRequestBytes,
 	}
 }
 
@@ -152,22 +173,12 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prefer the governed session's classification when the runtime supplies a
-	// session header; the query parameter remains a fallback for bare listings.
-	classification := ""
-	if sessionID := strings.TrimSpace(r.Header.Get("X-AI-Orch-Session-ID")); sessionID != "" && g.lookupSession != nil {
-		if info, err := g.lookupSession(r.Context(), sessionID); err == nil && sessionTokenMatches(r, info.GatewayTokenSHA256, info.RuntimeGatewayTokenSHA256) {
-			classification = strings.TrimSpace(info.Classification)
-		}
-	}
-	if classification == "" {
-		classification = r.URL.Query().Get("classification")
-	}
-	if classification == "" {
-		classification = "internal" // default for runtime listings
-	}
+	// Prefer the governed session context when present; otherwise use the query,
+	// headers, and composite API key so generic provider UIs can still receive
+	// actor-bound Copilot picker models.
+	classification, actor := g.modelListContext(r)
 
-	models := g.router.Aliases(classification)
+	models := g.router.AvailableAliases(r.Context(), router.Request{Classification: classification, ActorSubject: actor})
 	data := make([]modelListEntry, 0, len(models))
 	for _, m := range models {
 		data = append(data, modelListEntry{
@@ -176,6 +187,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 			OwnedBy: "ai-orch",
 		})
 	}
+	data = g.appendDynamicCopilotModelEntries(r.Context(), actor, classification, data)
 
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
@@ -187,6 +199,7 @@ type modelListEntry struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
 	OwnedBy string `json:"owned_by"`
+	Name    string `json:"name,omitempty"`
 }
 
 func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -225,13 +238,14 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	finishStatus := "failed"
+	defer func() {
+		if finishStatus != "" {
+			g.finishGatewayAutoSession(context.Background(), sessionID, session, finishStatus)
+		}
+	}()
 
-	decision, err := g.router.Route(r.Context(), router.Request{
-		TaskType:       inferTaskType(req.Messages),
-		Classification: session.Classification,
-		PreferredAlias: req.Model,
-		ActorSubject:   session.ActorSubject,
-	})
+	decision, err := g.routeModel(r.Context(), req.Model, session, inferTaskType(req.Messages))
 	if err != nil {
 		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
 		return
@@ -243,6 +257,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if req.Stream {
+		finishStatus = ""
 		g.handleStream(w, r, req, decision, session, sessionID, body)
 		return
 	}
@@ -290,6 +305,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 
 	respBody, _ := json.Marshal(resp)
 	g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, respBody, openrouterUsageMap(&resp.Usage), "")
+	finishStatus = "completed"
 
 	openAIResp := openAIChatCompletionResponse{
 		ID:      resp.ID,
@@ -307,6 +323,10 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 }
 
 func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, req openAIChatCompletionRequest, decision router.Decision, session SessionInfo, sessionID string, reqBody []byte) {
+	finishStatus := "failed"
+	defer func() {
+		g.finishGatewayAutoSession(context.Background(), sessionID, session, finishStatus)
+	}()
 	reqHash := sha256Hex(reqBody)
 	streamBody := ensureChatStreamOptions(reqBody)
 	streamReader, err := startChatStream(r.Context(), g.backend, decision, req, session.ActorSubject, streamBody)
@@ -334,10 +354,11 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, req openA
 	responseHash := sha256.New()
 	done := false
 	var streamUsage map[string]any
+	toolCalls := newToolCallAuditTracker()
 	for scanner.Scan() {
 		select {
 		case <-r.Context().Done():
-			g.auditModelCallHashes(context.Background(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", r.Context().Err().Error())
+			g.auditModelCallHashesWithUsageAndTools(context.Background(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", nil, toolCalls.Summary(), r.Context().Err().Error())
 			return
 		default:
 		}
@@ -355,21 +376,30 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, req openA
 		if usage != nil {
 			streamUsage = usage
 		}
+		toolCalls.ObserveChatCompletionSSELine(line)
 		frame := line + "\n"
 		_, _ = responseHash.Write([]byte(frame))
 		fmt.Fprint(w, frame)
 		flusher.Flush()
 	}
 	if err := scanner.Err(); err != nil {
-		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", err.Error())
+		g.auditModelCallHashesWithUsageAndTools(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", nil, toolCalls.Summary(), err.Error())
 		return
 	}
 	if !done {
-		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", "stream ended before done")
+		g.auditModelCallHashesWithUsageAndTools(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", nil, toolCalls.Summary(), "stream ended before done")
 		return
 	}
 	respHash := "sha256:" + hex.EncodeToString(responseHash.Sum(nil))
-	g.auditModelCallHashesWithUsage(r.Context(), sessionID, session, decision, "model.gateway_stream.completed", reqHash, respHash, streamUsage, "")
+	g.auditModelCallHashesWithUsageAndTools(r.Context(), sessionID, session, decision, "model.gateway_stream.completed", reqHash, respHash, streamUsage, toolCalls.Summary(), "")
+	finishStatus = "completed"
+}
+
+func (g *Gateway) finishGatewayAutoSession(ctx context.Context, sessionID string, session SessionInfo, status string) {
+	if g == nil || g.finishAutoSession == nil || !session.AutoCreated || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(status) == "" {
+		return
+	}
+	_ = g.finishAutoSession(ctx, sessionID, status)
 }
 
 func randomID(prefix string) string {

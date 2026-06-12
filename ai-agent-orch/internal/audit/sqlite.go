@@ -77,6 +77,9 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.ensureAuditColumn("parent_event_id", "TEXT"); err != nil {
 		return err
 	}
+	if err := s.ensureAuditColumn("parent_session_id", "TEXT"); err != nil {
+		return err
+	}
 	if err := s.ensureAuditColumn("prev_event_hash", "TEXT"); err != nil {
 		return err
 	}
@@ -120,6 +123,7 @@ func (s *SQLiteStore) migrate() error {
 		CREATE INDEX IF NOT EXISTS idx_audit_type ON audit_events(event_type);
 		CREATE INDEX IF NOT EXISTS idx_audit_recorded ON audit_events(recorded_at);
 		CREATE INDEX IF NOT EXISTS idx_audit_parent ON audit_events(parent_event_id);
+		CREATE INDEX IF NOT EXISTS idx_audit_parent_session ON audit_events(parent_session_id);
 		CREATE INDEX IF NOT EXISTS idx_audit_trust ON audit_events(trust_level);
 		CREATE INDEX IF NOT EXISTS idx_audit_provider_model ON audit_events(provider, model_alias);
 		CREATE INDEX IF NOT EXISTS idx_audit_run ON audit_events(run_id);
@@ -209,7 +213,7 @@ func (s *SQLiteStore) insertEvent(ctx context.Context, execer sqlExecutor, event
 
 	_, err = execer.ExecContext(ctx, `
 			INSERT INTO audit_events (
-				event_id, parent_event_id, session_id, event_type, actor, agent, classification,
+				event_id, parent_event_id, parent_session_id, session_id, event_type, actor, agent, classification,
 				reason, findings_json, prompt_sha256, estimated_cost_usd, cost_cap_usd,
 				raw_prompt_stored, raw_response_stored, correlation_subject, recorded_at,
 				prev_event_hash, event_hash,
@@ -219,9 +223,9 @@ func (s *SQLiteStore) insertEvent(ctx context.Context, execer sqlExecutor, event
 				run_id, work_item_id, patch_id, patch_buffer_id, patch_decision, patch_file_count,
 				runtime, runtime_status, duration_ms, event_count, patch_count, tool_call_count,
 				workspace_sha256, opencode_version, token_usage_json, payload_json
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
-		event.EventID, event.ParentEventID, event.SessionID, event.EventType, event.Actor, event.Agent,
+		event.EventID, event.ParentEventID, event.ParentSessionID, event.SessionID, event.EventType, event.Actor, event.Agent,
 		event.Classification, event.Reason, string(findingsJSON), event.PromptSHA256,
 		event.EstimatedCostUSD, event.CostCapUSD,
 		boolToInt(event.RawPromptStored), boolToInt(event.RawResponseStored),

@@ -137,6 +137,43 @@ func TestSummarizeSessionUsageIncludesResponsesGatewayEvents(t *testing.T) {
 	}
 }
 
+func TestSummarizeSessionUsageEstimatesCopilotGPT55FromOpenRouterEquivalentPricing(t *testing.T) {
+	events := []audit.Event{
+		{
+			EventType:     "model.gateway_stream.completed",
+			Provider:      "copilot-user",
+			ModelAlias:    "coding-gpt55",
+			ModelResolved: "gpt-5.5",
+			TokenUsage: map[string]any{
+				"prompt_tokens":     float64(100),
+				"completion_tokens": float64(10),
+				"total_tokens":      float64(110),
+				"copilot_nano_aiu":  float64(90000000),
+			},
+		},
+	}
+	pricing := fakeModelPricingStore{
+		record: ModelPricingRecord{
+			Provider:               "openrouter",
+			ModelID:                "openai/gpt-5.5",
+			PromptCostPerToken:     0.000005,
+			CompletionCostPerToken: 0.00003,
+		},
+	}
+
+	summary := SummarizeSessionUsageWithPricing(context.Background(), events, pricing)
+	want := 100*0.000005 + 10*0.00003
+	if math.Abs(summary.EstimatedCostUSD-want) > 0.000000001 {
+		t.Fatalf("expected Copilot equivalent pricing estimate %v, got %v", want, summary.EstimatedCostUSD)
+	}
+	if summary.Provider != "copilot-user" || summary.ModelResolved != "gpt-5.5" {
+		t.Fatalf("expected Copilot attribution to be preserved, got %#v", summary)
+	}
+	if summary.CostSource != "pricing_table" {
+		t.Fatalf("expected pricing_table cost source, got %q", summary.CostSource)
+	}
+}
+
 type fakeModelPricingStore struct {
 	record ModelPricingRecord
 }

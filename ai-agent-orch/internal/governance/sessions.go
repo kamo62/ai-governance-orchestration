@@ -204,6 +204,7 @@ type CreateSessionResponse struct {
 
 type SessionSummary struct {
 	SessionID           string              `json:"session_id"`
+	ParentSessionID     string              `json:"parent_session_id,omitempty"`
 	RunID               string              `json:"run_id,omitempty"`
 	ActorSubject        string              `json:"actor_subject"`
 	Agent               string              `json:"agent"`
@@ -427,6 +428,7 @@ func parseSessionListLimit(value string) int {
 func sessionSummaryFromRecord(record SessionRecord) SessionSummary {
 	return SessionSummary{
 		SessionID:           record.SessionID,
+		ParentSessionID:     record.ParentSessionID,
 		RunID:               record.RunID,
 		ActorSubject:        record.ActorSubject,
 		Agent:               record.Agent,

@@ -1,6 +1,10 @@
 package main
 
 import (
+	"strings"
+
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -83,9 +87,9 @@ func TestGenerateOpenCodeConfig(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected governance-lead permission map, got %#v", lead["permission"])
 	}
-	task, ok := permission["task"].([]string)
-	if !ok || !contains(task, "code-review") || !contains(task, "backend-development") {
-		t.Fatalf("expected governance-lead scoped task delegation, got %#v", permission["task"])
+	task, ok := permission["task"].(map[string]any)
+	if !ok || task["code-review"] != "ask" || task["backend-development"] != "ask" || task["unit-tests"] != "ask" {
+		t.Fatalf("expected governance-lead scoped task delegation prompts, got %#v", permission["task"])
 	}
 	codeReview, ok := agents["code-review"].(map[string]any)
 	if !ok || codeReview["mode"] != "subagent" {
@@ -93,6 +97,86 @@ func TestGenerateOpenCodeConfig(t *testing.T) {
 	}
 	if codeReview["reasoningEffort"] != "medium" {
 		t.Fatalf("expected code-review medium reasoning, got %#v", codeReview["reasoningEffort"])
+	}
+	unitTests, ok := agents["unit-tests"].(map[string]any)
+	if !ok || unitTests["mode"] != "subagent" {
+		t.Fatalf("expected unit-tests subagent, got %#v", unitTests)
+	}
+	if unitTests["model"] != "ai-orch/copilot-gpt-5-mini" {
+		t.Fatalf("expected governed unit-tests model, got %#v", unitTests["model"])
+	}
+	if prompt, _ := unitTests["prompt"].(string); !strings.Contains(prompt, "never run apply_patch") {
+		t.Fatalf("expected unit-tests prompt to forbid shell apply_patch, got %q", prompt)
+	}
+
+}
+
+func TestGenerateOpenCodeConfigIncludesDiscoveredModels(t *testing.T) {
+	config := GenerateOpenCodeConfigWithOptions(OpenCodeConfigOptions{
+		GatewayURL:         "http://127.0.0.1:18082",
+		UseEnvPlaceholders: true,
+		DiscoveredModels: []OpenCodeProviderModel{
+			{ID: "copilot-claude-opus-4.8", Name: "Governed Copilot Claude Opus 4.8"},
+			{ID: "coding-fast", Name: "Should not replace static label"},
+		},
+	})
+
+	aiOrch := config["provider"].(map[string]any)["ai-orch"].(map[string]any)
+	models := aiOrch["models"].(map[string]any)
+	opus, ok := models["copilot-claude-opus-4.8"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected discovered Copilot Opus model in OpenCode config, got %#v", models)
+	}
+	if opus["name"] != "Governed Copilot Claude Opus 4.8" {
+		t.Fatalf("unexpected discovered model name: %#v", opus)
+	}
+	codingFast := models["coding-fast"].(map[string]any)
+	if codingFast["name"] != "Governed Coding Fast" {
+		t.Fatalf("expected static model label to be preserved, got %#v", codingFast)
+	}
+	if _, ok := models["coding-balanced"]; ok {
+		t.Fatalf("did not expect undiscovered static model after live import, got %#v", models["coding-balanced"])
+	}
+}
+
+func TestParseGatewayModelsForOpenCode(t *testing.T) {
+	models, err := parseGatewayModelsForOpenCode([]byte("{\"object\":\"list\",\"data\":[{\"id\":\"coding-fast\"},{\"id\":\"copilot-claude-opus-4.8\",\"name\":\"Governed Copilot Claude Opus 4.8\"}]}"))
+	if err != nil {
+		t.Fatalf("parse models: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %#v", models)
+	}
+	if models[1].ID != "copilot-claude-opus-4.8" || models[1].Name != "Governed Copilot Claude Opus 4.8" {
+		t.Fatalf("unexpected parsed model: %#v", models[1])
+	}
+}
+
+func TestFetchGatewayModelsForOpenCodeSendsActorContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer runtime-token" {
+			t.Fatalf("unexpected auth header: %q", r.Header.Get("Authorization"))
+		}
+		if r.Header.Get("X-AI-Orch-Actor-Subject") != "dev-user" {
+			t.Fatalf("expected actor header, got %q", r.Header.Get("X-AI-Orch-Actor-Subject"))
+		}
+		if r.URL.Query().Get("classification") != "internal" || r.Header.Get("X-AI-Orch-Classification") != "internal" {
+			t.Fatalf("expected classification context, query=%q header=%q", r.URL.Query().Get("classification"), r.Header.Get("X-AI-Orch-Classification"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"data\":[{\"id\":\"copilot-claude-opus-4.8\",\"name\":\"Governed Copilot Claude Opus 4.8\"}]}"))
+	}))
+	defer server.Close()
+
+	models, err := fetchGatewayModelsForOpenCode(t.Context(), server.URL, "runtime-token", "dev-user", "internal")
+	if err != nil {
+		t.Fatalf("fetch models: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "copilot-claude-opus-4.8" {
+		t.Fatalf("unexpected models: %#v", models)
 	}
 }
 
@@ -176,6 +260,33 @@ func TestMergeOpenCodeConfigPreservesExistingSettings(t *testing.T) {
 	agents := merged["agent"].(map[string]any)
 	if _, ok := agents["governance-lead"]; !ok {
 		t.Fatal("expected governance-lead agent to be installed")
+	}
+}
+
+func TestMergeOpenCodeConfigDoesNotCreateEnabledProviderAllowlist(t *testing.T) {
+	existing := map[string]any{
+		"theme": "opencode",
+		"provider": map[string]any{
+			"openai": map[string]any{"models": map[string]any{}},
+		},
+	}
+
+	merged, changed, err := mergeOpenCodeConfigWithOptions(existing, OpenCodeConfigOptions{GatewayURL: "http://127.0.0.1:18083", UseEnvPlaceholders: true}, false)
+	if err != nil {
+		t.Fatalf("merge config: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected config to change")
+	}
+	if _, ok := merged["enabled_providers"]; ok {
+		t.Fatalf("did not expect install to create enabled_providers allowlist, got %#v", merged["enabled_providers"])
+	}
+	providers := merged["provider"].(map[string]any)
+	if _, ok := providers["openai"]; !ok {
+		t.Fatal("expected existing OpenAI provider to be preserved")
+	}
+	if _, ok := providers["ai-orch"]; !ok {
+		t.Fatal("expected ai-orch provider to be installed")
 	}
 }
 

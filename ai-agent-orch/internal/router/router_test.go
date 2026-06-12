@@ -238,7 +238,7 @@ func TestRouterProviderPinnedAliasDoesNotSwitchProvider(t *testing.T) {
 			},
 		},
 	}, func(context.Context, catalog.ModelRoute, Request) bool {
-		return false
+		return true
 	})
 
 	decision, err := r.Route(context.Background(), Request{

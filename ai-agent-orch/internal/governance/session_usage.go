@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 )
@@ -100,21 +101,51 @@ func estimateCostFromPricing(ctx context.Context, event audit.Event, pricing Mod
 	if pricing == nil || event.TokenUsage == nil {
 		return 0, false
 	}
-	modelID := event.ModelResolved
-	if modelID == "" {
-		modelID = event.ModelAlias
-	}
-	record, err := pricing.GetModelPricing(ctx, event.Provider, modelID)
-	if err != nil {
-		if errors.Is(err, ErrModelPricingNotFound) {
-			return 0, false
+	for _, lookup := range pricingLookupCandidates(event) {
+		record, err := pricing.GetModelPricing(ctx, lookup.provider, lookup.modelID)
+		if err != nil {
+			if errors.Is(err, ErrModelPricingNotFound) {
+				continue
+			}
+			continue
 		}
-		return 0, false
+		promptTokens := intFromAny(event.TokenUsage["prompt_tokens"])
+		completionTokens := intFromAny(event.TokenUsage["completion_tokens"])
+		estimate := float64(promptTokens)*record.PromptCostPerToken + float64(completionTokens)*record.CompletionCostPerToken
+		return estimate, estimate > 0
 	}
-	promptTokens := intFromAny(event.TokenUsage["prompt_tokens"])
-	completionTokens := intFromAny(event.TokenUsage["completion_tokens"])
-	estimate := float64(promptTokens)*record.PromptCostPerToken + float64(completionTokens)*record.CompletionCostPerToken
-	return estimate, estimate > 0
+	return 0, false
+}
+
+type usagePricingLookup struct {
+	provider string
+	modelID  string
+}
+
+func pricingLookupCandidates(event audit.Event) []usagePricingLookup {
+	modelID := strings.TrimSpace(event.ModelResolved)
+	if modelID == "" {
+		modelID = strings.TrimSpace(event.ModelAlias)
+	}
+	provider := strings.TrimSpace(event.Provider)
+	lookups := []usagePricingLookup{{provider: provider, modelID: modelID}}
+	if strings.EqualFold(provider, "copilot-user") {
+		if equivalent := copilotEquivalentPricingModelID(modelID); equivalent != "" {
+			lookups = append(lookups, usagePricingLookup{provider: "openrouter", modelID: equivalent})
+		}
+	}
+	return lookups
+}
+
+func copilotEquivalentPricingModelID(modelID string) string {
+	modelID = strings.TrimSpace(strings.TrimPrefix(modelID, "copilot-"))
+	if strings.EqualFold(modelID, "gpt-5.5") {
+		return "openai/gpt-5.5"
+	}
+	if strings.HasPrefix(strings.ToLower(modelID), "gpt-") {
+		return "openai/" + modelID
+	}
+	return ""
 }
 
 func addTokenUsage(summary *SessionUsageSummary, usage map[string]any) {

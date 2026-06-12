@@ -80,7 +80,7 @@ POST /v1/responses
 
 ### `GET /v1/models`
 
-Return governed aliases, not raw provider inventory.
+Return governed aliases, not raw provider inventory. When the active backend can list actor-bound Copilot models and the request includes actor context, the gateway also includes the enrolled actor's current Copilot picker chat models as governed `copilot-...` aliases. Hidden Copilot entries and non-chat models are filtered out.
 
 Example:
 
@@ -107,6 +107,8 @@ The gateway may include only aliases allowed for the current session, actor, cla
 ### `POST /v1/chat/completions`
 
 Support the OpenAI-compatible chat-completions shape first, because many runtimes already know how to use it.
+
+For the Copilot user backend, ai-orch mirrors OpenCode's Copilot route selection at the gateway boundary. GPT-5-class non-mini Copilot models are sent upstream through Responses and translated back into chat-completion SSE for Custom/OpenAI-compatible clients. Anthropic/Claude, Gemini-style, `gpt-5-mini` and GPT-4-class Copilot models remain on chat completions. The chat-to-Responses bridge must preserve function tool definitions, assistant tool calls and tool-result turns, and it must translate Responses function-call stream events back into chat `tool_calls` chunks so agent loops keep working.
 
 Requirements:
 
@@ -160,14 +162,16 @@ Audit should record:
 - routing reasons;
 - request hash;
 - final response hash;
+- sanitized model-emitted tool-call count and names when the response asks the client to run tools;
+- `parent_session_id` lineage when a model-observed OpenCode `task` call creates a delegated child session for a known catalog agent;
 - usage;
 - stream completed or failed.
 
-Audit should not store raw prompts, raw provider responses or provider credentials by default.
+Audit should not store raw prompts, raw provider responses or provider credentials by default. The gateway can observe model-emitted function/tool calls that cross the model stream, such as OpenCode's `task` delegation request, and records only count/name metadata. When a `task` call names a known ai-orch catalog agent, the shell also creates a `delegated` child session linked to the parent by `parent_session_id`; this is lineage evidence, not a stored copy of the client-side subagent transcript. The gateway still cannot see file contents, Read/Edit/Bash output or the child subagent local loop unless that work routes through ACP, the MCP gateway or a deliberate client-event forwarding path.
 
 ## OpenCode Configuration Shape
 
-The OpenCode provider configuration should point at the local compatibility gateway:
+The OpenCode provider configuration should point at the compatibility gateway. Prefer `ai-orch opencode install-config` for real developers because it imports the current actor-bound `/v1/models` list into the provider config:
 
 ```json
 {
@@ -209,7 +213,13 @@ The OpenCode provider configuration should point at the local compatibility gate
       "permission": {
         "edit": "deny",
         "bash": "deny",
-        "task": ["code-review", "unit-tests", "backend-development", "frontend-development", "security-review"]
+        "task": {
+          "code-review": "allow",
+          "unit-tests": "allow",
+          "backend-development": "allow",
+          "frontend-development": "allow",
+          "security-review": "allow"
+        }
       }
     }
   }
@@ -343,6 +353,9 @@ router_reasons:
   - workflow_requires_higher_quality
 request_hash: sha256:...
 response_hash: sha256:...
+tool_call_count: 1
+tool_call_names:
+  - task
 usage:
   input_tokens: 1234
   output_tokens: 567
@@ -353,7 +366,7 @@ enforcement_mode: gateway
 trust_level: gateway_enforced
 ```
 
-This gives reporting and maturity exports a clean record without making the audit log a raw transcript store.
+This gives reporting and maturity exports a clean record without making the audit log a raw transcript store. For local tools, the model gateway audit proves that the model requested a tool/subagent call; it is not a substitute for ACP/MCP/client-event evidence of what the local tool actually did.
 
 ## Build Order
 
@@ -390,7 +403,7 @@ Deliverables:
 - support `stream: true` for chat completions;
 - proxy OpenAI-compatible SSE chunks while rewriting only the chunk `model` field where present;
 - preserve tool-call deltas, reasoning deltas, provider-specific fields and usage chunks;
-- record stream start, completion and failure audit events.
+- record stream start, completion and failure audit events with sanitized tool-call count/name metadata.
 
 ### Phase 1G.5: Responses API MVP
 

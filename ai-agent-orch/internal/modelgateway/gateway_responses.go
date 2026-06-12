@@ -53,13 +53,14 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	finishStatus := "failed"
+	defer func() {
+		if finishStatus != "" {
+			g.finishGatewayAutoSession(context.Background(), sessionID, session, finishStatus)
+		}
+	}()
 
-	decision, err := g.router.Route(r.Context(), router.Request{
-		TaskType:       inferTaskTypeFromInput(req.Input),
-		Classification: session.Classification,
-		PreferredAlias: req.Model,
-		ActorSubject:   session.ActorSubject,
-	})
+	decision, err := g.routeModel(r.Context(), req.Model, session, inferTaskTypeFromInput(req.Input))
 	if err != nil {
 		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
 		return
@@ -72,6 +73,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	if rawBackend, ok := g.backend.(modelbackend.RawResponsesBackend); ok {
 		if req.Stream {
+			finishStatus = ""
 			g.handleResponsesStream(w, r, rawBackend, decision, session, sessionID, body)
 			return
 		}
@@ -120,6 +122,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	respBody, _ := json.Marshal(resp)
 	g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_responses", body, respBody, openrouterUsageMap(&resp.Usage), "")
+	finishStatus = "completed"
 
 	openAIResp := openAIResponsesResponse{
 		ID:     g.newID("resp"),
@@ -144,6 +147,10 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleResponsesStream(w http.ResponseWriter, r *http.Request, backend modelbackend.RawResponsesBackend, decision router.Decision, session SessionInfo, sessionID string, reqBody []byte) {
+	finishStatus := "failed"
+	defer func() {
+		g.finishGatewayAutoSession(context.Background(), sessionID, session, finishStatus)
+	}()
 	reqHash := sha256Hex(reqBody)
 	streamBody := ensureJSONBool(reqBody, "stream", true)
 	streamReader, err := backend.ResponsesStreamRaw(r.Context(), modelbackend.RawRequest{
@@ -178,10 +185,11 @@ func (g *Gateway) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 	done := false
 	incomplete := false
 	var streamUsage map[string]any
+	toolCalls := newToolCallAuditTracker()
 	for scanner.Scan() {
 		select {
 		case <-r.Context().Done():
-			g.auditModelCallHashes(context.Background(), sessionID, session, decision, "model.gateway_responses_stream.failed", reqHash, "", r.Context().Err().Error())
+			g.auditModelCallHashesWithUsageAndTools(context.Background(), sessionID, session, decision, "model.gateway_responses_stream.failed", reqHash, "", nil, toolCalls.Summary(), r.Context().Err().Error())
 			return
 		default:
 		}
@@ -202,25 +210,27 @@ func (g *Gateway) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		if usage != nil {
 			streamUsage = usage
 		}
+		toolCalls.ObserveResponsesSSELine(line)
 		frame := line + "\n"
 		_, _ = responseHash.Write([]byte(frame))
 		fmt.Fprint(w, frame)
 		flusher.Flush()
 	}
 	if err := scanner.Err(); err != nil {
-		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.failed", reqHash, "", err.Error())
+		g.auditModelCallHashesWithUsageAndTools(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.failed", reqHash, "", nil, toolCalls.Summary(), err.Error())
 		return
 	}
 	if !done {
-		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.failed", reqHash, "", "stream ended before completion")
+		g.auditModelCallHashesWithUsageAndTools(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.failed", reqHash, "", nil, toolCalls.Summary(), "stream ended before completion")
 		return
 	}
 	respHash := "sha256:" + hex.EncodeToString(responseHash.Sum(nil))
 	if incomplete {
 		// Truncated runs (for example max_output_tokens) must not look like
 		// successful completions in the audit ledger.
-		g.auditModelCallHashesWithUsage(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.incomplete", reqHash, respHash, streamUsage, "provider reported response.incomplete")
+		g.auditModelCallHashesWithUsageAndTools(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.incomplete", reqHash, respHash, streamUsage, toolCalls.Summary(), "provider reported response.incomplete")
 		return
 	}
-	g.auditModelCallHashesWithUsage(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.completed", reqHash, respHash, streamUsage, "")
+	g.auditModelCallHashesWithUsageAndTools(r.Context(), sessionID, session, decision, "model.gateway_responses_stream.completed", reqHash, respHash, streamUsage, toolCalls.Summary(), "")
+	finishStatus = "completed"
 }

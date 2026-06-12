@@ -105,9 +105,17 @@ func TestCopilotBackendResponsesRaw(t *testing.T) {
 	}
 }
 
+func TestCopilotBackendRejectsNonCopilotProvider(t *testing.T) {
+	backend := NewCopilotUserBackend(copilot.NewClient(), fakeCopilotResolver{rec: copilot.TokenRecord{ActorSubject: "dev", AccessToken: "gho_oauth", Fingerprint: "fp"}})
+	_, err := backend.ChatCompletionRaw(context.Background(), RawRequest{Provider: "openrouter", Model: "x-ai/grok-build-0.1", Body: []byte(`{"model":"x"}`), ActorSubject: "dev"})
+	if err == nil || !strings.Contains(err.Error(), "cannot serve provider") {
+		t.Fatalf("expected provider guard error, got %v", err)
+	}
+}
+
 func TestCopilotBackendNotEnrolledErrorIsActionable(t *testing.T) {
 	backend := NewCopilotUserBackend(copilot.NewClient(), fakeCopilotResolver{err: copilot.ErrTokenNotFound})
-	_, err := backend.ChatCompletionRaw(context.Background(), RawRequest{Model: "gpt-5-mini", Body: []byte(`{"model":"x"}`), ActorSubject: "kamogelo"})
+	_, err := backend.ChatCompletionRaw(context.Background(), RawRequest{Provider: BackendCopilotUser, Model: "gpt-5-mini", Body: []byte(`{"model":"x"}`), ActorSubject: "kamogelo"})
 	if !errors.Is(err, copilot.ErrTokenNotFound) {
 		t.Fatalf("expected ErrTokenNotFound, got %v", err)
 	}

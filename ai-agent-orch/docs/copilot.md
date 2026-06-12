@@ -162,6 +162,13 @@ ai-orch
 
 The important design point is that OpenCode never calls Copilot directly in governed mode. OpenCode only calls ai-orch.
 
+
+### Route-Aware Model Imports
+
+In Copilot-backed deployments, OpenCode config generation should be based on the gateway's live `/v1/models` response, not on a static alias list. The gateway filters static aliases to routes the current backend and actor can actually execute, then appends actor-bound Copilot picker models such as `copilot-claude-opus-4.8` when Copilot exposes them. This prevents OpenCode from selecting an OpenRouter-only alias like `coding-fast` on a Copilot-only server.
+
+Generated OpenCode specialist agents are approval-gated through `permission.task`. For example, a unit-test request should prompt before launching the governed `unit-tests` subagent, and write-capable subagents are instructed to use OpenCode edit operations rather than shell-only helpers such as `apply_patch`.
+
 ### Why This Preserves The Product
 
 Direct OpenCode to Copilot works, but it bypasses ai-orch model governance.
@@ -180,7 +187,7 @@ The proxy flow keeps these controls alive:
 
 ### OpenCode Configuration For Governed Copilot
 
-OpenCode should still use the custom ai-orch provider.
+OpenCode should still use the custom ai-orch provider. Use `ai-orch opencode install-config` where possible because it imports the actor's current `/v1/models` list after Copilot enrollment. Static examples below show the shape only; they should not be treated as the complete Copilot model list.
 
 Example local or managed OpenCode config:
 
@@ -234,7 +241,7 @@ Example local or managed OpenCode config:
 }
 ```
 
-The generated config uses `governance-lead` as the primary OpenCode agent and defines delivery specialists as subagents. The launcher defaults to the governed `ai-orch/coding-gpt55` capability alias; the gateway resolves that alias through the actor's Copilot credential when available and otherwise falls back to the approved Bifrost/OpenRouter route.
+The generated config uses `governance-lead` as the primary OpenCode agent and defines delivery specialists as subagents. The launcher defaults to the governed `ai-orch/coding-gpt55` capability alias; the gateway resolves that alias through the actor's Copilot credential when available and otherwise falls back to the approved Bifrost/OpenRouter route. Direct dynamic Copilot aliases use the `copilot-<upstream-model-id>` shape, for example `copilot-claude-opus-4.8`, and are resolved from the actor's live Copilot catalog at request time.
 
 For enterprise-managed OpenCode, use OpenCode managed settings so developers cannot override the provider list casually:
 
@@ -764,9 +771,11 @@ Acceptance criteria:
 
 Add:
 
-- `/responses` support for GPT-5 class models;
+- `/responses` support for GPT-5 class non-mini models, matching OpenCode's native Copilot provider route rule;
+- chat-completions routing for Anthropic/Claude, `gpt-5-mini` and GPT-4-class Copilot models;
 - streaming support;
 - raw chunk usage extraction;
+- chat-to-Responses preservation of function tool definitions, assistant tool calls and tool-result turns;
 - encrypted reasoning passthrough where required by the model family.
 
 Acceptance criteria:
@@ -778,7 +787,7 @@ Acceptance criteria:
 
 #### Milestone 6: Claude/Gemini Models
 
-Add support for model records whose `supported_endpoints` route through non-chat-completions shapes.
+Copilot-served Anthropic/Claude models stay on chat completions under the current OpenCode route rule. Add support for any future model records whose `supported_endpoints` explicitly require non-chat-completions shapes.
 
 Acceptance criteria:
 

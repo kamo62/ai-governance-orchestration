@@ -46,6 +46,17 @@ func (b *RoutedBackend) ResolvedModel(provider string, model string) string {
 	return b.backendFor(provider).ResolvedModel(provider, model)
 }
 
+func (b *RoutedBackend) SupportsProvider(provider string) bool {
+	provider = strings.TrimSpace(provider)
+	if b == nil {
+		return false
+	}
+	if route, ok := b.routes[provider]; ok && route != nil {
+		return BackendSupportsProvider(route, provider)
+	}
+	return BackendSupportsProvider(b.defaultBackend, provider)
+}
+
 func (b *RoutedBackend) ChatCompletion(ctx context.Context, req openrouter.ChatCompletionRequest) (openrouter.ChatCompletionResponse, error) {
 	return b.backendFor(req.Provider).ChatCompletion(ctx, req)
 }
@@ -88,6 +99,15 @@ func (b *RoutedBackend) ResponsesStreamRaw(ctx context.Context, req RawRequest) 
 		return nil, fmt.Errorf("backend %s does not support raw response streams", backend.Name())
 	}
 	return raw.ResponsesStreamRaw(ctx, req)
+}
+
+func (b *RoutedBackend) Models(ctx context.Context, actorSubject string) ([]byte, error) {
+	backend := b.backendFor(BackendCopilotUser)
+	lister, ok := backend.(ModelCatalogBackend)
+	if !ok {
+		return nil, fmt.Errorf("backend %s does not support model catalog listing", backend.Name())
+	}
+	return lister.Models(ctx, actorSubject)
 }
 
 func (b *RoutedBackend) backendFor(provider string) Backend {

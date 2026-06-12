@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -353,7 +354,11 @@ func main() {
 			logx.Warnf("model registry load failed: %v", err)
 		} else {
 			govRouter := router.NewWithRouteAvailability(modelRegistry, func(ctx context.Context, route catalog.ModelRoute, req router.Request) bool {
-				if strings.TrimSpace(route.Provider) != modelbackend.BackendCopilotUser {
+				provider := strings.TrimSpace(route.Provider)
+				if !modelbackend.BackendSupportsProvider(modelBackend, provider) {
+					return false
+				}
+				if provider != modelbackend.BackendCopilotUser {
 					return true
 				}
 				if copilotResolver == nil || strings.TrimSpace(req.ActorSubject) == "" {
@@ -368,6 +373,29 @@ func main() {
 				Backend:         modelBackend,
 				Audit:           auditStore,
 				MaxRequestBytes: int64(cfg.GatewayMaxRequestBytes),
+				DelegateTask: func(ctx context.Context, request modelgateway.TaskDelegationRequest) error {
+					agent := strings.TrimSpace(request.Agent)
+					if agent == "" {
+						return fmt.Errorf("delegated agent is required")
+					}
+					if _, err := catalog.LoadAgentConfig(cfg.CatalogRoot, agent); err != nil {
+						return err
+					}
+					_, err := sessionService.CreateDelegatedTaskSession(ctx, governance.DelegatedTaskSessionRequest{
+						ParentSessionID:     request.ParentSessionID,
+						ActorSubject:        request.ActorSubject,
+						ParentAgent:         request.ParentAgent,
+						Agent:               agent,
+						Description:         request.Description,
+						Prompt:              request.Prompt,
+						ModelAlias:          request.ModelAlias,
+						RequestedModelAlias: request.RequestedModelAlias,
+						Provider:            request.Provider,
+						ToolCallID:          request.ToolCallID,
+						SourceSystem:        request.SourceSystem,
+					})
+					return err
+				},
 				LookupSession: func(ctx context.Context, sessionID string) (modelgateway.SessionInfo, error) {
 					record, err := sessionService.SessionRecord(ctx, sessionID)
 					if err != nil {
@@ -398,6 +426,9 @@ func main() {
 				},
 			}
 			if cfg.GatewayAutoSession {
+				gatewayConfig.FinishAutoSession = func(ctx context.Context, sessionID string, status string) error {
+					return sessionStore.CompareAndSwapStatus(ctx, sessionID, "running", status)
+				}
 				gatewayConfig.AutoSession = func(ctx context.Context, request modelgateway.AutoSessionRequest) (modelgateway.SessionInfo, error) {
 					result, err := sessionService.CreateAutoGatewaySession(ctx, governance.AutoGatewaySessionRequest{
 						ActorSubject:       request.ActorSubject,
@@ -444,6 +475,7 @@ func main() {
 						ApprovalMode:       record.ApprovalMode,
 						WorkspaceMode:      record.WorkspaceMode,
 						GatewayToken:       result.GatewayToken,
+						AutoCreated:        true,
 					}, nil
 				}
 			}

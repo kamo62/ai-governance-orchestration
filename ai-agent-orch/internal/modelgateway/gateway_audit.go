@@ -22,7 +22,7 @@ func (g *Gateway) auditModelCall(ctx context.Context, sessionID string, session 
 	if len(respBody) > 0 {
 		respHash = sha256Hex(respBody)
 	}
-	g.auditModelCallHashesWithUsage(ctx, sessionID, session, decision, eventType, reqHash, respHash, usage, errMsg)
+	g.auditModelCallHashesWithUsageAndTools(ctx, sessionID, session, decision, eventType, reqHash, respHash, usage, summarizeResponseToolCalls(respBody), errMsg)
 }
 
 func (g *Gateway) auditModelCallHashes(ctx context.Context, sessionID string, session SessionInfo, decision router.Decision, eventType string, reqHash, respHash, errMsg string) {
@@ -30,6 +30,10 @@ func (g *Gateway) auditModelCallHashes(ctx context.Context, sessionID string, se
 }
 
 func (g *Gateway) auditModelCallHashesWithUsage(ctx context.Context, sessionID string, session SessionInfo, decision router.Decision, eventType string, reqHash, respHash string, usage map[string]any, errMsg string) {
+	g.auditModelCallHashesWithUsageAndTools(ctx, sessionID, session, decision, eventType, reqHash, respHash, usage, toolCallAuditSummary{}, errMsg)
+}
+
+func (g *Gateway) auditModelCallHashesWithUsageAndTools(ctx context.Context, sessionID string, session SessionInfo, decision router.Decision, eventType string, reqHash, respHash string, usage map[string]any, toolCalls toolCallAuditSummary, errMsg string) {
 	if g.audit == nil {
 		return
 	}
@@ -41,7 +45,7 @@ func (g *Gateway) auditModelCallHashesWithUsage(ctx context.Context, sessionID s
 	if actor == "" {
 		actor = "runtime"
 	}
-	_, _ = g.audit.Append(ctx, audit.Event{
+	_, err := g.audit.Append(ctx, audit.Event{
 		EventID:                  g.newID("evt"),
 		SessionID:                sessionID,
 		EventType:                eventType,
@@ -58,6 +62,8 @@ func (g *Gateway) auditModelCallHashesWithUsage(ctx context.Context, sessionID s
 		ReasoningSource:          decision.ReasoningSource,
 		RequestSHA256:            reqHash,
 		ResponseSHA256:           respHash,
+		ToolCallCount:            toolCalls.Count,
+		ToolCallNames:            toolCalls.Names,
 		TokenUsage:               usage,
 		GatewayBackend:           g.backendName(),
 		RunID:                    session.RunID,
@@ -76,6 +82,9 @@ func (g *Gateway) auditModelCallHashesWithUsage(ctx context.Context, sessionID s
 		RawResponseStored:        false,
 		CorrelationSubject:       "model-gateway",
 	})
+	if err == nil && errMsg == "" {
+		g.recordTaskDelegations(ctx, sessionID, session, decision, toolCalls)
+	}
 }
 
 func openrouterUsageMap(usage *openrouter.Usage) map[string]any {

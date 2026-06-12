@@ -260,7 +260,7 @@ The first local Governance UI is intentionally small and operational:
 - service and version posture;
 - active gateway backend plus Bifrost and per-user Copilot options;
 - metrics counters for sessions, cache, evidence and patch decisions;
-- recent sessions with model attribution, token counts, cost source and readable runtime mode labels;
+- recent sessions with model attribution, token counts, cost source, parent/child delegation lineage and readable runtime mode labels;
 - agent catalogue preview;
 - evidence, cache and maturity export views;
 - audit lookup by governed session ID;
@@ -336,7 +336,7 @@ curl -H "Authorization: Bearer local-runtime-token" \
   http://127.0.0.1:18082/v1/chat/completions
 ```
 
-The `X-AI-Orch-Session-ID` header is required for model generation endpoints. `/v1/models` can be called without a session, but `/v1/chat/completions` and `/v1/responses` must attach to a governed session so audit evidence is correlated. The local Governance Shell validates that the session exists before model generation; stronger runtime-session token binding is a later hardening step.
+Explicit governed runtime calls send `X-AI-Orch-Session-ID` plus `X-AI-Orch-Session-Token`, so model generation attaches to a known governed run. Generic OpenAI-compatible clients such as manually configured OpenCode or Cline may omit those headers when `AI_ORCH_GATEWAY_AUTO_SESSION=true`; in that mode the gateway creates a governed `model-gateway` session on the first model call. For generic clients, use the composite runtime key `<AI_ORCH_RUNTIME_TOKEN>.<actor-subject>` so actor identity still reaches the server when custom headers do not.
 
 For streamed chat completions, ai-orch asks the selected backend for stream usage and records any returned prompt/output/total token counts and provider-reported cost on the session audit trail. If cost is missing but tokens and model pricing are available, session reporting estimates cost from the stored model-pricing table.
 
@@ -344,26 +344,34 @@ The model gateway uses `AI_ORCH_RUNTIME_TOKEN`, not `AI_ORCH_DEV_TOKEN`. Runtime
 
 ### GitHub Copilot User Backend
 
-The experimental Copilot backend is per-user and actor-bound. It is intended for internal beta use where developers already have Copilot seats.
+The experimental Copilot backend is per-user and actor-bound. It is intended for internal beta use where developers already have Copilot seats. In the team shape, this runs on the central ai-orch server; developers do not run Docker locally just to use OpenCode or Cline.
 
-CLI setup:
-
-```sh
-export AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY='<local secret>'
-ai-orch copilot login
-ai-orch copilot status
-ai-orch copilot models
-```
-
-Gateway setup:
+Operator setup on the central server:
 
 ```sh
-AI_ORCH_MODEL_BACKEND=copilot-user
-AI_ORCH_COPILOT_TOKEN_DB=~/.ai-orch/copilot-tokens.db
-AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY='<same local secret>'
+export AI_ORCH_MODEL_BACKEND=copilot-user
+export AI_ORCH_COPILOT_TOKEN_DB=/app/var/audit/copilot-tokens.db
+export AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY='<server secret>'
+docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d orchestrator governance-shell
 ```
 
-OpenCode still points only at ai-orch. Use governed aliases such as `ai-orch/copilot-gpt-5-mini`. Do not configure OpenCode to call `github-copilot` directly in governed mode.
+Developer enrollment against that server:
+
+```sh
+cd ai-agent-orch
+AI_ORCH_GOVERNANCE_URL=https://ai-orch.example.com \
+AI_ORCH_MODEL_GATEWAY_URL=https://models.ai-orch.example.com \
+AI_ORCH_DEV_TOKEN=<developer-enrollment-token-or-id-token> \
+AI_ORCH_RUNTIME_TOKEN=<runtime-token> \
+AI_ORCH_ACTOR_SUBJECT=<actor-subject> \
+scripts/enroll-developer-copilot-opencode.sh
+```
+
+The script starts or refreshes the developer's Copilot enrollment through the Governance Shell, verifies the actor can list Copilot models, then installs the `ai-orch` OpenCode provider config. During install, `ai-orch opencode install-config` calls the model gateway's `/v1/models` endpoint with the developer actor context and imports the live governed model list into OpenCode. That list is route-aware: a Copilot-only server exposes Copilot-routable aliases and the actor's live Copilot picker models, not OpenRouter-only aliases that the current backend cannot execute. The Copilot OAuth credential is stored encrypted in the server-side ai-orch token store for that actor. It is not copied into OpenCode, Cline, the Orchestrator, or project files.
+
+OpenCode and Cline still point only at ai-orch. Do not configure developer tools to call `github-copilot`, OpenRouter, Bifrost, OpenAI, Anthropic, or provider APIs directly in governed mode.
+
+Generic OpenAI-compatible clients often call `/v1/chat/completions`. ai-orch follows the same Copilot endpoint rule used by OpenCode's native Copilot provider: GPT-5-class non-mini Copilot models use upstream `/responses`, while `gpt-5-mini`, Anthropic/Claude and GPT-4-class Copilot models use chat completions. For Custom/OpenAI-compatible clients that still call chat for `gpt-5.5` or `gpt-5.3-codex`, the gateway converts the chat request, including function tools and tool-result turns, to Responses and translates Responses text, usage and function-call SSE back into chat-completion chunks for the client.
 
 ### Backend Control From The UI
 
@@ -408,16 +416,16 @@ OpenCode / Cline / workbench
 
 Bifrost and per-user Copilot are selectable local gateway paths. Keep them behind ai-orch until each path proves model-call audit, provider/backend metadata, patch/diff evidence and no provider keys in runtime config.
 
-### Cline (OpenAI-compatible client)
+### Manual OpenCode or Cline (OpenAI-compatible client)
 
-Cline connects through its "OpenAI Compatible" provider with no ai-orch-specific client code:
+Cline and OpenCode's Custom/OpenAI-compatible provider connect with no ai-orch-specific client code:
 
-1. In Cline settings choose API Provider: OpenAI Compatible.
-2. Base URL: `http://127.0.0.1:18082/v1` (the model compatibility gateway).
-3. API key: the composite runtime key `<AI_ORCH_RUNTIME_TOKEN>.<your-username>`, for example `local-runtime-token.kamogelo`. The actor suffix carries your identity because Cline cannot send custom headers; the gateway binds auto-created sessions and Copilot enrollment lookups to it.
-4. Model: Cline populates its dropdown from `GET /v1/models`, so the governed aliases appear automatically; pick one (for example `coding-fast`) or type an alias manually.
+1. Choose API Provider: OpenAI Compatible / Custom.
+2. Base URL: `https://models.ai-orch.example.com/v1` for the central server, or `http://127.0.0.1:18082/v1` for local testing.
+3. API key: the composite runtime key `<AI_ORCH_RUNTIME_TOKEN>.<actor-subject>`, for example `local-runtime-token.kamogelo`. The actor suffix carries identity because generic clients may not send custom headers; the gateway binds auto-created sessions, `/v1/models` dynamic Copilot listing, and Copilot enrollment lookups to it.
+4. Model: pick a governed alias such as `coding-gpt55`, `copilot-gpt-5-mini`, or `coding-fast`. If the UI shows provider/model format, use `ai-orch/coding-gpt55`.
 
-Model calls then flow through governed auto-sessions exactly like OpenCode: routing, audit, token/cost capture, kill switches and per-session tokens all apply. For governed tools, install the MCP gateway config with `ai-orch mcp install --client cline`.
+Model calls then flow through governed auto-sessions: routing, audit, token/cost capture, kill switches and per-session tokens all apply. For governed tools, install the MCP gateway config with `ai-orch mcp install --client cline`.
 
 ### Local OpenCode E2E
 
@@ -475,17 +483,17 @@ OPENCODE_EXPECT=opencode-e2e-ok \
 go run ./cmd/ai-orch opencode e2e --dir /tmp/ai-orch-opencode-e2e
 ```
 
-The E2E creates a governed `governance-lead` session, runs the local `opencode` binary with `OPENCODE_CONFIG`, `AI_ORCH_RUNTIME_TOKEN`, `AI_ORCH_SESSION_ID` and `AI_ORCH_SESSION_TOKEN`, then verifies the session audit contains `model.gateway` events. Direct model-only launches can also provide `AI_ORCH_ACTOR_SUBJECT` and `AI_ORCH_INTENT` so auto-created sessions carry the actor and reason. ACP runs additionally emit durable runtime events and patch evidence from file-write hooks or before/after workspace diffs.
+The E2E creates a governed `governance-lead` session, runs the local `opencode` binary with `OPENCODE_CONFIG`, `AI_ORCH_RUNTIME_TOKEN`, `AI_ORCH_SESSION_ID` and `AI_ORCH_SESSION_TOKEN`, then verifies the session audit contains `model.gateway` events. Direct model-only launches can also provide `AI_ORCH_ACTOR_SUBJECT` and `AI_ORCH_INTENT` so auto-created sessions carry the actor and reason. Gateway events record sanitized count/name metadata for model-emitted tool calls that cross the model stream, and OpenCode-style `task` calls for known catalog agents create `delegated` child sessions linked by `parent_session_id`. Exact local OpenCode Task/Read/Edit execution remains client-side unless forwarded through ACP, MCP or a client-event lane. ACP runs additionally emit durable runtime events and patch evidence from file-write hooks or before/after workspace diffs.
 
 Use `/Users/kamogelo/Code/ado_scripts` as a realistic repo target only through a disposable worktree or a deliberately temporary test file.
 
 The implemented E2E verifies model routing, audit evidence and ACP patch/diff evidence:
 
-1. **Read-only model routing.** OpenCode performs a review/explanation task. The model call appears in ai-orch audit with session ID, alias, provider/backend, usage and trust label.
+1. **Read-only model routing.** OpenCode performs a review/explanation task. The model call appears in ai-orch audit with session ID, alias, provider/backend, usage, trust label and sanitized model-emitted tool-call metadata when the model asks OpenCode to run tools or delegate through `task`. Known catalog-agent `task` calls also appear as `delegated` child sessions with `parent_session_id`.
 2. **Patch evidence.** OpenCode changes a disposable file or worktree. ai-orch records patch/diff metadata, buffers patch content where available and records the human patch decision.
 3. **ACP permissions.** OpenCode ACP permissions are accepted in the ACP lane by default. MCP is not injected through ACP; MCP calls must use the MCP gateway route.
 
-The generated OpenCode config should point at the ai-orch model gateway, not Bifrost or a provider directly. `ai-orch opencode generate-config` emits the local config shape, including the required runtime token, session, actor and intent header placeholders, plus OpenCode agent definitions for a `governance-lead` primary agent and specialist subagents:
+The generated OpenCode config should point at the ai-orch model gateway, not Bifrost or a provider directly. `ai-orch opencode generate-config` emits the local config shape, including the required runtime token, session, actor and intent header placeholders, plus OpenCode agent definitions for a `governance-lead` primary agent and specialist subagents. Specialist task launches are configured as approval prompts, so a test request should ask before starting the governed `unit-tests` subagent:
 
 ```json
 {
