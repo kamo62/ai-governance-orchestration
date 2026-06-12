@@ -31,7 +31,7 @@ func SummarizeSessionUsageWithPricing(ctx context.Context, events []audit.Event,
 	var summary SessionUsageSummary
 	for _, event := range events {
 		switch event.EventType {
-		case "model.proxy_call", "model.gateway_call", "model.gateway_responses", "model.gateway_stream.completed":
+		case "model.proxy_call", "model.gateway_call", "model.gateway_responses", "model.gateway_stream.completed", "model.gateway_responses_stream.completed":
 			summary.ModelProxyCalls++
 			rememberModelAttribution(&summary, event)
 			addTokenUsage(&summary, event.TokenUsage)

@@ -281,14 +281,11 @@ func TestToolLoopCounterObserve(t *testing.T) {
 	if !counter.Observe("command") {
 		t.Fatal("third consecutive tool call should exceed")
 	}
-	if counter.Count() != 3 {
-		t.Fatalf("expected count 3, got %d", counter.Count())
-	}
 	if counter.Observe("patch") {
 		t.Fatal("patch output should reset without exceeding")
 	}
-	if counter.Count() != 0 {
-		t.Fatalf("expected reset count 0, got %d", counter.Count())
+	if counter.Observe("tool_call") {
+		t.Fatal("first tool call after reset should not exceed")
 	}
 }
 

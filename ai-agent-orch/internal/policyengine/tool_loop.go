@@ -33,13 +33,3 @@ func (c *ToolLoopCounter) Observe(eventType string) bool {
 	}
 	return false
 }
-
-// Count returns the current number of consecutive tool calls.
-func (c *ToolLoopCounter) Count() int {
-	if c == nil {
-		return 0
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.consecutive
-}

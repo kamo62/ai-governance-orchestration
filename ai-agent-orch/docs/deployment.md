@@ -2,7 +2,7 @@
 
 This document explains how to run and verify the local AI Agent Orchestration POC.
 
-The root [README.md](README.md) explains the aim of the project. This file is intentionally more operational.
+The root [README.md](../../README.md) explains the aim of the project. This file is intentionally more operational.
 
 ## Current Deployment Shape
 
@@ -103,7 +103,7 @@ docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta r
 
 Team-local durable storage is the default Compose path: `AI_ORCH_AUDIT_PATH=/app/var/audit/audit.db` enables SQLite audit, sessions, registry and model-pricing persistence via the `audit-data` volume. Governance Shell refreshes the OpenRouter model-pricing table on startup and then every `AI_ORCH_MODEL_PRICING_REFRESH_INTERVAL` interval, defaulting to 24 hours.
 
-API contract for integrators: [ai-agent-orch/docs/api-contract-v1.md](ai-agent-orch/docs/api-contract-v1.md).
+API contract for integrators: [api-contract-v1.md](api-contract-v1.md).
 
 ### CIO demo verification
 
@@ -748,7 +748,7 @@ Some state is intentionally still local-process state:
 - cancellation map;
 - composition state.
 
-See [Local State Lifecycle](ai-agent-orch/docs/local-state-lifecycle.md) for the promotion path before team or multi-instance use.
+See [Local State Lifecycle](local-state-lifecycle.md) for the promotion path before team or multi-instance use.
 
 ## TLS Termination
 

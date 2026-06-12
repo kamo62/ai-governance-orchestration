@@ -9,12 +9,12 @@ import (
 )
 
 func TestRouterSelectsPreferredAlias(t *testing.T) {
-	r := New(catalog.ModelRegistry{
+	r := NewWithRouteAvailability(catalog.ModelRegistry{
 		Models: []catalog.ModelDefinition{
 			{Alias: "coding-primary", Provider: "openrouter", ModelID: "anthropic/claude-opus-4.7", AllowedClassifications: []string{"public", "internal"}},
 			{Alias: "coding-fast", Provider: "openrouter", ModelID: "x-ai/grok-build-0.1", AllowedClassifications: []string{"public", "internal"}},
 		},
-	})
+	}, nil)
 
 	decision, err := r.Route(context.Background(), Request{
 		TaskType:       "coding",
@@ -30,12 +30,12 @@ func TestRouterSelectsPreferredAlias(t *testing.T) {
 }
 
 func TestRouterRejectsPreferredAliasByClassification(t *testing.T) {
-	r := New(catalog.ModelRegistry{
+	r := NewWithRouteAvailability(catalog.ModelRegistry{
 		Models: []catalog.ModelDefinition{
 			{Alias: "public-only", Provider: "openrouter", ModelID: "m1", AllowedClassifications: []string{"public"}},
 			{Alias: "internal-ok", Provider: "openrouter", ModelID: "m2", AllowedClassifications: []string{"public", "internal"}},
 		},
-	})
+	}, nil)
 
 	_, err := r.Route(context.Background(), Request{
 		TaskType:       "coding",
@@ -51,11 +51,11 @@ func TestRouterRejectsPreferredAliasByClassification(t *testing.T) {
 }
 
 func TestRouterFiltersByClassification(t *testing.T) {
-	r := New(catalog.ModelRegistry{
+	r := NewWithRouteAvailability(catalog.ModelRegistry{
 		Models: []catalog.ModelDefinition{
 			{Alias: "public-only", Provider: "openrouter", ModelID: "m1", AllowedClassifications: []string{"public"}},
 		},
-	})
+	}, nil)
 
 	_, err := r.Route(context.Background(), Request{
 		TaskType:       "coding",
@@ -67,12 +67,12 @@ func TestRouterFiltersByClassification(t *testing.T) {
 }
 
 func TestRouterScoresByTaskType(t *testing.T) {
-	r := New(catalog.ModelRegistry{
+	r := NewWithRouteAvailability(catalog.ModelRegistry{
 		Models: []catalog.ModelDefinition{
 			{Alias: "coding-primary", Provider: "openrouter", ModelID: "m1", Purpose: "Highest-quality coding", AllowedClassifications: []string{"public", "internal"}},
 			{Alias: "router-small", Provider: "openrouter", ModelID: "m2", Purpose: "Routing and summarization", AllowedClassifications: []string{"public", "internal"}},
 		},
-	})
+	}, nil)
 
 	decision, err := r.Route(context.Background(), Request{
 		TaskType:       "coding",
@@ -88,12 +88,12 @@ func TestRouterScoresByTaskType(t *testing.T) {
 
 func TestRouterFallbackChain(t *testing.T) {
 	fallback := "coding-balanced"
-	r := New(catalog.ModelRegistry{
+	r := NewWithRouteAvailability(catalog.ModelRegistry{
 		Models: []catalog.ModelDefinition{
 			{Alias: "coding-primary", Provider: "openrouter", ModelID: "m1", FallbackAlias: &fallback, AllowedClassifications: []string{"public", "internal"}},
 			{Alias: "coding-balanced", Provider: "openrouter", ModelID: "m2", AllowedClassifications: []string{"public", "internal"}},
 		},
-	})
+	}, nil)
 
 	decision, err := r.Route(context.Background(), Request{
 		TaskType:       "coding",
@@ -110,13 +110,13 @@ func TestRouterFallbackChain(t *testing.T) {
 func TestRouterFallbackChainFiltersByClassification(t *testing.T) {
 	publicFallback := "public-only"
 	internalFallback := "internal-ok"
-	r := New(catalog.ModelRegistry{
+	r := NewWithRouteAvailability(catalog.ModelRegistry{
 		Models: []catalog.ModelDefinition{
 			{Alias: "coding-primary", Provider: "openrouter", ModelID: "m1", FallbackAlias: &publicFallback, AllowedClassifications: []string{"public", "internal"}},
 			{Alias: "public-only", Provider: "openrouter", ModelID: "m2", FallbackAlias: &internalFallback, AllowedClassifications: []string{"public"}},
 			{Alias: "internal-ok", Provider: "openrouter", ModelID: "m3", AllowedClassifications: []string{"internal"}},
 		},
-	})
+	}, nil)
 
 	decision, err := r.Route(context.Background(), Request{
 		TaskType:       "coding",
@@ -132,11 +132,11 @@ func TestRouterFallbackChainFiltersByClassification(t *testing.T) {
 }
 
 func TestRouterResolve(t *testing.T) {
-	r := New(catalog.ModelRegistry{
+	r := NewWithRouteAvailability(catalog.ModelRegistry{
 		Models: []catalog.ModelDefinition{
 			{Alias: "coding-primary", Provider: "openrouter", ModelID: "anthropic/claude-opus-4.7"},
 		},
-	})
+	}, nil)
 
 	modelID, provider, err := r.Resolve("coding-primary")
 	if err != nil {
@@ -255,12 +255,12 @@ func TestRouterProviderPinnedAliasDoesNotSwitchProvider(t *testing.T) {
 }
 
 func TestRouterAliasesFiltered(t *testing.T) {
-	r := New(catalog.ModelRegistry{
+	r := NewWithRouteAvailability(catalog.ModelRegistry{
 		Models: []catalog.ModelDefinition{
 			{Alias: "public-only", Provider: "openrouter", ModelID: "m1", AllowedClassifications: []string{"public"}},
 			{Alias: "internal-ok", Provider: "openrouter", ModelID: "m2", AllowedClassifications: []string{"public", "internal"}},
 		},
-	})
+	}, nil)
 
 	aliases := r.Aliases("internal")
 	if len(aliases) != 1 || aliases[0].Alias != "internal-ok" {
@@ -273,11 +273,11 @@ func boolPtr(v bool) *bool {
 }
 
 func TestRouterEnrichmentPostures(t *testing.T) {
-	r := New(catalog.ModelRegistry{
+	r := NewWithRouteAvailability(catalog.ModelRegistry{
 		Models: []catalog.ModelDefinition{
 			{Alias: "coding-primary", Provider: "openrouter", ModelID: "m1", Purpose: "Highest-quality coding", AllowedClassifications: []string{"public", "internal"}},
 		},
-	})
+	}, nil)
 
 	decision, err := r.Route(context.Background(), Request{
 		TaskType:           "coding",
@@ -313,12 +313,12 @@ func TestRouterEnrichmentPostures(t *testing.T) {
 }
 
 func TestRouterScoresByWorkflowStage(t *testing.T) {
-	r := New(catalog.ModelRegistry{
+	r := NewWithRouteAvailability(catalog.ModelRegistry{
 		Models: []catalog.ModelDefinition{
 			{Alias: "coding-fast", Provider: "openrouter", ModelID: "m1", Purpose: "Fast economy coding", AllowedClassifications: []string{"public", "internal"}},
 			{Alias: "coding-deep", Provider: "openrouter", ModelID: "m2", Purpose: "Highest-quality coding review", AllowedClassifications: []string{"public", "internal"}},
 		},
-	})
+	}, nil)
 
 	// Draft stage should prefer fast/economy model
 	decision, err := r.Route(context.Background(), Request{

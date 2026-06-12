@@ -52,11 +52,6 @@ type Router struct {
 	routeAvailable RouteAvailability
 }
 
-// New creates a Router from the catalog registry loaded at the given root.
-func New(registry catalog.ModelRegistry) *Router {
-	return &Router{registry: registry}
-}
-
 func NewWithRouteAvailability(registry catalog.ModelRegistry, routeAvailable RouteAvailability) *Router {
 	return &Router{registry: registry, routeAvailable: routeAvailable}
 }

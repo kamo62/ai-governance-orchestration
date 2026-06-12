@@ -32,18 +32,39 @@ func (r *DirectRuntime) StartSession(ctx context.Context, cfg SessionConfig) (Se
 	if err != nil {
 		return nil, fmt.Errorf("resolve model %q: %w", cfg.ModelID, err)
 	}
+	route, err := selectDirectRoute(modelDef)
+	if err != nil {
+		return nil, fmt.Errorf("route model %q: %w", cfg.ModelID, err)
+	}
 
 	handle := &directHandle{
 		client:   r.client,
 		config:   cfg,
-		provider: modelDef.Provider,
-		modelID:  modelDef.ModelID,
+		provider: route.Provider,
+		modelID:  route.ModelID,
 		events:   make(chan RuntimeEvent, 16),
 		done:     make(chan struct{}),
 	}
 
 	go handle.run(ctx)
 	return handle, nil
+}
+
+// selectDirectRoute picks the first catalog route this lane can serve. The
+// direct runtime holds no per-actor credentials, so actor-bound routes (for
+// example copilot-user) are skipped rather than silently rewritten to the
+// model's top-level defaults.
+func selectDirectRoute(modelDef catalog.ModelDefinition) (catalog.ModelRoute, error) {
+	for _, route := range modelDef.EffectiveRoutes() {
+		if route.RequiresActorToken {
+			continue
+		}
+		if strings.TrimSpace(route.Provider) == "" || strings.TrimSpace(route.ModelID) == "" {
+			continue
+		}
+		return route, nil
+	}
+	return catalog.ModelRoute{}, fmt.Errorf("alias %q has no route usable without an actor token", modelDef.Alias)
 }
 
 type directHandle struct {
@@ -167,14 +188,6 @@ func (h *directHandle) tryExtractPatch(content string) string {
 		}
 	}
 	return ""
-}
-
-func extractJSONObject(content string) string {
-	objects := extractJSONObjects(content)
-	if len(objects) == 0 {
-		return ""
-	}
-	return objects[0]
 }
 
 func extractJSONObjects(content string) []string {

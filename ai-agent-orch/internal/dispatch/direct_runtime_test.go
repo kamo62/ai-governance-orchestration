@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/catalog"
 	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
 )
 
@@ -307,5 +308,34 @@ func TestDirectRuntimeFailsRunWhenPerInvocationCostCapExceeded(t *testing.T) {
 	}
 	if err := handle.Wait(); err == nil {
 		t.Fatal("expected Wait to report cost cap error")
+	}
+}
+
+func TestSelectDirectRouteSkipsActorBoundRoutes(t *testing.T) {
+	def := catalog.ModelDefinition{
+		Alias: "coding-gpt55",
+		Routes: []catalog.ModelRoute{
+			{Provider: "copilot-user", ModelID: "gpt-5.5", RequiresActorToken: true},
+			{Provider: "openrouter", ModelID: "openai/gpt-5.5"},
+		},
+	}
+	route, err := selectDirectRoute(def)
+	if err != nil {
+		t.Fatalf("selectDirectRoute: %v", err)
+	}
+	if route.Provider != "openrouter" || route.ModelID != "openai/gpt-5.5" {
+		t.Fatalf("expected non-actor route, got %+v", route)
+	}
+}
+
+func TestSelectDirectRouteFailsWhenOnlyActorBoundRoutesExist(t *testing.T) {
+	def := catalog.ModelDefinition{
+		Alias: "copilot-only",
+		Routes: []catalog.ModelRoute{
+			{Provider: "copilot-user", ModelID: "gpt-5.5", RequiresActorToken: true},
+		},
+	}
+	if _, err := selectDirectRoute(def); err == nil {
+		t.Fatal("expected error when no non-actor route exists")
 	}
 }

@@ -4,14 +4,6 @@ import (
 	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/policyengine"
 )
 
-// CommandAllowlist is an alias for the consolidated policy engine type.
-type CommandAllowlist = policyengine.CommandAllowlist
-
-// LoadCommandAllowlist loads the command allowlist from the given path.
-func LoadCommandAllowlist(path string) (*CommandAllowlist, error) {
-	return policyengine.LoadCommandAllowlist(path)
-}
-
 // ToolBroker validates runtime tool calls against the command allowlist.
 type ToolBroker = policyengine.ToolBroker
 

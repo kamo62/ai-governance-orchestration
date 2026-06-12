@@ -14,7 +14,7 @@ There is one more piece of plumbing in that first bucket: a model compatibility 
 
 The latest design correction is important: ai-orch does not need access to every developer's repository. The developer's chosen tool should keep repo access and local editing. The organisation can instead point OpenCode, Cline, VS Code/Copilot, Claude Code, Codex or a workbench at the Governance Shell as the model endpoint and MCP/tool gateway. That is the cleaner scale path for many developers: centralise governance and model access, not source-code access.
 
-This README is also a working view of the current thinking. The operational runbook lives in [deployment.md](deployment.md); this file is meant to explain what is being investigated, what is influencing the design, and what the POC is deliberately avoiding.
+This README is also a working view of the current thinking. The operational runbook lives in [docs/deployment.md](ai-agent-orch/docs/deployment.md); this file is meant to explain what is being investigated, what is influencing the design, and what the POC is deliberately avoiding.
 
 ## What This Is
 
@@ -52,7 +52,7 @@ This repo is an attempt to answer those questions without rebuilding the whole d
 
 ## Current State
 
-Current version: `v0.18.4-beta`.
+Current version: `v0.18.5-beta`.
 
 This is a **local beta** for the Governance Shell vertical slice. It is useful for team-local evaluation and demos, but it is not a production deployment.
 
@@ -399,7 +399,7 @@ The IDE and CLI should send lightweight IDs and intent. The Governance Shell sho
 
 ## Documentation Map
 
-- [deployment.md](deployment.md): how to run, verify, smoke test, and use the local POC.
+- [docs/deployment.md](ai-agent-orch/docs/deployment.md): how to run, verify, smoke test, and use the local POC.
 - [Agent catalogue guide](ai-agent-orch/agents/README.md): how agents are structured and validated.
 - [Model registry guide](ai-agent-orch/models/README.md): model alias rules and provider strategy.
 - [Model compatibility gateway](ai-agent-orch/docs/model-compatibility-gateway.md): why OpenCode-style runtimes should call governed OpenAI-compatible endpoints rather than provider APIs directly.

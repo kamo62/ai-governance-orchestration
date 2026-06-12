@@ -37,7 +37,7 @@ if (-not $env:AI_ORCH_ACTOR_SUBJECT) {
 
 Push-Location $Root
 try {
-  & go run ./cmd/ai-orch opencode -- @OpenCodeArgs
+  & go run ./cmd/ai-orch opencode @OpenCodeArgs
   exit $LASTEXITCODE
 }
 finally {

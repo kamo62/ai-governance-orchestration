@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.18.5-beta - 2026-06-12 (Patch)
+
+Release impact: Patch because this fixes session-usage accounting, Responses stream audit labels, direct-runtime route selection, OpenCode wrapper reporting, and launcher argument forwarding without breaking public API contracts or deployment compatibility.
+
+- **Fixed Responses stream usage rollups**: session usage now includes `model.gateway_responses_stream.completed` events so streamed Responses sessions report tokens and cost.
+- **Corrected incomplete Responses auditing**: provider `response.incomplete` streams now record `model.gateway_responses_stream.incomplete` instead of looking like successful completions.
+- **Fixed direct runtime route selection**: the direct runtime now chooses from effective model routes and skips actor-bound routes it cannot serve.
+- **Corrected governed OpenCode launch reporting**: the wrapper records the local OpenCode lane as `self_reported`, keeps the routed specialist visible to the developer, and no longer claims a manual confirm gate that is not exercised.
+- **Fixed OpenCode launcher argument forwarding**: `scripts/opencode-governed.sh` and `.ps1` now forward governance flags such as `--model-only` to `ai-orch opencode` instead of hiding them behind an extra separator; added regression coverage for the documented model-only launcher path.
+- **Cleaned review-follow-up scaffolding**: test-only exports and duplicated helper loops were removed or moved to the production packages that own the behaviour.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.18.5-beta.
+
 ## v0.18.4-beta - 2026-06-11 (Patch)
 
 Release impact: Patch because this fixes CI beta smoke port wiring without changing public contracts, model routing behaviour, or deployment compatibility.

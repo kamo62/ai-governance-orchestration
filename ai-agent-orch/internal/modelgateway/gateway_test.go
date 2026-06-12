@@ -97,12 +97,12 @@ func newTestGateway() *Gateway {
 func newTestGatewayWithValidator(validate func(context.Context, string) error) *Gateway {
 	return NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
-		Router: router.New(catalog.ModelRegistry{
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{
 			Models: []catalog.ModelDefinition{
 				{Alias: "coding-primary", Provider: "openrouter", ModelID: "anthropic/claude-opus-4.7", AllowedClassifications: []string{"public", "internal"}},
 				{Alias: "coding-fast", Provider: "openrouter", ModelID: "x-ai/grok-build-0.1", AllowedClassifications: []string{"public", "internal"}},
 			},
-		}),
+		}, nil),
 		Backend: &fakeChatClient{
 			resp: openrouter.ChatCompletionResponse{
 				ID:    "chatcmpl-test",
@@ -230,9 +230,9 @@ func TestGatewayChatCompletionsPreservesOpenAIToolPayload(t *testing.T) {
 	}
 	g := NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
-		Router: router.New(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
 			{Alias: "coding-primary", Provider: "openrouter", ModelID: "upstream-model", AllowedClassifications: []string{"public", "internal"}},
-		}}),
+		}}, nil),
 		Backend: backend,
 		Audit:   auditStore,
 		NewID:   func(prefix string) string { return prefix + "_test" },
@@ -277,7 +277,7 @@ func TestGatewayChatCompletionsNormalizesReasoningEffortForBifrost(t *testing.T)
 	}
 	g := NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
-		Router: router.New(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
 			{
 				Alias:                  "coding-gpt55",
 				Provider:               "openrouter",
@@ -296,7 +296,7 @@ func TestGatewayChatCompletionsNormalizesReasoningEffortForBifrost(t *testing.T)
 					},
 				},
 			},
-		}}),
+		}}, nil),
 		Backend: backend,
 		Audit:   auditStore,
 		NewID:   func(prefix string) string { return prefix + "_test" },
@@ -348,7 +348,7 @@ func TestGatewayChatCompletionsClampsLeadReasoningEffort(t *testing.T) {
 	}
 	g := NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
-		Router: router.New(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
 			{
 				Alias:                  "coding-gpt55",
 				Provider:               "openrouter",
@@ -360,7 +360,7 @@ func TestGatewayChatCompletionsClampsLeadReasoningEffort(t *testing.T) {
 					SupportsEffort: boolPtr(true),
 				},
 			},
-		}}),
+		}}, nil),
 		Backend: backend,
 		Audit:   auditStore,
 		NewID:   func(prefix string) string { return prefix + "_test" },
@@ -405,7 +405,7 @@ func TestGatewayChatCompletionsStripsReasoningForUnsupportedRoute(t *testing.T) 
 	}
 	g := NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
-		Router: router.New(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
 			{
 				Alias:                  "copilot-gpt-5.5",
 				Provider:               "copilot-user",
@@ -417,7 +417,7 @@ func TestGatewayChatCompletionsStripsReasoningForUnsupportedRoute(t *testing.T) 
 					SupportsEffort: boolPtr(false),
 				},
 			},
-		}}),
+		}}, nil),
 		Backend: backend,
 		Audit:   auditStore,
 		NewID:   func(prefix string) string { return prefix + "_test" },
@@ -480,9 +480,9 @@ func TestGatewayChatCompletionsAutoCreatesSession(t *testing.T) {
 	body := []byte(`{"model":"coding-primary","messages":[{"role":"user","content":"hello"}]}`)
 	g := NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
-		Router: router.New(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
 			{Alias: "coding-primary", Provider: "openrouter", ModelID: "anthropic/claude-opus-4.7", AllowedClassifications: []string{"public", "internal"}},
-		}}),
+		}}, nil),
 		Backend: backend,
 		Audit:   auditStore,
 		NewID:   func(prefix string) string { return prefix + "_test" },
@@ -525,9 +525,9 @@ func TestGatewayAutoSessionReturnedTokenBindsSubsequentCalls(t *testing.T) {
 	lookup := map[string]SessionInfo{}
 	g := NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
-		Router: router.New(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
 			{Alias: "coding-primary", Provider: "openrouter", ModelID: "anthropic/claude-opus-4.7", AllowedClassifications: []string{"public", "internal"}},
-		}}),
+		}}, nil),
 		Backend: &fakeChatClient{resp: openrouter.ChatCompletionResponse{ID: "chatcmpl-test", Choices: []struct {
 			Message openrouter.Message `json:"message"`
 		}{{Message: openrouter.Message{Role: "assistant", Content: "ok"}}}}},
@@ -617,12 +617,12 @@ func TestGatewayChatCompletionsInvalidAlias(t *testing.T) {
 func TestGatewayChatCompletionsIgnoresCallerClassificationHeader(t *testing.T) {
 	g := NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
-		Router: router.New(catalog.ModelRegistry{
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{
 			Models: []catalog.ModelDefinition{
 				{Alias: "public-only", Provider: "openrouter", ModelID: "m-public", AllowedClassifications: []string{"public"}},
 				{Alias: "coding-primary", Provider: "openrouter", ModelID: "m-internal", AllowedClassifications: []string{"internal"}},
 			},
-		}),
+		}, nil),
 		Backend: &fakeChatClient{},
 		LookupSession: func(context.Context, string) (SessionInfo, error) {
 			return SessionInfo{Classification: "internal"}, nil
@@ -650,9 +650,9 @@ func TestGatewayResponsesSuccess(t *testing.T) {
 	}
 	g := NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
-		Router: router.New(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
 			{Alias: "coding-primary", Provider: "openrouter", ModelID: "upstream-model", AllowedClassifications: []string{"public", "internal"}},
-		}}),
+		}}, nil),
 		Backend: backend,
 		Audit:   auditStore,
 		NewID:   func(prefix string) string { return prefix + "_test" },
@@ -745,11 +745,11 @@ func TestGatewayStreamTranslatesChunks(t *testing.T) {
 	streamClient := &streamFakeClient{}
 	g := NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
-		Router: router.New(catalog.ModelRegistry{
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{
 			Models: []catalog.ModelDefinition{
 				{Alias: "coding-primary", Provider: "openrouter", ModelID: "m1", AllowedClassifications: []string{"public", "internal"}},
 			},
-		}),
+		}, nil),
 		Backend: streamClient,
 		Audit:   auditStore,
 		NewID:   func(prefix string) string { return prefix + "_test" },
@@ -814,12 +814,12 @@ func (s *streamFakeClient) ResolvedModel(_ string, model string) string { return
 func newTestGatewayWithBackend(backend *fakeChatClient, auditStore audit.Store) *Gateway {
 	return NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
-		Router: router.New(catalog.ModelRegistry{
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{
 			Models: []catalog.ModelDefinition{
 				{Alias: "coding-primary", Provider: "openrouter", ModelID: "anthropic/claude-opus-4.7", AllowedClassifications: []string{"public", "internal"}},
 				{Alias: "coding-fast", Provider: "openrouter", ModelID: "x-ai/grok-build-0.1", AllowedClassifications: []string{"public", "internal"}},
 			},
-		}),
+		}, nil),
 		Backend: backend,
 		Audit:   auditStore,
 		NewID:   func(prefix string) string { return prefix + "_test" },
@@ -870,11 +870,11 @@ func TestGatewaySessionTokenBinding(t *testing.T) {
 	tokenHash := sha256.Sum256([]byte("sgt_secret"))
 	gateway := NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
-		Router: router.New(catalog.ModelRegistry{
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{
 			Models: []catalog.ModelDefinition{
 				{Alias: "coding-primary", Provider: "openrouter", ModelID: "anthropic/claude-opus-4.7", AllowedClassifications: []string{"public", "internal"}},
 			},
-		}),
+		}, nil),
 		Backend: &fakeChatClient{
 			resp: openrouter.ChatCompletionResponse{
 				ID: "chatcmpl-test",
@@ -949,11 +949,11 @@ func TestGatewayRejectsTerminalSessionStatus(t *testing.T) {
 func newTestGatewayWithLookup(lookup func(context.Context, string) (SessionInfo, error)) *Gateway {
 	return NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
-		Router: router.New(catalog.ModelRegistry{
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{
 			Models: []catalog.ModelDefinition{
 				{Alias: "coding-primary", Provider: "openrouter", ModelID: "anthropic/claude-opus-4.7", AllowedClassifications: []string{"public", "internal"}},
 			},
-		}),
+		}, nil),
 		Backend: &fakeChatClient{
 			resp: openrouter.ChatCompletionResponse{
 				ID: "chatcmpl-test",
@@ -971,4 +971,45 @@ func newTestGatewayWithLookup(lookup func(context.Context, string) (SessionInfo,
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+func TestGatewayResponsesStreamIncompleteIsNotAuditedAsCompleted(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	backend := &rawFakeBackend{
+		stream: "event: response.created\n" +
+			"data: {\"type\":\"response.created\"}\n" +
+			"\n" +
+			"event: response.incomplete\n" +
+			"data: {\"type\":\"response.incomplete\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n" +
+			"\n",
+	}
+	g := NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+			{Alias: "coding-primary", Provider: "openrouter", ModelID: "upstream-model", AllowedClassifications: []string{"public", "internal"}},
+		}}, nil),
+		Backend: backend,
+		Audit:   auditStore,
+		NewID:   func(prefix string) string { return prefix + "_test" },
+	})
+	body := []byte(`{"model":"coding-primary","stream":true,"input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-test-token")
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_resp_incomplete")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	events, err := auditStore.EventsBySession(context.Background(), "sess_resp_incomplete")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one audit event, got %d", len(events))
+	}
+	if events[0].EventType != "model.gateway_responses_stream.incomplete" {
+		t.Fatalf("expected incomplete audit event, got %q", events[0].EventType)
+	}
 }

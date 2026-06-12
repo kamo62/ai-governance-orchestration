@@ -26,4 +26,4 @@ if [ -z "${AI_ORCH_ACTOR_SUBJECT:-}" ]; then
   fi
 fi
 
-exec go run ./cmd/ai-orch opencode -- "$@"
+exec go run ./cmd/ai-orch opencode "$@"
