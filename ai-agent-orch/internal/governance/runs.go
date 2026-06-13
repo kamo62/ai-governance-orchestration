@@ -13,19 +13,22 @@ import (
 // RunResponse is returned by POST /v1/runs after the Shell creates a session
 // and routes the first prompt to a specialist.
 type RunResponse struct {
-	RunID             string `json:"run_id"`
-	SessionID         string `json:"session_id"`
-	Status            string `json:"status"`
-	Agent             string `json:"agent"`
-	Specialist        string `json:"specialist"`
-	Reason            string `json:"reason,omitempty"`
-	NextGate          string `json:"next_gate,omitempty"`
-	SSEURL            string `json:"sse_url"`
-	AuditEventID      string `json:"audit_event_id"`
-	RouteAuditEventID string `json:"route_audit_event_id"`
-	PermissionMode    string `json:"permission_mode,omitempty"`
-	ApprovalMode      string `json:"approval_mode,omitempty"`
-	WorkspaceMode     string `json:"workspace_mode,omitempty"`
+	RunID                     string   `json:"run_id"`
+	SessionID                 string   `json:"session_id"`
+	Status                    string   `json:"status"`
+	Agent                     string   `json:"agent"`
+	Specialist                string   `json:"specialist"`
+	Reason                    string   `json:"reason,omitempty"`
+	RoutingConfidence         string   `json:"routing_confidence,omitempty"`
+	HumanConfirmationRequired bool     `json:"human_confirmation_required,omitempty"`
+	RoutingAlternates         []string `json:"routing_alternates,omitempty"`
+	NextGate                  string   `json:"next_gate,omitempty"`
+	SSEURL                    string   `json:"sse_url"`
+	AuditEventID              string   `json:"audit_event_id"`
+	RouteAuditEventID         string   `json:"route_audit_event_id"`
+	PermissionMode            string   `json:"permission_mode,omitempty"`
+	ApprovalMode              string   `json:"approval_mode,omitempty"`
+	WorkspaceMode             string   `json:"workspace_mode,omitempty"`
 	// GatewayToken is the per-session model gateway secret, surfaced once.
 	GatewayToken string `json:"gateway_token,omitempty"`
 }
@@ -143,6 +146,7 @@ func (h *RunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Actor:              actorFromContext(r.Context()),
 		Agent:              decision.Specialist,
 		Reason:             decision.Reason,
+		Findings:           routingAuditFindings(decision),
 		RunID:              request.RunID,
 		PermissionMode:     request.PermissionMode,
 		ApprovalMode:       request.ApprovalMode,
@@ -166,20 +170,23 @@ func (h *RunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.service.rememberPrompt(sessionResp.SessionID, request.Prompt)
 
 	httpx.WriteJSON(w, http.StatusCreated, RunResponse{
-		RunID:             request.RunID,
-		SessionID:         sessionResp.SessionID,
-		Status:            "awaiting_confirmation",
-		Agent:             sessionResp.Agent,
-		Specialist:        decision.Specialist,
-		Reason:            decision.Reason,
-		NextGate:          "confirm",
-		SSEURL:            "/v1/sessions/" + sessionResp.SessionID + "/events",
-		AuditEventID:      sessionResp.AuditEventID,
-		RouteAuditEventID: eventID,
-		PermissionMode:    request.PermissionMode,
-		ApprovalMode:      request.ApprovalMode,
-		WorkspaceMode:     request.WorkspaceMode,
-		GatewayToken:      sessionResp.GatewayToken,
+		RunID:                     request.RunID,
+		SessionID:                 sessionResp.SessionID,
+		Status:                    "awaiting_confirmation",
+		Agent:                     sessionResp.Agent,
+		Specialist:                decision.Specialist,
+		Reason:                    decision.Reason,
+		RoutingConfidence:         decision.RoutingConfidence,
+		HumanConfirmationRequired: decision.HumanConfirmationRequired,
+		RoutingAlternates:         decision.RoutingAlternates,
+		NextGate:                  "confirm",
+		SSEURL:                    "/v1/sessions/" + sessionResp.SessionID + "/events",
+		AuditEventID:              sessionResp.AuditEventID,
+		RouteAuditEventID:         eventID,
+		PermissionMode:            request.PermissionMode,
+		ApprovalMode:              request.ApprovalMode,
+		WorkspaceMode:             request.WorkspaceMode,
+		GatewayToken:              sessionResp.GatewayToken,
 	})
 }
 

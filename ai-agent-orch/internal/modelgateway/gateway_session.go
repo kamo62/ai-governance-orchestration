@@ -20,14 +20,16 @@ func (g *Gateway) resolveSession(w http.ResponseWriter, r *http.Request, modelAl
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
 		return "", SessionInfo{}, false
 	}
-	actor := strings.TrimSpace(r.Header.Get("X-AI-Orch-Actor-Subject"))
+	// Actor-bound runtime credentials and composite API keys are
+	// non-forgeable at the gateway, so they win over client-supplied actor
+	// headers. The plain shared runtime token returns an empty actor and keeps
+	// the local-dev header path intact for beta tooling.
+	actor, _ := g.runtimeAuth(r)
 	if actor == "" {
-		actor = strings.TrimSpace(r.Header.Get("X-AI-Orch-Local-Identity"))
+		actor = strings.TrimSpace(r.Header.Get("X-AI-Orch-Actor-Subject"))
 	}
 	if actor == "" {
-		// Composite API key "<runtime-token>.<actor>" carries identity for
-		// clients that cannot send custom headers.
-		actor, _ = g.runtimeAuth(r)
+		actor = strings.TrimSpace(r.Header.Get("X-AI-Orch-Local-Identity"))
 	}
 	if actor == "" {
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "actor identity is required for auto sessions: send X-AI-Orch-Actor-Subject or use the composite API key <runtime-token>.<actor>"})
@@ -197,17 +199,24 @@ func (g *Gateway) authorized(r *http.Request) bool {
 func (g *Gateway) runtimeAuth(r *http.Request) (string, bool) {
 	const prefix = "Bearer "
 	header := r.Header.Get("Authorization")
-	if g.runtimeToken == "" || !strings.HasPrefix(header, prefix) {
+	if !strings.HasPrefix(header, prefix) {
 		return "", false
 	}
 	token := strings.TrimPrefix(header, prefix)
-	if subtle.ConstantTimeCompare([]byte(token), []byte(g.runtimeToken)) == 1 {
-		return "", true
+	if g.runtimeToken != "" {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(g.runtimeToken)) == 1 {
+			return "", true
+		}
+		sep := g.runtimeToken + "."
+		if len(token) > len(sep) && subtle.ConstantTimeCompare([]byte(token[:len(sep)]), []byte(sep)) == 1 {
+			actor := strings.TrimSpace(token[len(sep):])
+			if compositeActorLabelOK(actor) {
+				return actor, true
+			}
+		}
 	}
-	sep := g.runtimeToken + "."
-	if len(token) > len(sep) && subtle.ConstantTimeCompare([]byte(token[:len(sep)]), []byte(sep)) == 1 {
-		actor := strings.TrimSpace(token[len(sep):])
-		if compositeActorLabelOK(actor) {
+	if g.runtimeCredentialValidator != nil {
+		if actor, ok := g.runtimeCredentialValidator(token); ok && compositeActorLabelOK(actor) {
 			return actor, true
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,6 +89,50 @@ func TestDispatchHandlerFailsWhenRuntimeEmitsError(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "tool denied") {
 		t.Fatalf("expected runtime error response, got %s", rec.Body.String())
+	}
+}
+
+func TestDispatchHandlerAuditsFailClosedRuntimeUnavailable(t *testing.T) {
+	t.Setenv("AI_ORCH_BETA_SMOKE", "false")
+	t.Cleanup(func() { os.Unsetenv("AI_ORCH_BETA_SMOKE") })
+
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	dispatcher := &Dispatcher{
+		catalogRoot: filepath.Join("..", ".."),
+		broker:      mustToolBroker(t),
+		runtimes:    map[string]dispatch.Runtime{},
+	}
+	handler := NewDispatchHandler(dispatcher, audit.NewFileStore(auditPath))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"unit-tests","prompt":"write tests"}`)))
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_no_runtime")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "failed_closed") {
+		t.Fatalf("expected fail-closed response, got %s", rec.Body.String())
+	}
+	auditBytes, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatalf("read audit file: %v", err)
+	}
+	auditText := string(auditBytes)
+	for _, want := range []string{
+		`"session_id":"sess_no_runtime"`,
+		`"event_type":"specialist.dispatch_failed"`,
+		`"runtime_status":"failed_closed"`,
+		`"correlation_subject":"orchestrator"`,
+	} {
+		if !strings.Contains(auditText, want) {
+			t.Fatalf("missing %s in audit event: %s", want, auditText)
+		}
+	}
+	if strings.Contains(auditText, "write tests") {
+		t.Fatalf("dispatch failure audit event must not store raw prompt: %s", auditText)
 	}
 }
 

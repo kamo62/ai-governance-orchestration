@@ -368,76 +368,61 @@ trust_level: gateway_enforced
 
 This gives reporting and maturity exports a clean record without making the audit log a raw transcript store. For local tools, the model gateway audit proves that the model requested a tool/subagent call; it is not a substitute for ACP/MCP/client-event evidence of what the local tool actually did.
 
-## Build Order
+## Implemented Status And Remaining Work
 
-### Phase 1G.2: Model Compatibility Gateway Contract
+### Implemented In The Current Beta
 
-Deliverables:
+The compatibility gateway contract is now real enough for AI-Orch-routed OpenCode:
 
-- define selectable model backends: `bifrost` and `copilot-user`;
-- define provider-sidecar health and fail-closed startup behaviour for selected backends;
-- define runtime-token authentication for model calls;
-- define OpenAI-compatible response shapes for `/v1/models`, `/v1/chat/completions` and `/v1/responses`;
-- define streaming subset and failure semantics;
-- define audit metadata envelope;
-- define model-router decision schema;
-- document OpenCode provider configuration.
+- selectable model backends include `bifrost` and `copilot-user`;
+- `/v1/models`, `/v1/chat/completions`, and `/v1/responses` are exposed through the
+  Governance Shell model gateway;
+- streaming chat calls preserve OpenAI-compatible SSE frames, forward usage chunks where
+  providers send them, and record stream completion/failure audit events;
+- route-aware model listing hides aliases that the selected backend/actor cannot execute
+  and appends actor-bound Copilot picker models when enrolled;
+- runtime authentication supports the shared beta token, legacy composite actor tokens,
+  session-bound gateway tokens, and 90-day developer runtime credentials;
+- model gateway audit records sanitized model/tool-call metadata, provider/model
+  attribution, token usage, cost source, work context, and delegated child-session
+  lineage for OpenCode-style `task` calls;
+- AI-Orch-routed OpenCode has been proven as the strongest current client lane for
+  model route, stream, cost, session lifecycle, and patch/diff evidence.
 
-### Phase 1G.3: Chat Completions MVP
+This does not mean ai-orch has the full local OpenCode Task/Read/Edit/Bash transcript.
+The gateway proves model routing and model-emitted tool-call intent. Full local tool
+transcript evidence still needs ACP hooks, MCP-routing, or sanitized client-event
+forwarding.
 
-Deliverables:
+### Remaining Compatibility Work
 
-- implement `GET /v1/models`;
-- implement non-streaming `POST /v1/chat/completions`;
-- preserve OpenAI-compatible request fields such as `tools`, `tool_choice`, `tool_calls`, `tool_call_id`, `response_format`, multimodal content arrays and provider metadata;
-- route model alias through the Governance Shell backend selector;
-- rewrite only the concrete upstream `model` field before provider forwarding;
-- return the governed alias in the response `model` field;
-- record model decision audit event;
-- prove the runtime does not receive provider keys.
+Keep this work small and provider-specific:
 
-### Phase 1G.4: Streaming MVP
+- keep OpenCode fixture tests current as OpenCode payloads change;
+- prove Bedrock and Azure AI Foundry routes with real tool-call payloads before marking
+  those enterprise routes production-ready;
+- add provider-specific compatibility fixtures for DeepSeek, OpenRouter, Anthropic,
+  Bedrock, Foundry, and GitHub-backed routes where they differ from OpenAI-compatible
+  chat/Responses;
+- add an Anthropic-native adapter only when Claude Code or Anthropic-native clients need
+  gateway-enforced model routing;
+- keep Bifrost, Bedrock, Foundry and provider credentials behind ai-orch rather than
+  exposing them directly to OpenCode.
 
-Deliverables:
+### OpenCode E2E Boundary
 
-- support `stream: true` for chat completions;
-- proxy OpenAI-compatible SSE chunks while rewriting only the chunk `model` field where present;
-- preserve tool-call deltas, reasoning deltas, provider-specific fields and usage chunks;
-- record stream start, completion and failure audit events with sanitized tool-call count/name metadata.
+The useful E2E shape is now:
 
-### Phase 1G.5: Responses API MVP
+```text
+OpenCode local workspace
+  -> ai-orch /v1 model gateway
+  -> Governance Shell policy/session/audit
+  -> Bifrost or actor-bound Copilot backend
+  -> ledger evidence for model route, usage, cost and patch/diff lifecycle
+```
 
-Deliverables:
-
-- implement non-streaming `POST /v1/responses`;
-- forward raw OpenAI-compatible Responses payloads for backends that support `/v1/responses`;
-- preserve `input`, `tools`, `tool_choice`, `include`, `store`, `reasoning`, `text`, `previous_response_id`, `prompt_cache_key` and provider metadata;
-- support Responses streaming for raw-compatible backends;
-- add response ID correlation;
-- add response usage audit records.
-
-### Phase 1G.6: Enterprise Provider Compatibility
-
-Deliverables:
-
-- verify OpenCode `v1.16.2` fixture payloads against the gateway contract;
-- prove `OpenCode -> ai-orch -> Bifrost -> Bedrock` with tool-call payloads;
-- prove `OpenCode -> ai-orch -> Bifrost or Foundry adapter -> Azure AI Foundry` with tool-call payloads;
-- keep direct Anthropic, Bedrock and Foundry SDK translation behind Bifrost or a dedicated backend adapter;
-- do not expose Bifrost, Bedrock, Foundry or provider credentials directly to OpenCode.
-
-### Phase 1M Dependency: OpenCode Managed-Provider E2E
-
-The local OpenCode E2E should not start until the compatibility gateway can prove:
-
-- runtime token works;
-- model aliases resolve through Governance Shell;
-- provider key is absent from runtime env;
-- model calls are audited;
-- ACP runtime file changes produce durable patch evidence;
-- MCP calls, when needed, use the MCP gateway route rather than the ACP session configuration.
-
-The first E2E should run OpenCode locally against a real repo or disposable worktree while routing model calls through ai-orch. Sandbox/worktree isolation remains a later risk-based mode, not the default proof of the provider endpoint lane.
+Sandbox/worktree isolation remains a risk-based mode, not the default proof of the
+provider endpoint lane.
 
 ## References
 

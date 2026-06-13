@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"time"
@@ -74,7 +76,30 @@ func (h *DispatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	gatewayToken := r.Header.Get("X-AI-Orch-Session-Token")
 	handle, err := h.dispatcher.Dispatch(runtimeCtx, sessionID, req.Agent, req.Prompt, gatewayToken)
 	if err != nil {
-		httpx.WriteJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("dispatch failed: %v", err)})
+		promptHash := sha256.Sum256([]byte(req.Prompt))
+		if _, auditErr := h.audit.Append(runtimeCtx, audit.Event{
+			EventID:            h.newID("evt"),
+			SessionID:          sessionID,
+			EventType:          "specialist.dispatch_failed",
+			Actor:              "local-dev",
+			Agent:              req.Agent,
+			Reason:             err.Error(),
+			PromptSHA256:       hex.EncodeToString(promptHash[:]),
+			Runtime:            "unavailable",
+			RuntimeStatus:      "failed_closed",
+			RawPromptStored:    false,
+			RawResponseStored:  false,
+			CorrelationSubject: "orchestrator",
+		}); auditErr != nil {
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+			return
+		}
+		httpx.WriteJSON(w, http.StatusBadGateway, map[string]any{
+			"error":      fmt.Sprintf("dispatch failed: %v", err),
+			"session_id": sessionID,
+			"agent":      req.Agent,
+			"status":     "failed_closed",
+		})
 		return
 	}
 

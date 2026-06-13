@@ -20,8 +20,11 @@ type OrchestratorClient interface {
 
 // RouteDecision is the response from the Orchestrator router.
 type RouteDecision struct {
-	Specialist string `json:"specialist"`
-	Reason     string `json:"reason"`
+	Specialist                string   `json:"specialist"`
+	Reason                    string   `json:"reason"`
+	RoutingConfidence         string   `json:"routing_confidence,omitempty"`
+	HumanConfirmationRequired bool     `json:"human_confirmation_required,omitempty"`
+	RoutingAlternates         []string `json:"routing_alternates,omitempty"`
 }
 
 // DispatchResult is the response from the Orchestrator dispatch endpoint.
@@ -170,6 +173,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Actor:              actor,
 		Agent:              decision.Specialist,
 		Reason:             decision.Reason,
+		Findings:           routingAuditFindings(decision),
 		RunID:              record.RunID,
 		PermissionMode:     record.PermissionMode,
 		ApprovalMode:       record.ApprovalMode,
@@ -192,13 +196,41 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.service.rememberEventID(sessionID, eventID)
 	h.service.rememberPrompt(sessionID, req.Prompt)
 
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"session_id":     sessionID,
 		"status":         "awaiting_confirmation",
 		"specialist":     decision.Specialist,
 		"reason":         decision.Reason,
 		"audit_event_id": eventID,
-	})
+	}
+	addRoutingResponseFields(response, decision)
+	httpx.WriteJSON(w, http.StatusOK, response)
+}
+
+func routingAuditFindings(decision RouteDecision) []string {
+	findings := []string{}
+	if decision.RoutingConfidence != "" {
+		findings = append(findings, "routing_confidence="+decision.RoutingConfidence)
+	}
+	if decision.HumanConfirmationRequired {
+		findings = append(findings, "human_confirmation_required=true")
+	}
+	if len(decision.RoutingAlternates) > 0 {
+		findings = append(findings, "routing_alternates="+strings.Join(decision.RoutingAlternates, ","))
+	}
+	return findings
+}
+
+func addRoutingResponseFields(response map[string]any, decision RouteDecision) {
+	if decision.RoutingConfidence != "" {
+		response["routing_confidence"] = decision.RoutingConfidence
+	}
+	if decision.HumanConfirmationRequired {
+		response["human_confirmation_required"] = true
+	}
+	if len(decision.RoutingAlternates) > 0 {
+		response["routing_alternates"] = decision.RoutingAlternates
+	}
 }
 
 func extractSessionID(path string, prefix string, suffix string) string {

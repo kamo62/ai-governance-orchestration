@@ -119,14 +119,19 @@ func (h *TurnsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	specialist := agent
 	reason := "follow-up turn agent override"
+	var routeDecision RouteDecision
 	if specialist == "" {
 		decision, err := h.orch.Route(r.Context(), sessionID, req.Prompt, routeCtx)
 		if err != nil {
 			httpx.WriteJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
 			return
 		}
+		routeDecision = decision
 		specialist = decision.Specialist
 		reason = decision.Reason
+	}
+	if routeDecision.HumanConfirmationRequired {
+		req.AutoConfirm = false
 	}
 
 	trust := h.service.trustMetadataFromRequest(r)
@@ -139,6 +144,7 @@ func (h *TurnsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Actor:              actor,
 		Agent:              specialist,
 		Reason:             reason,
+		Findings:           routingAuditFindings(routeDecision),
 		RunID:              record.RunID,
 		PermissionMode:     record.PermissionMode,
 		ApprovalMode:       record.ApprovalMode,
@@ -164,7 +170,7 @@ func (h *TurnsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "session status update failed"})
 			return
 		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		response := map[string]any{
 			"session_id": sessionID,
 			"status":     "awaiting_confirmation",
 			"specialist": specialist,
@@ -172,7 +178,9 @@ func (h *TurnsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"next_gate":  "confirm",
 			"sse_url":    "/v1/sessions/" + sessionID + "/events",
 			"turn":       true,
-		})
+		}
+		addRoutingResponseFields(response, routeDecision)
+		httpx.WriteJSON(w, http.StatusOK, response)
 		return
 	}
 
@@ -205,14 +213,16 @@ func (h *TurnsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.service.forgetPrompt(sessionID)
 	h.executor.RunAsync(sessionID, specialist, req.Prompt)
 
-	httpx.WriteJSON(w, http.StatusAccepted, map[string]any{
+	response := map[string]any{
 		"session_id": sessionID,
 		"status":     "running",
 		"specialist": specialist,
 		"reason":     reason,
 		"sse_url":    "/v1/sessions/" + sessionID + "/events",
 		"turn":       true,
-	})
+	}
+	addRoutingResponseFields(response, routeDecision)
+	httpx.WriteJSON(w, http.StatusAccepted, response)
 }
 
 func isTurnEligibleStatus(status string) bool {

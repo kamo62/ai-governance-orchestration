@@ -1,28 +1,31 @@
 # Local State Lifecycle
 
-This document describes the in-process state boundaries for the Phase 1 local build.
-Every mutable store is listed with its owner, TTL/eviction policy, and durable-state
-promotion criteria.
+This document describes which beta state is durable today and which state remains
+local-process-only. Every mutable store is listed with its owner, TTL/eviction policy,
+and durable-state promotion criteria.
 
 ## Purpose
 
-The first implementation is intentionally local-process-first.  Before this can become
-a team or multi-instance system, each in-memory store needs explicit TTL/eviction or
-a documented durable-store promotion path.
+The current implementation supports a local/team beta with SQLite-backed governance
+stores when `AI_ORCH_AUDIT_PATH` points at a `.db` file. Some runtime buffers remain
+intentionally process-local. Before multi-instance or production use, each remaining
+in-memory store needs explicit TTL/eviction, a durable promotion path, or a deliberate
+decision that it must stay process-local.
 
 ## State Inventory
 
-| State | Owner | Phase 1 Policy | Durable Promotion Criteria |
-|-------|-------|--------------|---------------------------|
-| Prompt cache | `SessionService.prompts` | Lazy eviction after `LocalStateTTL` (default 30 min) on read. | Move to encrypted/session-scoped store when sessions must survive restart. |
-| Patch buffer | `PatchBuffer.patches` | Lazy eviction after `defaultPatchBufferTTL` (30 min) on read. | Move to encrypted object/blob storage when patches must survive restart. |
-| Patch known set | `SessionService.patches` | Lazy eviction after `LocalStateTTL` (30 min) on read. | Merge with durable patch metadata store. |
+| State | Owner | Current beta policy | Durable Promotion Criteria |
+|-------|-------|---------------------|---------------------------|
+| Prompt cache | `SessionService.prompts` | Lazy eviction after `LocalStateTTL` (default 30 min) on read; process-local. | Move to encrypted/session-scoped store only if prompts must survive restart. |
+| Patch buffer | `PatchBuffer.patches` | Lazy eviction after `defaultPatchBufferTTL` (30 min) on read; process-local. | Move to encrypted object/blob storage when full patch payloads must survive restart. |
+| Patch known set | `SessionService.patches` | Lazy eviction after `LocalStateTTL` (default 30 min) on read; process-local helper state. | Merge with durable patch metadata store if patch lookup must survive restart. |
 | SSE history | `EventStore.history` | Bounded to 128 events per session; closed-session eviction capped at 256 sessions. | Move to pub/sub with replay log or Redis stream for multi-instance SSE. |
-| Cancellation map | `SessionService.cancels` | Lazy eviction after `LocalStateTTL` (30 min); entries deleted on explicit cancel. | No durability needed; cancel funcs are inherently process-local. |
-| Audit-link state | `SessionService.lastEventID` | In-memory only; reset on restart breaks `parent_event_id` linkage. | Move to audit hash-chain/store-backed state before multi-instance use. |
-| Kill-switch state | `MemoryKillSwitch.state` | In-memory only; lost on restart. | Move to Redis or shared KV with pub/sub propagation before team use. |
-| OAuth token store | `oauth.MemoryTokenStore.tokens` | In-memory only; tokens have `ExpiresAt` for expiration. | Replace with secure vault or encrypted DB before real `oauth-user` MCPs. |
-| Composition store | `composition.CompositionStore` | In-memory only; lost on restart. | Durable workflow store (Postgres/DynamoDB) before team use. |
+| Cancellation map | `SessionService.cancels` | Lazy eviction after `LocalStateTTL` (default 30 min); entries deleted on explicit cancel. | No durability needed; cancel funcs are inherently process-local. |
+| Audit-link state | `SessionService.lastEventID` | Process-local parent-event helper; durable audit events and hashes remain in the audit store. | Derive latest parent linkage from the audit store before multi-instance use. |
+| Kill-switch state | `MemoryKillSwitch` / `SQLiteKillSwitch` | SQLite-backed when `AI_ORCH_AUDIT_PATH` is a `.db`; memory-only fallback otherwise. | Add propagation/watch semantics for multi-instance deployments. |
+| OAuth/Copilot token store | `oauth.MemoryTokenStore` / encrypted SQLite token store | Encrypted SQLite when a database path and encryption key are configured; memory-only fallback for local ephemeral runs. | Move to a managed secrets store if organisational secret lifecycle demands it. |
+| Developer runtime credentials | `DeveloperCredentialStore` | SQLite stores token hashes, actor/client/device binding, issue/expiry/revocation state; default expiry is 90 days. | Add operator rotation/runbook automation and optional external identity hooks before production. |
+| Composition store | `composition.CompositionStore` | In-memory only; lost on restart. | Durable workflow store before team workflows depend on composition history. |
 | Session cache | Planned | Not yet implemented. | Session-scoped cache entries scoped by actor/classification/repo/workflow. |
 
 ## TTL/Eviction Details
@@ -61,22 +64,20 @@ a documented durable-store promotion path.
 
 ## Audit Hash Chain Limitations
 
-The `ChainAppender` keeps an in-memory `lastHash` cache, but it refreshes the latest
-persisted session hash before every append.  That keeps the local Governance Shell and
-Orchestrator processes on one sequential chain when they share the same audit store.
+The audit chain is tamper-evident, not tamper-proof. On the SQLite path, audit append
+uses persisted per-session chain heads so an append can compare the expected previous
+hash and update the head in the same store operation. Chain-aware retention also keeps
+the verification boundary explicit.
 
-The remaining Phase 1 limitation is atomicity across concurrent multi-instance writes:
-two separate processes could still read the same latest hash at the same time and append
-parallel next events.  This is acceptable for the local POC because:
+Remaining limitations:
 
-1. The audit store itself is durable (JSONL or SQLite).
-2. `VerifyChain` validates the normal local sequential session flow.
-3. The primary threat model is tamper detection for local development and smoke tests.
-
-For multi-instance or long-running deployments, the promotion path is:
-- Use a dedicated `audit_chain` table that stores and updates the latest hash per
-  session inside the same transaction as the event append, OR
-- Route all audit writes for a session through one durable audit writer.
+1. JSONL and other non-compare-and-append stores are still local-process friendly, not
+   a multi-instance audit writer.
+2. Multi-instance production needs a single durable writer boundary, a database tier
+   with the same compare-and-update semantics, or external checkpoint anchoring.
+3. The chain proves event continuity from the stored data; it does not stop an operator
+   with full host/database control from replacing both data and checkpoint state unless
+   checkpoints are anchored outside that trust boundary.
 
 ## Configuration
 

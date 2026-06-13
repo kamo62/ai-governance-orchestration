@@ -12,6 +12,9 @@ export interface GovernedRun {
     status: string;
     specialist: string;
     reason: string;
+    routing_confidence?: string;
+    human_confirmation_required?: boolean;
+    routing_alternates?: string[];
     next_gate: string;
     sse_url: string;
 }
@@ -371,6 +374,9 @@ export interface TurnResponse {
     status: string;
     specialist?: string;
     reason?: string;
+    routing_confidence?: string;
+    human_confirmation_required?: boolean;
+    routing_alternates?: string[];
     next_gate?: string;
     sse_url?: string;
     turn?: boolean;

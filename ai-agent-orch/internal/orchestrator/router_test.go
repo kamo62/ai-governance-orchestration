@@ -99,6 +99,49 @@ func TestRouterUsesSpecificBranchWorkTypes(t *testing.T) {
 	}
 }
 
+func TestRouterMarksDefaultSelectionLowConfidence(t *testing.T) {
+	router := NewRouter(RouterConfig{
+		CatalogRoot: filepath.Join("..", ".."),
+	})
+
+	decision, err := router.SelectSpecialist("Help me with this change.", SessionContext{})
+	if err != nil {
+		t.Fatalf("SelectSpecialist returned error: %v", err)
+	}
+	if decision.Specialist != "code-review" {
+		t.Fatalf("expected default code-review specialist, got %q", decision.Specialist)
+	}
+	if decision.RoutingConfidence != "low" {
+		t.Fatalf("expected low routing confidence, got %q", decision.RoutingConfidence)
+	}
+	if !decision.HumanConfirmationRequired {
+		t.Fatal("expected low-confidence default route to require human confirmation")
+	}
+}
+
+func TestRouterMarksKeywordConflictsLowConfidence(t *testing.T) {
+	router := NewRouter(RouterConfig{
+		CatalogRoot: filepath.Join("..", ".."),
+	})
+
+	decision, err := router.SelectSpecialist("Review this regression diff before release.", SessionContext{})
+	if err != nil {
+		t.Fatalf("SelectSpecialist returned error: %v", err)
+	}
+	if decision.Specialist != "unit-tests" {
+		t.Fatalf("expected deterministic first keyword match to stay unit-tests, got %q", decision.Specialist)
+	}
+	if decision.RoutingConfidence != "low" {
+		t.Fatalf("expected conflicting keyword route to be low confidence, got %q", decision.RoutingConfidence)
+	}
+	if !decision.HumanConfirmationRequired {
+		t.Fatal("expected conflicting keyword route to require human confirmation")
+	}
+	if len(decision.RoutingAlternates) == 0 {
+		t.Fatalf("expected routing alternates for conflict, got %#v", decision)
+	}
+}
+
 func TestRouteEndpointWritesAuditWithoutRawPrompt(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	router := NewRouter(RouterConfig{

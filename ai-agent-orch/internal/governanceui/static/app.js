@@ -29,6 +29,7 @@
     patchCount: document.getElementById("patchCount"),
     versionBadge: document.getElementById("versionBadge"),
     gatewayList: document.getElementById("gatewayList"),
+    providerStatusList: document.getElementById("providerStatusList"),
     backendCommandList: document.getElementById("backendCommandList"),
     copilotEnrollments: document.getElementById("copilotEnrollments"),
     sessionList: document.getElementById("sessionList"),
@@ -260,7 +261,37 @@
       el.gatewayList.appendChild(card);
     });
     loadBackends().catch((err) => log("backend commands unavailable: " + err.message));
+    loadProviderStatus().catch((err) => {
+      if (el.providerStatusList) emptyList(el.providerStatusList, "Provider readiness requires operator token");
+      log("provider readiness unavailable: " + err.message);
+    });
     loadCopilotFleet().catch(() => {});
+  }
+
+  async function loadProviderStatus() {
+    if (!el.providerStatusList) return;
+    if (!state.adminToken.trim()) {
+      emptyList(el.providerStatusList, "Operator token required");
+      return;
+    }
+    const data = await api("/v1/admin/providers/status", { headers: adminHeaders() });
+    const providers = Array.isArray(data.providers) ? data.providers : [];
+    el.providerStatusList.innerHTML = "";
+    if (!providers.length) {
+      emptyList(el.providerStatusList, "No provider readiness returned");
+      return;
+    }
+    providers.forEach((provider) => {
+      const card = document.createElement("article");
+      card.className = "gateway-card" + (provider.configured ? " active" : "");
+      const enrolments = provider.enrollment_count ? " / enrollments " + provider.enrollment_count : "";
+      card.innerHTML = [
+        "<strong>" + escapeHtml(provider.label || provider.id) + "</strong>",
+        "<p>" + escapeHtml(provider.state || "-") + enrolments + "</p>",
+        "<p>" + escapeHtml(provider.detail || provider.mode || "-") + "</p>",
+      ].join("");
+      el.providerStatusList.appendChild(card);
+    });
   }
 
   async function loadBackends() {

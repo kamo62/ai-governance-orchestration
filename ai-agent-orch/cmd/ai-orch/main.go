@@ -132,6 +132,10 @@ func main() {
 		}
 	case "copilot":
 		handleCopilot(ctx, cfg, os.Args[2:])
+	case "developer":
+		handleDeveloper(ctx, cfg, os.Args[2:])
+	case "bench":
+		handleBench(ctx, cfg, os.Args[2:])
 	case "opencode":
 		if len(os.Args) > 2 && openCodeToolSubcommands[os.Args[2]] {
 			handleOpenCodeTool(os.Args[2:])
@@ -163,8 +167,10 @@ Usage:
   ai-orch mcp start [--transport http|stdio] [--host 127.0.0.1] [--port 18081]
   ai-orch mcp install --client <vscode|cline|claude-code|codex> [--force]
   ai-orch mcp doctor
+  ai-orch developer enroll --client opencode [--scope global|project]
   ai-orch copilot login|status|models|logout|refresh [--local]
   ai-orch copilot smoke --local [--model <id>] [--prompt <text>]
+  ai-orch bench run --workflow <workflow> --models all-enabled
   ai-orch opencode [--governance-agent <name>] [--governance-classification <level>] [--governance-prompt <text>] [-- <opencode args...>]
 
 Environment:

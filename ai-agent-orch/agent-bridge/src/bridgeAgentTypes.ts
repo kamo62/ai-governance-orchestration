@@ -86,6 +86,9 @@ export interface PendingRun {
     sessionId: string;
     specialist: string;
     reason: string;
+    routingConfidence?: string;
+    humanConfirmationRequired?: boolean;
+    routingAlternates?: string[];
     userIntent: string;
 }
 

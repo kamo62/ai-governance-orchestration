@@ -1,8 +1,8 @@
 # Governance Insight And Memory Direction
 
-Status: research-backed proposal, not yet implemented.
+Status: partially implemented beta foundation; insight projection and recall remain future work.
 
-Checked: 2026-06-01.
+Checked: 2026-06-13.
 
 ## Purpose
 
@@ -16,10 +16,12 @@ runtime surface or a second source of truth.
 
 ## Recommendation
 
-Use SQLite for Phase 1G and Phase 2 local/team hardening until the system clearly
-outgrows it.
+Keep using SQLite for the local/team beta until the system clearly outgrows it.
+A later Postgres path should be available for backup/restore, reporting scale, or
+organisation-wide multi-writer requirements, but it should not be added before the
+beta needs it.
 
-Build in this order:
+Build remaining capability in this order:
 
 1. Structured governance insight with normal SQLite tables, views, and queries.
 2. Keyword recall with SQLite FTS5 over approved unstructured evidence.
@@ -35,18 +37,23 @@ workflow IDs, use-case IDs, and maturity export records.
 
 ## Current Repo Baseline
 
-The repo currently uses:
+As of `v0.21.1-beta`, the repo uses:
 
-- `modernc.org/sqlite` as the SQLite driver.
-- SQLite WAL mode for audit and session stores.
-- SQLite as the durable local store for audit and session ownership.
-- In-memory registry records for Phase 1F use-case, workflow, context-manifest,
-  cache-outcome, evidence, and maturity export APIs.
+- `modernc.org/sqlite` as the cgo-free SQLite driver.
+- SQLite WAL mode for the beta audit/session database.
+- Durable SQLite audit events with hash-chain state when `AI_ORCH_AUDIT_PATH` points
+  at a `.db` file.
+- Durable SQLite session ownership, registry records, model-pricing rows, developer
+  runtime credentials, and provider-facing governance records on the beta path.
+- Encrypted SQLite Copilot/OAuth token storage when a database path and encryption key
+  are configured; memory fallback remains for local-only or deliberately ephemeral runs.
+- In-memory buffers for prompts, patches, SSE replay, cancellation handles, and other
+  process-local state that should not yet be treated as durable governance memory.
 
-The driver choice matters. `modernc.org/sqlite` is cgo-free and fits the current
-Docker and Go-first shape. It should remain the default unless a future semantic
-recall spike proves that native extension support is worth the added build and
-deployment complexity.
+The driver choice still matters. `modernc.org/sqlite` fits the current Docker and
+Go-first shape. It should remain the default unless a future semantic recall spike
+proves that native extension support is worth the added build and deployment
+complexity.
 
 ## SQLite Behaviour To Design Around
 
@@ -60,8 +67,10 @@ The local limits are also clear:
 - WAL shared-memory behaviour assumes processes accessing the database are on the same
   machine.
 - Multi-instance writes need a proper durable writer boundary or a database tier.
-- Audit hash-chain state needs an atomic latest-hash update before this becomes a
-  multi-instance deployment.
+- SQLite audit hash-chain appends now compare and update the latest per-session head in
+  one store operation. Multi-instance deployments still need an explicit single-writer
+  boundary, external checkpointing, or a database tier before claiming tamper-proof
+  durability.
 
 So the rule is:
 
@@ -70,10 +79,10 @@ multi-region, multi-writer, organisation-scale governance.
 
 ## Structured Insight First
 
-Phase 1G should add a Governance Insight Projection.
+The next reporting step is a Governance Insight Projection.
 
-This should use normal SQLite schema and SQL queries over governed data. No embeddings,
-no vector store, no extra service.
+This should use normal SQLite schema, SQL queries, and existing governed data. No
+embeddings, no vector store, no extra service.
 
 Useful first outputs:
 
@@ -244,9 +253,21 @@ backend is attractive for small local models, but the spike must measure:
 Candidate model dimensions should be locked before any vector table is created. A
 model change means rebuilding the entire vector projection.
 
-## Proposed Phases
+## Proposed Remaining Phases
 
-### Phase 1G: Governance Insight Projection
+### Implemented Beta Foundation
+
+Already present in `v0.21.1-beta`:
+
+- SQLite-backed audit, sessions, registry records, model-pricing rows, and developer
+  runtime credential hashes.
+- Chain-aware audit append and retention on the SQLite path.
+- Reporting-friendly records for model routing, token usage, cost source, provider
+  readiness, evidence, benchmark runs, and maturity exports.
+- A Governance UI that can inspect system posture, providers, sessions, audit events,
+  evidence, costs, and workflow records.
+
+### Phase 1G.x: Governance Insight Projection
 
 Deliverables:
 

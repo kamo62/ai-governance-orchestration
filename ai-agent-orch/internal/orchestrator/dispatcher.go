@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,14 +115,18 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 		return echo.StartSession(ctx, sessionCfg)
 	}
 
+	var runtimeFailures []string
 	if agentCfg.Runtime == "opencode" {
 		if runtime, ok := d.runtimes["opencode"]; ok {
 			handle, err := runtime.StartSession(ctx, sessionCfg)
 			if err == nil {
 				return handle, nil
 			}
+			runtimeFailures = append(runtimeFailures, "opencode: "+err.Error())
 			// ACP failed, log and try fallback.
 			fmt.Fprintf(os.Stderr, "ACP runtime failed for %q: %v, trying fallback\n", agentName, err)
+		} else {
+			runtimeFailures = append(runtimeFailures, "opencode: runtime not registered")
 		}
 	}
 
@@ -130,10 +135,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 		return runtime.StartSession(ctx, sessionCfg)
 	}
 
-	// Ultimate fallback: EchoRuntime requires no external APIs.
-	// This allows the full chain to work in local Phase 1 without API keys.
-	echo := dispatch.NewEchoRuntime()
-	return echo.StartSession(ctx, sessionCfg)
+	msg := fmt.Sprintf("no real runtime available for agent %q; configure OpenCode/ACP, AI_ORCH_MODEL_PROXY_URL, OPENROUTER_API_KEY, or set AI_ORCH_BETA_SMOKE=true for explicit EchoRuntime smoke", agentName)
+	if len(runtimeFailures) > 0 {
+		msg += "; attempted " + strings.Join(runtimeFailures, "; ")
+	}
+	return nil, errors.New(msg)
 }
 
 func (d *Dispatcher) validateAllowedTools(agentName string, tools []string, permissions map[string]string) error {

@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/envx"
 )
 
 type openCodeWrapperOptions struct {
@@ -48,6 +50,12 @@ They do not need to copy session IDs or gateway tokens.`)
 		fmt.Fprintf(os.Stderr, "opencode binary not found: %v\n", err)
 		os.Exit(2)
 	}
+	if os.Getenv("AI_ORCH_OPENCODE_REFRESH_ON_LAUNCH") != "0" {
+		scope := envx.OrDefault("AI_ORCH_OPENCODE_SCOPE", "global")
+		if err := refreshOpenCodeConfig(ctx, cfg, cfg.ModelGatewayURL, []string{"--scope", scope}); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: AI-Orch-routed OpenCode config refresh failed; launching with existing config: %v\n", err)
+		}
+	}
 	if opts.SessionPrompt == "" {
 		opts.SessionPrompt = defaultOpenCodeSessionPrompt(opts)
 	}
@@ -57,14 +65,14 @@ They do not need to copy session IDs or gateway tokens.`)
 	}
 	session, err := createOpenCodeGovernedSession(ctx, cfg, opts)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "create governed OpenCode session failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "create AI-Orch-routed OpenCode session failed: %v\n", err)
 		os.Exit(2)
 	}
 	runtimeToken := cfg.RuntimeToken
 	if runtimeToken == "" {
 		runtimeToken = "local-runtime-token"
 	}
-	fmt.Fprintf(os.Stderr, "ai-orch governed OpenCode session: %s\n", session.SessionID)
+	fmt.Fprintf(os.Stderr, "AI-Orch-routed OpenCode session: %s\n", session.SessionID)
 	if session.Specialist != "" {
 		fmt.Fprintf(os.Stderr, "ai-orch routed specialist suggestion: %s\n", session.Specialist)
 	}
@@ -148,12 +156,12 @@ func defaultOpenCodeSessionPrompt(opts openCodeWrapperOptions) string {
 		command = "opencode " + strings.Join(opts.OpenCodeArgs, " ")
 	}
 	if opts.ModelOnly {
-		return "Governed OpenCode model-only session: " + command
+		return "AI-Orch-routed OpenCode model-only session: " + command
 	}
 	if opts.GovernanceAgent == defaultOpenCodeLeadAgent {
 		return "Governance lead for OpenCode: clarify intent, classify risk, attach context, and choose a specialist before delivery. Session: " + command
 	}
-	return "Governed OpenCode specialist session: " + command
+	return "AI-Orch-routed OpenCode specialist session: " + command
 }
 
 func createOpenCodeGovernedSession(ctx context.Context, cfg Config, opts openCodeWrapperOptions) (openCodeSessionTokens, error) {

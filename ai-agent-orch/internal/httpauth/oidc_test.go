@@ -365,6 +365,10 @@ func TestOIDCTokenValidator_ValidatesES256IDToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate ec key: %v", err)
 	}
+	pubBytes, err := key.PublicKey.Bytes()
+	if err != nil {
+		t.Fatalf("encode ec public key: %v", err)
+	}
 
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -379,8 +383,8 @@ func TestOIDCTokenValidator_ValidatesES256IDToken(t *testing.T) {
 						"kid": "ec-test-key",
 						"alg": "ES256",
 						"crv": "P-256",
-						"x":   base64.RawURLEncoding.EncodeToString(key.PublicKey.X.Bytes()),
-						"y":   base64.RawURLEncoding.EncodeToString(key.PublicKey.Y.Bytes()),
+						"x":   base64.RawURLEncoding.EncodeToString(pubBytes[1:33]),
+						"y":   base64.RawURLEncoding.EncodeToString(pubBytes[33:65]),
 					},
 				},
 			})
