@@ -9,10 +9,20 @@ This document freezes the **beta** integration surface for external clients. Bre
 | Dev | `Authorization: Bearer <AI_ORCH_DEV_TOKEN>` | Sessions, runs, audit lookup, registry writes |
 | Admin | `Authorization: Bearer <AI_ORCH_ADMIN_TOKEN>` | `/v1/admin/*` |
 | Service | `Authorization: Bearer <AI_ORCH_SERVICE_TOKEN>` | Orchestrator internal calls |
-| Runtime | `Authorization: Bearer <AI_ORCH_RUNTIME_TOKEN>` | Model gateway `/v1/*` |
-| Runtime composite | `Authorization: Bearer <AI_ORCH_RUNTIME_TOKEN>.<actor>` | Model gateway `/v1/*` for clients that cannot send custom headers (for example Cline); the actor suffix supplies auto-session identity. Actor labels are limited to 64 chars of `[A-Za-z0-9.@_-]` |
+| Runtime | `Authorization: Bearer <AI_ORCH_RUNTIME_TOKEN>` | Model gateway `/v1/*` local/shared beta fallback |
+| Runtime composite | `Authorization: Bearer <AI_ORCH_RUNTIME_TOKEN>.<actor>` | Model gateway `/v1/*` for legacy clients that cannot send custom headers; the actor suffix supplies auto-session identity. Actor labels are limited to 64 chars of `[A-Za-z0-9.@_-]` |
+| Developer runtime credential | `Authorization: Bearer <air_...>` | Model gateway `/v1/*` for enrolled developers; credentials are actor/client/device-hash bound, 90-day by default, revocable server-side, and stored only as hashes |
 
 Optional OIDC: when `OIDC_ISSUER_URL` and `OIDC_CLIENT_ID` are set on the Governance Shell, dev endpoints accept validated ID tokens instead of the dev token.
+
+
+## Developer onboarding and runtime credentials
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/v1/developer/runtime-credential` | Issue a 90-day actor-bound AI-Orch runtime credential after the current actor has a server-side Copilot enrolment. Request body accepts `client` and optional `device_name`; response returns `runtime_token`, `actor_subject`, `credential_id`, `device_name_hash`, `issued_at`, `expires_at`, and `expires_in_days`. It never returns provider tokens or raw device names. |
+
+Normal AI-Orch-routed OpenCode setup uses `ai-orch developer enroll --client opencode`, which calls the Copilot enrolment endpoints, requests this runtime credential, installs the `provider.ai-orch` OpenCode block, and can install a user-level refresh job. `ai-orch opencode refresh` repeats only the credential/model-list refresh and preserves unrelated OpenCode providers/settings.
 
 ## Governed run (primary client entry)
 
@@ -31,7 +41,7 @@ Request (required fields):
 }
 ```
 
-Response includes `run_id`, `session_id`, `specialist`, `status`, `events_url`, and `gateway_token`.
+Response includes `run_id`, `session_id`, `specialist`, `status`, `sse_url`, `gateway_token`, and router confidence metadata: `routing_confidence`, `human_confirmation_required`, and `routing_alternates`.
 
 `gateway_token` is the per-session model gateway secret. It is returned exactly once at creation; the shell stores only its SHA-256 hash. Clients must send it as `X-AI-Orch-Session-Token` on every model gateway call for that session. `POST /v1/sessions` returns the same field. Sessions created before token binding carry no hash and remain callable with the shared runtime token alone. Server-side runtimes (the ACP lane) receive a separately minted runtime token at dispatch; the gateway accepts either secret for the session.
 
@@ -45,7 +55,7 @@ When `AI_ORCH_REQUIRE_WORK_ITEM=true`, the shell rejects governed runs unless th
 | `POST` | `/v1/sessions` | Create session (legacy; prefer `/v1/runs`) |
 | `POST` | `/v1/sessions/{id}/messages` | Route prompt to specialist (initial `created` state only) |
 | `POST` | `/v1/sessions/{id}/turns` | Same-session follow-up dispatch (`done` / `failed` / `patch_ready`) |
-| `POST` | `/v1/sessions/{id}/confirm` | Confirm routed specialist |
+| `POST` | `/v1/sessions/{id}/confirm` | Confirm routed specialist. If the route returned `human_confirmation_required=true`, the request body must include `human_confirmed:true`; otherwise the session stays `awaiting_confirmation` with `409`. In the beta this is an explicit confirmation marker, not cryptographic proof of a human identity |
 | `GET` | `/v1/sessions/{id}/events` | SSE stream (`Accept: text/event-stream`) |
 | `GET` | `/v1/sessions/{id}/patches/{patchId}` | Fetch staged patch payload |
 | `POST` | `/v1/sessions/{id}/patch-decision` | Record `applied`, `partially_applied`, or `rejected` |
@@ -85,6 +95,7 @@ MCP tool `start_governed_run` mirrors `POST /v1/runs` for MCP-native clients.
 | `GET` | `/v1/system/status` | Version, backend, gateway posture |
 | `GET` | `/v1/backends` | Current backend, available backend options and compose commands |
 | `POST` | `/v1/backends` | Admin-only backend start/stop when backend control is enabled |
+| `GET` | `/v1/admin/providers/status` | Admin-only provider readiness summary for OpenRouter, Azure AI Foundry, Bedrock, OpenAI, Anthropic, DeepSeek and Copilot enrolments. Returns configured/missing state only; no secret values. |
 | `POST` | `/v1/copilot/login/start` | Start GitHub Copilot device auth for the current actor; returns `login_id`, `user_code`, `verification_uri`, `expires_in`, `interval` |
 | `GET` | `/v1/copilot/login/{id}` | Poll Copilot device auth status; returns `done`, `error`, `github_login`. Login state is actor-scoped and pruned after the device window |
 | `GET` | `/v1/copilot/status` | Copilot token status for current actor: `configured`, `github_login`, `token_fingerprint`, `refresh_configured`, `access_expires_at` (zero time means GitHub reported no expiry) |
@@ -126,12 +137,15 @@ Durable audit events are stored as full JSON payloads and indexed for common rep
 
 Runtime execution emits durable audit events for:
 
+- `specialist.dispatch_failed` when dispatch fails closed before a real runtime starts;
 - `runtime.started`;
 - `runtime.acp.permission`;
 - `runtime.acp.file_write`;
 - `patch.proposed`;
 - `runtime.done`;
 - `runtime.failed`.
+
+EchoRuntime is available only for explicit beta smoke runs with `AI_ORCH_BETA_SMOKE=true`. Normal dispatch fails closed when neither OpenCode/ACP nor a direct/provider-backed runtime is available.
 
 Model gateway audit events include session context when available: agent, classification, run ID, permission mode, approval mode, workspace mode, work item, branch, commit SHA and actor hints. Raw prompts and raw responses remain hash-only unless a future policy explicitly enables raw storage.
 
@@ -154,6 +168,8 @@ Runtime patch proposals use JSON (no Markdown fences):
 ## Beta guarantees
 
 - Fail-closed policy and auth errors return `4xx` with JSON `error` fields.
+- Runtime misconfiguration does not fall through to fake execution; EchoRuntime requires explicit `AI_ORCH_BETA_SMOKE=true`.
+- Router default/miss and conflicting keyword decisions are marked low confidence and require explicit `human_confirmed:true` confirmation before dispatch.
 - Audit events use hash chaining; raw prompts are not returned from audit lookup APIs.
 - Trust labels (`gateway_enforced`, `managed_client`, `self_reported`) are reporting metadata only.
 

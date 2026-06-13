@@ -32,12 +32,13 @@ func GenerateOpenCodeConfig(gatewayURL string) map[string]any {
 }
 
 type OpenCodeConfigOptions struct {
-	GatewayURL         string
-	RuntimeToken       string
-	ActorSubject       string
-	Classification     string
-	UseEnvPlaceholders bool
-	DiscoveredModels   []OpenCodeProviderModel
+	GatewayURL          string
+	RuntimeToken        string
+	ActorSubject        string
+	Classification      string
+	UseEnvPlaceholders  bool
+	DiscoveredModels    []OpenCodeProviderModel
+	UseDiscoveredModels bool
 }
 
 type OpenCodeProviderModel struct {
@@ -112,6 +113,7 @@ func installOpenCodeConfig(gatewayURL string, args []string) error {
 			fmt.Fprintf(os.Stderr, "warning: could not import dynamic gateway models for OpenCode config: %v\n", discoverErr)
 		} else {
 			opts.DiscoveredModels = discovered
+			opts.UseDiscoveredModels = true
 		}
 	}
 	merged, changed, err := mergeOpenCodeConfigWithOptions(existing, opts, *force)
@@ -477,11 +479,11 @@ func aiOrchProviderConfig(opts OpenCodeConfigOptions) map[string]any {
 				"X-AI-Orch-Classification": classification,
 			},
 		},
-		"models": openCodeProviderModels(opts.DiscoveredModels),
+		"models": openCodeProviderModels(opts.DiscoveredModels, opts.UseDiscoveredModels),
 	}
 }
 
-func openCodeProviderModels(discovered []OpenCodeProviderModel) map[string]any {
+func openCodeProviderModels(discovered []OpenCodeProviderModel, useDiscovered bool) map[string]any {
 	staticModels := map[string]any{
 		"coding-gpt55": map[string]any{
 			"name": "Governed GPT-5.5 Capability Route",
@@ -511,7 +513,7 @@ func openCodeProviderModels(discovered []OpenCodeProviderModel) map[string]any {
 			"name": "Governed Coding Economy",
 		},
 	}
-	if len(discovered) == 0 {
+	if !useDiscovered {
 		return staticModels
 	}
 	models := map[string]any{}
@@ -700,6 +702,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 var openCodeToolSubcommands = map[string]bool{
 	"generate-config": true,
 	"install-config":  true,
+	"refresh":         true,
 	"verify":          true,
 	"run":             true,
 	"e2e":             true,
@@ -708,7 +711,7 @@ var openCodeToolSubcommands = map[string]bool{
 
 func handleOpenCodeTool(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: ai-orch opencode <generate-config|install-config|verify|run|e2e|gateway-smoke>")
+		fmt.Fprintln(os.Stderr, "usage: ai-orch opencode <generate-config|install-config|refresh|verify|run|e2e|gateway-smoke>")
 		os.Exit(1)
 	}
 
@@ -736,6 +739,12 @@ func handleOpenCodeTool(args []string) {
 	case "install-config":
 		if err := installOpenCodeConfig(gatewayURL, args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "install OpenCode config failed: %v\n", err)
+			os.Exit(2)
+		}
+
+	case "refresh":
+		if err := refreshOpenCodeConfig(context.Background(), loadConfig(), gatewayURL, args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "refresh AI-Orch-routed OpenCode config failed: %v\n", err)
 			os.Exit(2)
 		}
 

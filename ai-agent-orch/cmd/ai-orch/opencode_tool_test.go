@@ -113,8 +113,9 @@ func TestGenerateOpenCodeConfig(t *testing.T) {
 
 func TestGenerateOpenCodeConfigIncludesDiscoveredModels(t *testing.T) {
 	config := GenerateOpenCodeConfigWithOptions(OpenCodeConfigOptions{
-		GatewayURL:         "http://127.0.0.1:18082",
-		UseEnvPlaceholders: true,
+		GatewayURL:          "http://127.0.0.1:18082",
+		UseEnvPlaceholders:  true,
+		UseDiscoveredModels: true,
 		DiscoveredModels: []OpenCodeProviderModel{
 			{ID: "copilot-claude-opus-4.8", Name: "Governed Copilot Claude Opus 4.8"},
 			{ID: "coding-fast", Name: "Should not replace static label"},
@@ -136,6 +137,21 @@ func TestGenerateOpenCodeConfigIncludesDiscoveredModels(t *testing.T) {
 	}
 	if _, ok := models["coding-balanced"]; ok {
 		t.Fatalf("did not expect undiscovered static model after live import, got %#v", models["coding-balanced"])
+	}
+}
+
+func TestGenerateOpenCodeConfigWithEmptyLiveDiscoveryDoesNotAdvertiseStaticAliases(t *testing.T) {
+	config := GenerateOpenCodeConfigWithOptions(OpenCodeConfigOptions{
+		GatewayURL:          "http://127.0.0.1:18082",
+		UseEnvPlaceholders:  true,
+		UseDiscoveredModels: true,
+		DiscoveredModels:    nil,
+	})
+
+	aiOrch := config["provider"].(map[string]any)["ai-orch"].(map[string]any)
+	models := aiOrch["models"].(map[string]any)
+	if len(models) != 0 {
+		t.Fatalf("expected empty live model list to stay empty, got %#v", models)
 	}
 }
 

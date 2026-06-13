@@ -4,7 +4,7 @@ Config: `./agent.config.yaml`
 
 ## Goal
 
-Start a governed OpenCode conversation before any delivery specialist acts.
+Start an AI-Orch-routed OpenCode conversation before any delivery specialist acts.
 
 ## Use When
 

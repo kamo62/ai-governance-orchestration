@@ -20,6 +20,19 @@ The Governance Shell does not need the source tree. It needs session identity, m
 
 This keeps the system scalable across many developers because code execution stays close to the developer workspace, CI workspace or approved sandbox. The central system governs the boundary instead of becoming a central source-code access service.
 
+## Status As Of v0.21.2-beta
+
+AI-Orch-routed OpenCode is the strongest current client path. It works for the model
+gateway lane: model route, provider/backend attribution, streaming, token usage, cost,
+session lifecycle, and patch/diff evidence. It also records model-emitted tool-call
+names and delegated child-session lineage when OpenCode asks for a `task` tool.
+
+The remaining observability gap is the full local OpenCode Task/Read/Edit/Bash
+transcript. ai-orch does not automatically see that transcript unless those actions
+cross ACP hooks, the MCP gateway, or a deliberate sanitized client-event forwarding path.
+Cline and other OpenAI-compatible clients remain plausible routes, but they are less
+proven than OpenCode in the current beta.
+
 ## Source Check
 
 Checked on 2026-06-04:
@@ -109,11 +122,13 @@ The Shell should resolve use-case records, workflow rules, context manifests, po
 
 The prompt should carry only the task, bounded working context and references the runtime actually needs.
 
-## OpenCode E2E Test Target
+## OpenCode E2E Current Posture
 
-The first end-to-end runtime test should be local OpenCode, not a central hosted runtime.
+The first end-to-end runtime target is still local OpenCode, not a central hosted
+runtime. The beta now proves the provider-endpoint lane; the remaining work is stronger
+local tool transcript capture.
 
-Target flow:
+Current target flow:
 
 ```text
 start governed run
@@ -130,9 +145,15 @@ start governed run
 
 Use `/Users/kamogelo/Code/ado_scripts` as a realistic local repo target, but run the first write test against a disposable worktree, the `opencode-sandbox-workspace` Docker volume, or a deliberately temporary file so existing work is not disturbed.
 
-The E2E should have two steps:
+The E2E story has two evidence levels:
 
-1. **Read-only model-routing proof.** OpenCode runs a non-mutating review or explanation prompt. Success means ai-orch audit sees the model call and provider route.
-2. **Patch proof.** OpenCode changes a disposable file or worktree. Success means ai-orch captures the diff/patch metadata, buffers the patch, records a human decision and keeps raw secrets out of audit.
+1. **Read-only model-routing proof.** This is the strongest current path: OpenCode runs
+   a non-mutating review or explanation prompt and ai-orch audit sees the model call,
+   provider route, usage, cost and session lifecycle.
+2. **Patch proof.** OpenCode changes a disposable file or worktree and ai-orch records
+   patch/diff metadata and the human decision path. This is useful evidence, but it is
+   still not the same as a complete local Task/Read/Edit/Bash transcript.
 
-This proves the useful organisational shape: developers keep their existing working style, but governed model traffic and evidence cross ai-orch.
+This proves the useful organisational shape: developers keep their existing working
+style, while model traffic and evidence cross ai-orch. Full local tool transcript
+evidence needs ACP, MCP or client-event forwarding.

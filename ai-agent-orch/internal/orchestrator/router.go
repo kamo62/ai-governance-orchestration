@@ -54,8 +54,11 @@ type RouteRequest struct {
 }
 
 type RouteDecision struct {
-	Specialist string `json:"specialist"`
-	Reason     string `json:"reason"`
+	Specialist                string   `json:"specialist"`
+	Reason                    string   `json:"reason"`
+	RoutingConfidence         string   `json:"routing_confidence,omitempty"`
+	HumanConfirmationRequired bool     `json:"human_confirmation_required,omitempty"`
+	RoutingAlternates         []string `json:"routing_alternates,omitempty"`
 	// Classification is advisory governance-router metadata (task type, workflow,
 	// risk, model route, evidence). It enriches the decision for audit and client
 	// display. It never changes specialist selection and is not authoritative for
@@ -65,12 +68,15 @@ type RouteDecision struct {
 }
 
 type RouteResponse struct {
-	SessionID      string             `json:"session_id"`
-	Status         string             `json:"status"`
-	Specialist     string             `json:"specialist"`
-	Reason         string             `json:"reason"`
-	Classification *classifier.Result `json:"classification,omitempty"`
-	AuditEventID   string             `json:"audit_event_id,omitempty"`
+	SessionID                 string             `json:"session_id"`
+	Status                    string             `json:"status"`
+	Specialist                string             `json:"specialist"`
+	Reason                    string             `json:"reason"`
+	RoutingConfidence         string             `json:"routing_confidence,omitempty"`
+	HumanConfirmationRequired bool               `json:"human_confirmation_required,omitempty"`
+	RoutingAlternates         []string           `json:"routing_alternates,omitempty"`
+	Classification            *classifier.Result `json:"classification,omitempty"`
+	AuditEventID              string             `json:"audit_event_id,omitempty"`
 }
 
 func NewRouter(cfg RouterConfig) *Router {
@@ -122,22 +128,26 @@ func (r *Router) SelectSpecialist(prompt string, ctx SessionContext) (RouteDecis
 		candidate := r.agentForBranch(ctx.Branch, ctx.WorkItemType, report)
 		if candidate != "" {
 			return RouteDecision{
-				Specialist:     candidate,
-				Reason:         "branch_prefix:" + ctx.WorkItemType,
-				Classification: &classification,
+				Specialist:        candidate,
+				Reason:            "branch_prefix:" + ctx.WorkItemType,
+				RoutingConfidence: "high",
+				Classification:    &classification,
 			}, nil
 		}
 	}
 
 	// 2. Keyword fallback.
-	candidate, reason := selectByKeywords(prompt)
+	candidate, reason, confidence, alternates, confirm := selectByKeywords(prompt)
 	if !report.HasAgent(candidate) {
 		return RouteDecision{}, fmt.Errorf("selected specialist %q is not in catalog", candidate)
 	}
 	return RouteDecision{
-		Specialist:     candidate,
-		Reason:         reason,
-		Classification: &classification,
+		Specialist:                candidate,
+		Reason:                    reason,
+		RoutingConfidence:         confidence,
+		HumanConfirmationRequired: confirm,
+		RoutingAlternates:         alternates,
+		Classification:            &classification,
 	}, nil
 }
 
@@ -240,6 +250,7 @@ func (r *Router) route(w http.ResponseWriter, req *http.Request) {
 		Actor:              "local-dev",
 		Agent:              decision.Specialist,
 		Reason:             decision.Reason,
+		Findings:           routingAuditFindings(decision),
 		PromptSHA256:       hex.EncodeToString(promptHash[:]),
 		RawPromptStored:    false,
 		RawResponseStored:  false,
@@ -251,42 +262,125 @@ func (r *Router) route(w http.ResponseWriter, req *http.Request) {
 	}
 
 	httpx.WriteJSON(w, http.StatusOK, RouteResponse{
-		SessionID:      sessionID,
-		Status:         "selected",
-		Specialist:     decision.Specialist,
-		Reason:         decision.Reason,
-		Classification: decision.Classification,
-		AuditEventID:   event.EventID,
+		SessionID:                 sessionID,
+		Status:                    "selected",
+		Specialist:                decision.Specialist,
+		Reason:                    decision.Reason,
+		RoutingConfidence:         decision.RoutingConfidence,
+		HumanConfirmationRequired: decision.HumanConfirmationRequired,
+		RoutingAlternates:         decision.RoutingAlternates,
+		Classification:            decision.Classification,
+		AuditEventID:              event.EventID,
 	})
 }
 
-func selectByKeywords(prompt string) (string, string) {
+type keywordRule struct {
+	specialist string
+	reason     string
+	match      func(string) bool
+}
+
+func selectByKeywords(prompt string) (string, string, string, []string, bool) {
 	text := strings.ToLower(prompt)
-	switch {
-	case containsAny(text, "terraform", "tf module", " hcl", "infrastructure as code"):
-		return "terraform-review", "terraform keyword match"
-	case containsAny(text, "full security review", "security review of this codebase", "security review of the codebase"):
-		return "security-review", "security review keyword match"
-	case containsAny(text, "playwright", "unit test", "integration test", "regression", "coverage") ||
-		(containsAny(text, "test", "tests") && !containsAny(text, "contest", "latest")):
-		return "unit-tests", "testing keyword match"
-	case containsAny(text, "react", "frontend", "typescript and css", "vue", "angular", "svelte"):
-		return "frontend-development", "frontend keyword match"
-	case containsAny(text, "go http", "http handler", "rest api endpoint", "golang", "backend service", "grpc"):
-		return "backend-development", "backend keyword match"
-	case containsAny(text, "secret", "auth", "authentication", "authorization", "vulnerability", "dependency risk", "data exposure"):
-		return "security-scan", "security keyword match"
-	case containsAny(text, "architecture", "service boundaries", "boundaries", "data flow", "design review", "deployment shape", "tradeoff"):
-		return "architecture-review", "architecture keyword match"
-	case containsAny(text, "readme", "documentation", "docs", "developer notes", "api explanation"):
-		return "documentation", "documentation keyword match"
-	case containsAny(text, "refactor", "cleanup", "clean up", "reorganize", "simplify", "rename"):
-		return "refactor", "refactor keyword match"
-	case containsAny(text, "review", "diff", "bugs", "risky", "pr review", "regression"):
-		return "code-review", "code review keyword match"
-	default:
-		return "code-review", "default review specialist"
+	rules := []keywordRule{
+		{
+			specialist: "terraform-review",
+			reason:     "terraform keyword match",
+			match: func(text string) bool {
+				return containsAny(text, "terraform", "tf module", " hcl", "infrastructure as code")
+			},
+		},
+		{
+			specialist: "security-review",
+			reason:     "security review keyword match",
+			match: func(text string) bool {
+				return containsAny(text, "full security review", "security review of this codebase", "security review of the codebase")
+			},
+		},
+		{
+			specialist: "unit-tests",
+			reason:     "testing keyword match",
+			match: func(text string) bool {
+				return containsAny(text, "playwright", "unit test", "integration test", "regression", "coverage") ||
+					(containsAny(text, "test", "tests") && !containsAny(text, "contest", "latest"))
+			},
+		},
+		{
+			specialist: "frontend-development",
+			reason:     "frontend keyword match",
+			match: func(text string) bool {
+				return containsAny(text, "react", "frontend", "typescript and css", "vue", "angular", "svelte")
+			},
+		},
+		{
+			specialist: "backend-development",
+			reason:     "backend keyword match",
+			match: func(text string) bool {
+				return containsAny(text, "go http", "http handler", "rest api endpoint", "golang", "backend service", "grpc")
+			},
+		},
+		{
+			specialist: "security-scan",
+			reason:     "security keyword match",
+			match: func(text string) bool {
+				return containsAny(text, "secret", "auth", "authentication", "authorization", "vulnerability", "dependency risk", "data exposure")
+			},
+		},
+		{
+			specialist: "architecture-review",
+			reason:     "architecture keyword match",
+			match: func(text string) bool {
+				return containsAny(text, "architecture", "service boundaries", "boundaries", "data flow", "design review", "deployment shape", "tradeoff")
+			},
+		},
+		{
+			specialist: "documentation",
+			reason:     "documentation keyword match",
+			match: func(text string) bool {
+				return containsAny(text, "readme", "documentation", "docs", "developer notes", "api explanation")
+			},
+		},
+		{
+			specialist: "refactor",
+			reason:     "refactor keyword match",
+			match: func(text string) bool {
+				return containsAny(text, "refactor", "cleanup", "clean up", "reorganize", "simplify", "rename")
+			},
+		},
+		{
+			specialist: "code-review",
+			reason:     "code review keyword match",
+			match: func(text string) bool {
+				return containsAny(text, "review", "diff", "bugs", "risky", "pr review", "regression")
+			},
+		},
 	}
+
+	var matches []keywordRule
+	for _, rule := range rules {
+		if rule.match(text) {
+			matches = append(matches, rule)
+		}
+	}
+	if len(matches) == 0 {
+		return "code-review", "default review specialist", "low", nil, true
+	}
+
+	selected := matches[0]
+	if len(matches) == 1 {
+		return selected.specialist, selected.reason, "high", nil, false
+	}
+
+	alternates := make([]string, 0, len(matches)-1)
+	seen := map[string]bool{selected.specialist: true}
+	for _, match := range matches[1:] {
+		if seen[match.specialist] {
+			continue
+		}
+		alternates = append(alternates, match.specialist)
+		seen[match.specialist] = true
+	}
+	return selected.specialist, selected.reason + " (conflicting keyword match)", "low", alternates, true
 }
 
 func containsAny(text string, needles ...string) bool {
@@ -296,4 +390,18 @@ func containsAny(text string, needles ...string) bool {
 		}
 	}
 	return false
+}
+
+func routingAuditFindings(decision RouteDecision) []string {
+	findings := []string{}
+	if decision.RoutingConfidence != "" {
+		findings = append(findings, "routing_confidence="+decision.RoutingConfidence)
+	}
+	if decision.HumanConfirmationRequired {
+		findings = append(findings, "human_confirmation_required=true")
+	}
+	if len(decision.RoutingAlternates) > 0 {
+		findings = append(findings, "routing_alternates="+strings.Join(decision.RoutingAlternates, ","))
+	}
+	return findings
 }

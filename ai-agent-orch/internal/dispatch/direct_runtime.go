@@ -354,6 +354,13 @@ func envBoolDefault(key string, fallback bool) bool {
 	}
 }
 
+func (h *directHandle) RuntimeName() string {
+	if h.provider != "" {
+		return "direct_" + h.provider
+	}
+	return "direct_runtime"
+}
+
 func (h *directHandle) Wait() error {
 	<-h.done
 	return h.err

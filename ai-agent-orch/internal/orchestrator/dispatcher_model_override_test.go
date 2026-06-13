@@ -39,6 +39,8 @@ func (r *capturingRuntime) StartSession(_ context.Context, cfg dispatch.SessionC
 
 type emptyHandle struct{}
 
+func (h *emptyHandle) RuntimeName() string { return "test_empty" }
+
 func (h *emptyHandle) Wait() error { return nil }
 
 func (h *emptyHandle) Events() <-chan dispatch.RuntimeEvent {

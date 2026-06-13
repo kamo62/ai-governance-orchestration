@@ -12,6 +12,9 @@ export interface GovernedRun {
     status: string;
     specialist: string;
     reason: string;
+    routing_confidence?: string;
+    human_confirmation_required?: boolean;
+    routing_alternates?: string[];
     next_gate: string;
     sse_url: string;
 }
@@ -97,11 +100,11 @@ export class GovernanceClient {
         return response.json() as Promise<GovernedRun>;
     }
 
-    async confirmSession(sessionId: string, agent: string): Promise<{ session_id: string; status: string }> {
+    async confirmSession(sessionId: string, agent: string, humanConfirmed = false): Promise<{ session_id: string; status: string }> {
         const response = await fetch(`${this.baseUrl}/v1/sessions/${sessionId}/confirm`, {
             method: 'POST',
             headers: this.authHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ agent }),
+            body: JSON.stringify({ agent, human_confirmed: humanConfirmed }),
         });
         if (!response.ok) {
             const text = await response.text();
@@ -371,6 +374,9 @@ export interface TurnResponse {
     status: string;
     specialist?: string;
     reason?: string;
+    routing_confidence?: string;
+    human_confirmation_required?: boolean;
+    routing_alternates?: string[];
     next_gate?: string;
     sse_url?: string;
     turn?: boolean;

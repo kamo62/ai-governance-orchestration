@@ -15,15 +15,17 @@ import (
 
 // SessionRecord is the durable representation of a user session.
 type SessionRecord struct {
-	SessionID       string
-	ParentSessionID string
-	ActorSubject    string
-	Agent           string
-	RoutedAgent     string
-	Classification  string
-	PromptSHA256    string
-	Status          string // created, awaiting_confirmation, confirming, confirmed, running, done, failed, confirm_failed, aborted
-	CreatedAt       time.Time
+	SessionID                 string
+	ParentSessionID           string
+	ActorSubject              string
+	Agent                     string
+	RoutedAgent               string
+	RoutingConfidence         string
+	HumanConfirmationRequired bool
+	Classification            string
+	PromptSHA256              string
+	Status                    string // created, awaiting_confirmation, confirming, confirmed, running, done, failed, confirm_failed, aborted
+	CreatedAt                 time.Time
 	// GatewayTokenSHA256 is the hash of the per-session secret a runtime must
 	// present on model gateway calls. Empty means the session predates token
 	// binding and is accepted with the shared runtime token alone.
@@ -149,6 +151,8 @@ func (s *SQLiteSessionStore) migrate() error {
 		"gateway_token_sha256":         "TEXT NOT NULL DEFAULT ''",
 		"runtime_gateway_token_sha256": "TEXT NOT NULL DEFAULT ''",
 		"routed_agent":                 "TEXT NOT NULL DEFAULT ''",
+		"routing_confidence":           "TEXT NOT NULL DEFAULT ''",
+		"human_confirmation_required":  "INTEGER NOT NULL DEFAULT 0",
 	}
 	for col, def := range cols {
 		if err := s.ensureSessionColumn(col, def); err != nil {
@@ -195,20 +199,20 @@ func (s *SQLiteSessionStore) ensureSessionColumn(column string, definition strin
 func (s *SQLiteSessionStore) Create(ctx context.Context, rec SessionRecord) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (
-			session_id, parent_session_id, actor_subject, agent, routed_agent, classification, prompt_sha256, status, created_at,
+			session_id, parent_session_id, actor_subject, agent, routed_agent, routing_confidence, human_confirmation_required, classification, prompt_sha256, status, created_at,
 			run_id, permission_mode, approval_mode, workspace_mode,
 			use_case_id, workflow_id, work_item_id, work_item_type, repo_url, branch, commit_sha, intent, actor_hint, source_system,
 			story_points, estimated_dev_days, blended_day_rate_usd, baseline_cost_usd,
 			model_cost_usd, tool_cost_usd, platform_cost_usd, review_cost_usd,
 			verification_cost_usd, retry_count, gateway_token_sha256, runtime_gateway_token_sha256
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?)
 	`,
-		rec.SessionID, rec.ParentSessionID, rec.ActorSubject, rec.Agent, rec.RoutedAgent, rec.Classification, rec.PromptSHA256, rec.Status, rec.CreatedAt.Format(time.RFC3339Nano),
+		rec.SessionID, rec.ParentSessionID, rec.ActorSubject, rec.Agent, rec.RoutedAgent, rec.RoutingConfidence, boolToInt(rec.HumanConfirmationRequired), rec.Classification, rec.PromptSHA256, rec.Status, rec.CreatedAt.Format(time.RFC3339Nano),
 		rec.RunID, rec.PermissionMode, rec.ApprovalMode, rec.WorkspaceMode,
 		rec.UseCaseID, rec.WorkflowID, rec.WorkItemID, rec.WorkItemType, rec.RepoURL, rec.Branch, rec.CommitSHA, rec.Intent, rec.ActorHint, rec.SourceSystem,
 		rec.StoryPoints, rec.EstimatedDevDays, rec.BlendedDayRateUSD, rec.BaselineCostUSD,
@@ -224,9 +228,10 @@ func (s *SQLiteSessionStore) Create(ctx context.Context, rec SessionRecord) erro
 func (s *SQLiteSessionStore) Get(ctx context.Context, sessionID string) (SessionRecord, error) {
 	var rec SessionRecord
 	var createdAtStr string
+	var humanConfirmationRequired int
 	err := s.db.QueryRowContext(ctx, `
 			SELECT
-				session_id, COALESCE(parent_session_id, ''), actor_subject, agent, COALESCE(routed_agent, ''), classification, prompt_sha256, status, created_at,
+				session_id, COALESCE(parent_session_id, ''), actor_subject, agent, COALESCE(routed_agent, ''), COALESCE(routing_confidence, ''), COALESCE(human_confirmation_required, 0), classification, prompt_sha256, status, created_at,
 				COALESCE(run_id, ''), COALESCE(permission_mode, 'reviewed'), COALESCE(approval_mode, 'manual'), COALESCE(workspace_mode, ''),
 				COALESCE(use_case_id, ''), COALESCE(workflow_id, ''), COALESCE(work_item_id, ''), COALESCE(work_item_type, ''),
 				COALESCE(repo_url, ''), COALESCE(branch, ''), COALESCE(commit_sha, ''), COALESCE(intent, ''), COALESCE(actor_hint, ''), COALESCE(source_system, ''),
@@ -236,7 +241,7 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, sessionID string) (Session
 				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, '')
 			FROM sessions WHERE session_id = ?
 	`, sessionID).Scan(
-		&rec.SessionID, &rec.ParentSessionID, &rec.ActorSubject, &rec.Agent, &rec.RoutedAgent, &rec.Classification, &rec.PromptSHA256, &rec.Status, &createdAtStr,
+		&rec.SessionID, &rec.ParentSessionID, &rec.ActorSubject, &rec.Agent, &rec.RoutedAgent, &rec.RoutingConfidence, &humanConfirmationRequired, &rec.Classification, &rec.PromptSHA256, &rec.Status, &createdAtStr,
 		&rec.RunID, &rec.PermissionMode, &rec.ApprovalMode, &rec.WorkspaceMode,
 		&rec.UseCaseID, &rec.WorkflowID, &rec.WorkItemID, &rec.WorkItemType, &rec.RepoURL, &rec.Branch, &rec.CommitSHA, &rec.Intent, &rec.ActorHint, &rec.SourceSystem,
 		&rec.StoryPoints, &rec.EstimatedDevDays, &rec.BlendedDayRateUSD, &rec.BaselineCostUSD,
@@ -250,6 +255,7 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, sessionID string) (Session
 		return SessionRecord{}, fmt.Errorf("query session: %w", err)
 	}
 	rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAtStr)
+	rec.HumanConfirmationRequired = humanConfirmationRequired != 0
 	return rec, nil
 }
 
@@ -426,6 +432,22 @@ func (s *SQLiteSessionStore) SetRoutedAgent(ctx context.Context, sessionID, agen
 	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET routed_agent = ? WHERE session_id = ?`, agent, sessionID)
 	if err != nil {
 		return fmt.Errorf("set routed agent: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("session not found")
+	}
+	return nil
+}
+
+func (s *SQLiteSessionStore) SetRouteDecision(ctx context.Context, sessionID, agent, routingConfidence string, humanConfirmationRequired bool) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET routed_agent = ?, routing_confidence = ?, human_confirmation_required = ?
+		WHERE session_id = ?
+	`, agent, routingConfidence, boolToInt(humanConfirmationRequired), sessionID)
+	if err != nil {
+		return fmt.Errorf("set route decision: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {

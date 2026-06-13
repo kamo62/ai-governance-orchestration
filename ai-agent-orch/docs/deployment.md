@@ -2,7 +2,7 @@
 
 This document explains how to run and verify the local AI Agent Orchestration POC.
 
-The root [README.md](../../README.md) explains the aim of the project. This file is intentionally more operational.
+The root [README.md](../../README.md) explains the aim of the project, and [architecture.md](architecture.md) explains the system boundary. This file is intentionally operational.
 
 ## Current Deployment Shape
 
@@ -153,6 +153,8 @@ docker compose -f docker-compose.yml -f docker-compose.provider.yml --profile pr
 ```
 
 `provider-gateway-smoke` is the OpenCode-style path (governed run + `/v1/chat/completions` on the model gateway). `provider-run-smoke` proves full orchestrator dispatch with a live model response and patch envelope.
+
+EchoRuntime is used only when `AI_ORCH_BETA_SMOKE=true` for explicit beta/CI smoke. Normal dispatch fails closed when OpenCode/ACP and direct/provider-backed runtimes are unavailable; this prevents fake patches from being recorded as successful execution.
 
 CI runs this nightly when `OPENROUTER_API_KEY` is configured as a repository secret.
 
@@ -366,12 +368,22 @@ cd ai-agent-orch
 AI_ORCH_GOVERNANCE_URL=https://ai-orch.example.com \
 AI_ORCH_MODEL_GATEWAY_URL=https://models.ai-orch.example.com \
 AI_ORCH_DEV_TOKEN=<developer-enrollment-token-or-id-token> \
-AI_ORCH_RUNTIME_TOKEN=<runtime-token> \
-AI_ORCH_ACTOR_SUBJECT=<actor-subject> \
 scripts/enroll-developer-copilot-opencode.sh
 ```
 
-The script starts or refreshes the developer's Copilot enrollment through the Governance Shell, verifies the actor can list Copilot models, then installs the `ai-orch` OpenCode provider config. During install, `ai-orch opencode install-config` calls the model gateway's `/v1/models` endpoint with the developer actor context and imports the live governed model list into OpenCode. That list is route-aware: a Copilot-only server exposes Copilot-routable aliases and the actor's live Copilot picker models, not OpenRouter-only aliases that the current backend cannot execute. The Copilot OAuth credential is stored encrypted in the server-side ai-orch token store for that actor. It is not copied into OpenCode, Cline, the Orchestrator, or project files.
+The script starts or refreshes the developer's Copilot enrollment through the Governance Shell, verifies the actor can list Copilot models, asks the server for a 90-day revocable AI-Orch runtime credential, then installs or refreshes the `ai-orch` OpenCode provider config. During install, `ai-orch opencode install-config` calls the model gateway's `/v1/models` endpoint with the developer actor context and imports the live governed model list into OpenCode. That list is route-aware: a Copilot-only server exposes Copilot-routable aliases and the actor's live Copilot picker models, not OpenRouter-only aliases that the current backend cannot execute. The Copilot OAuth credential is stored encrypted in the server-side ai-orch token store for that actor. It is not copied into OpenCode, Cline, the Orchestrator, or project files. The installed refresh job updates only AI-Orch-routed OpenCode config and model aliases; it does not store OpenRouter, Foundry, Bedrock or Copilot provider keys on the developer machine.
+
+
+Developer refresh commands:
+
+```sh
+ai-orch developer enroll --client opencode --scope global
+ai-orch opencode refresh --scope global
+ai-orch bench run --workflow smoke --models all-enabled
+```
+
+Provider readiness is available to operators through `/v1/admin/providers/status`. It reports configured/missing status for OpenRouter, Azure AI Foundry, Bedrock, OpenAI, Anthropic, DeepSeek and Copilot enrolments without returning secret values.
+
 
 OpenCode and Cline still point only at ai-orch. Do not configure developer tools to call `github-copilot`, OpenRouter, Bifrost, OpenAI, Anthropic, or provider APIs directly in governed mode.
 

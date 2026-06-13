@@ -28,16 +28,17 @@ import (
 
 // GatewayConfig holds the configuration for the model compatibility gateway.
 type GatewayConfig struct {
-	RuntimeToken      string
-	Router            *router.Router
-	Backend           modelbackend.Backend
-	Audit             audit.Store
-	NewID             func(prefix string) string
-	ValidateSession   func(context.Context, string) error
-	LookupSession     func(context.Context, string) (SessionInfo, error)
-	AutoSession       func(context.Context, AutoSessionRequest) (SessionInfo, error)
-	FinishAutoSession func(context.Context, string, string) error
-	DelegateTask      func(context.Context, TaskDelegationRequest) error
+	RuntimeToken               string
+	RuntimeCredentialValidator func(token string) (actorSubject string, ok bool)
+	Router                     *router.Router
+	Backend                    modelbackend.Backend
+	Audit                      audit.Store
+	NewID                      func(prefix string) string
+	ValidateSession            func(context.Context, string) error
+	LookupSession              func(context.Context, string) (SessionInfo, error)
+	AutoSession                func(context.Context, AutoSessionRequest) (SessionInfo, error)
+	FinishAutoSession          func(context.Context, string, string) error
+	DelegateTask               func(context.Context, TaskDelegationRequest) error
 	// MaxRequestBytes caps inbound request bodies. Coding agents send
 	// multi-megabyte contexts, so the default is deliberately generous.
 	MaxRequestBytes int64
@@ -112,17 +113,18 @@ type SessionInfo struct {
 
 // Gateway is an OpenAI-compatible model endpoint owned by the Governance Shell.
 type Gateway struct {
-	runtimeToken      string
-	router            *router.Router
-	backend           modelbackend.Backend
-	audit             audit.Store
-	newID             func(prefix string) string
-	validateSession   func(context.Context, string) error
-	lookupSession     func(context.Context, string) (SessionInfo, error)
-	autoSession       func(context.Context, AutoSessionRequest) (SessionInfo, error)
-	finishAutoSession func(context.Context, string, string) error
-	delegateTask      func(context.Context, TaskDelegationRequest) error
-	maxRequestBytes   int64
+	runtimeToken               string
+	runtimeCredentialValidator func(token string) (actorSubject string, ok bool)
+	router                     *router.Router
+	backend                    modelbackend.Backend
+	audit                      audit.Store
+	newID                      func(prefix string) string
+	validateSession            func(context.Context, string) error
+	lookupSession              func(context.Context, string) (SessionInfo, error)
+	autoSession                func(context.Context, AutoSessionRequest) (SessionInfo, error)
+	finishAutoSession          func(context.Context, string, string) error
+	delegateTask               func(context.Context, TaskDelegationRequest) error
+	maxRequestBytes            int64
 }
 
 // NewGateway creates a new model compatibility gateway.
@@ -136,17 +138,18 @@ func NewGateway(cfg GatewayConfig) *Gateway {
 		maxRequestBytes = defaultMaxRequestBytes
 	}
 	return &Gateway{
-		runtimeToken:      cfg.RuntimeToken,
-		router:            cfg.Router,
-		backend:           cfg.Backend,
-		audit:             cfg.Audit,
-		newID:             newID,
-		validateSession:   cfg.ValidateSession,
-		lookupSession:     cfg.LookupSession,
-		autoSession:       cfg.AutoSession,
-		finishAutoSession: cfg.FinishAutoSession,
-		delegateTask:      cfg.DelegateTask,
-		maxRequestBytes:   maxRequestBytes,
+		runtimeToken:               cfg.RuntimeToken,
+		runtimeCredentialValidator: cfg.RuntimeCredentialValidator,
+		router:                     cfg.Router,
+		backend:                    cfg.Backend,
+		audit:                      cfg.Audit,
+		newID:                      newID,
+		validateSession:            cfg.ValidateSession,
+		lookupSession:              cfg.LookupSession,
+		autoSession:                cfg.AutoSession,
+		finishAutoSession:          cfg.FinishAutoSession,
+		delegateTask:               cfg.DelegateTask,
+		maxRequestBytes:            maxRequestBytes,
 	}
 }
 

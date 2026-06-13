@@ -109,6 +109,7 @@ func main() {
 
 	// Initialize session store (SQLite-backed when audit path is SQLite).
 	var sessionStore governance.SessionStore
+	var developerCredentialStore *governance.SQLiteDeveloperCredentialStore
 	var modelPricingStore governance.ModelPricingStore
 	var modelPricingCloser interface{ Close() error }
 	if hasSQLiteExt(cfg.AuditPath) {
@@ -123,6 +124,11 @@ func main() {
 		}
 		modelPricingStore = pricingStore
 		modelPricingCloser = pricingStore
+		developerCredentials, err := governance.NewSQLiteDeveloperCredentialStore(cfg.AuditPath)
+		if err != nil {
+			logx.Fatalf("developer credential store init failed: %v", err)
+		}
+		developerCredentialStore = developerCredentials
 	}
 
 	var sessionContextResolver governance.ContextResolver
@@ -231,11 +237,19 @@ func main() {
 		}
 	}
 	logx.Infof("model backend selected: %s", modelBackend.Name())
+	copilotEnrollmentCount := 0
+	if copilotStore != nil {
+		if count, err := copilotStore.EnrollmentCount(context.Background()); err == nil {
+			copilotEnrollmentCount = count
+		}
+	}
+	providerReadiness := governance.ProviderReadinessFromEnv(os.Getenv, modelBackend.Name(), copilotEnrollmentCount)
 	pricingFetcher := governance.OpenRouterPricingFetcher{BaseURL: os.Getenv("OPENROUTER_BASE_URL")}
 	pricingBootstrapped := false
 	if modelPricingStore != nil {
 		pricingBootstrapped = bootstrapModelPricing(context.Background(), modelPricingStore, pricingFetcher)
 	}
+	runtimeGatewayEnabled := cfg.RuntimeToken != "" || developerCredentialStore != nil
 
 	handler := http.NewServeMux()
 	handler.Handle("/ui", governanceui.Redirect())
@@ -251,7 +265,7 @@ func main() {
 		Environment:           cfg.Environment,
 		ModelBackend:          modelBackend.Name(),
 		GatewayAddr:           cfg.GatewayAddr,
-		RuntimeGatewayEnabled: cfg.RuntimeToken != "",
+		RuntimeGatewayEnabled: runtimeGatewayEnabled,
 		ClassificationMax:     cfg.ClassificationMax,
 		PolicyEngine:          cfg.PolicyEngine,
 		Gateways:              gatewayOptions,
@@ -263,9 +277,25 @@ func main() {
 		ControlEnabled: cfg.BackendControlEnabled,
 		WorkDir:        cfg.BackendControlWorkDir,
 	}))
+	handler.Handle("/v1/admin/providers/status", governance.NewProviderStatusHandlerFunc(func() []governance.ProviderReadiness {
+		enrollments := 0
+		if copilotStore != nil {
+			if count, err := copilotStore.EnrollmentCount(context.Background()); err == nil {
+				enrollments = count
+			}
+		}
+		return governance.ProviderReadinessFromEnv(os.Getenv, modelBackend.Name(), enrollments)
+	}))
 	if copilotStore != nil {
 		handler.Handle("/v1/copilot/", governance.NewCopilotHandler(governance.CopilotHandlerConfig{DevToken: cfg.DevToken, Authorizer: requestAuthorizer, Store: copilotStore}))
 	}
+	handler.Handle("/v1/developer/", governance.NewDeveloperHandler(governance.DeveloperHandlerConfig{
+		DevToken:             cfg.DevToken,
+		Authorizer:           requestAuthorizer,
+		CopilotStore:         copilotStore,
+		CredentialStore:      developerCredentialStore,
+		RuntimeCredentialTTL: 90 * 24 * time.Hour,
+	}))
 	handler.Handle("/v1/agents", governance.NewAgentListHandler(cfg.CatalogRoot))
 	handler.Handle("/v1/runs", governance.NewRunHandler(sessionService, orchClient))
 	handler.Handle("/v1/sessions", governance.NewSessionHandler(sessionService))
@@ -346,7 +376,7 @@ func main() {
 
 	// Model Compatibility Gateway (Phase 1G + 1J).
 	var gatewaySrv *http.Server
-	if cfg.RuntimeToken != "" {
+	if runtimeGatewayEnabled {
 		if sessionStore == nil {
 			logx.Fatal("model compatibility gateway requires durable session storage; configure a SQLite audit path")
 		}
@@ -360,7 +390,7 @@ func main() {
 					return false
 				}
 				if provider != modelbackend.BackendCopilotUser {
-					return true
+					return governance.ProviderConfiguredForRoute(provider, providerReadiness)
 				}
 				if copilotResolver == nil || strings.TrimSpace(req.ActorSubject) == "" {
 					return false
@@ -369,7 +399,17 @@ func main() {
 				return err == nil
 			})
 			gatewayConfig := modelgateway.GatewayConfig{
-				RuntimeToken:    cfg.RuntimeToken,
+				RuntimeToken: cfg.RuntimeToken,
+				RuntimeCredentialValidator: func(token string) (string, bool) {
+					if developerCredentialStore == nil {
+						return "", false
+					}
+					record, ok, err := developerCredentialStore.Validate(context.Background(), token, time.Now().UTC())
+					if err != nil || !ok {
+						return "", false
+					}
+					return record.ActorSubject, true
+				},
 				Router:          govRouter,
 				Backend:         modelBackend,
 				Audit:           auditStore,
@@ -529,6 +569,11 @@ func main() {
 	if modelPricingCloser != nil {
 		if err := modelPricingCloser.Close(); err != nil {
 			logx.Warnf("model pricing store close error: %v", err)
+		}
+	}
+	if developerCredentialStore != nil {
+		if err := developerCredentialStore.Close(); err != nil {
+			logx.Warnf("developer credential store close error: %v", err)
 		}
 	}
 	if copilotStore != nil {

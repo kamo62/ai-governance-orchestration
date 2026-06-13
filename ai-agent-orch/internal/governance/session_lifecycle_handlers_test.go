@@ -236,6 +236,110 @@ func TestConfirmHandlerBlocksWhenKillSwitchEnabled(t *testing.T) {
 	}
 }
 
+func TestConfirmHandlerRequiresExplicitHumanConfirmationForLowConfidenceRoute(t *testing.T) {
+	store, err := NewSQLiteSessionStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	defer store.Close()
+
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+		Sessions: store,
+		NewID: fixedIDs(
+			"run_low_confidence",
+			"sess_low_confidence",
+			"evt_session_low_confidence",
+			"gateway_token_low_confidence",
+			"evt_route_low_confidence",
+		),
+	})
+	orch := &fakeOrchestrator{
+		specialist:                "code-review",
+		reason:                    "default route",
+		routingConfidence:         "low",
+		humanConfirmationRequired: true,
+	}
+
+	runReq := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(`{
+		"agent":"governance-lead",
+		"classification":"internal",
+		"prompt":"please help"
+	}`))
+	runReq.Header.Set("Authorization", "Bearer local-test-token")
+	runRec := httptest.NewRecorder()
+	NewRunHandler(service, orch).ServeHTTP(runRec, runReq)
+	if runRec.Code != http.StatusCreated {
+		t.Fatalf("expected run creation 201, got %d: %s", runRec.Code, runRec.Body.String())
+	}
+
+	confirmReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_low_confidence/confirm", strings.NewReader(`{"agent":"code-review"}`))
+	confirmReq.Header.Set("Authorization", "Bearer local-test-token")
+	confirmRec := httptest.NewRecorder()
+	NewConfirmHandlerWithEvents(service, orch, nil).ServeHTTP(confirmRec, confirmReq)
+
+	if confirmRec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 requiring explicit human confirmation, got %d: %s", confirmRec.Code, confirmRec.Body.String())
+	}
+	if !strings.Contains(confirmRec.Body.String(), "human confirmation required") {
+		t.Fatalf("expected human confirmation error, got %s", confirmRec.Body.String())
+	}
+
+	record, err := store.Get(context.Background(), "sess_low_confidence")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if record.Status != "awaiting_confirmation" {
+		t.Fatalf("expected low-confidence session to remain awaiting_confirmation, got %q", record.Status)
+	}
+}
+
+func TestConfirmHandlerAcceptsExplicitHumanConfirmationForLowConfidenceRoute(t *testing.T) {
+	store, err := NewSQLiteSessionStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	defer store.Close()
+	if err := store.Create(context.Background(), SessionRecord{
+		SessionID:                 "sess_human_confirmed",
+		ActorSubject:              "local-dev",
+		Agent:                     "governance-lead",
+		RoutedAgent:               "code-review",
+		Classification:            "internal",
+		PromptSHA256:              "abc123",
+		Status:                    "awaiting_confirmation",
+		RoutingConfidence:         "low",
+		HumanConfirmationRequired: true,
+		CreatedAt:                 time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	service := NewSessionService(SessionConfig{
+		DevToken: "local-test-token",
+		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+		Sessions: store,
+		NewID:    fixedIDs("evt_human_confirm_1"),
+	})
+	handler := NewConfirmHandlerWithEvents(service, &fakeOrchestrator{}, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_human_confirmed/confirm", strings.NewReader(`{"agent":"code-review","human_confirmed":true}`))
+	req.Header.Set("Authorization", "Bearer local-test-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	record, err := store.Get(context.Background(), "sess_human_confirmed")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if record.Status != "confirmed" {
+		t.Fatalf("expected confirmed, got %q", record.Status)
+	}
+}
+
 func TestConfirmHandlerAcceptsAndWritesAudit(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	service := NewSessionService(SessionConfig{
@@ -782,19 +886,28 @@ func TestExtractSessionID(t *testing.T) {
 
 // fakeOrchestrator implements OrchestratorClient for tests.
 type fakeOrchestrator struct {
-	specialist     string
-	reason         string
-	err            error
-	acceptErr      error
-	dispatchErr    error
-	dispatchPrompt string
+	specialist                string
+	reason                    string
+	routingConfidence         string
+	humanConfirmationRequired bool
+	routingAlternates         []string
+	err                       error
+	acceptErr                 error
+	dispatchErr               error
+	dispatchPrompt            string
 }
 
 func (f *fakeOrchestrator) Route(ctx context.Context, sessionID string, prompt string, context SessionContext) (RouteDecision, error) {
 	if f.err != nil {
 		return RouteDecision{}, f.err
 	}
-	return RouteDecision{Specialist: f.specialist, Reason: f.reason}, nil
+	return RouteDecision{
+		Specialist:                f.specialist,
+		Reason:                    f.reason,
+		RoutingConfidence:         f.routingConfidence,
+		HumanConfirmationRequired: f.humanConfirmationRequired,
+		RoutingAlternates:         f.routingAlternates,
+	}, nil
 }
 
 func (f *fakeOrchestrator) AcceptSession(ctx context.Context, sessionID string, agent string) error {

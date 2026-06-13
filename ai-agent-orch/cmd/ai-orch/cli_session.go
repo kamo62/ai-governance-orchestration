@@ -100,13 +100,15 @@ func sendMessage(ctx context.Context, cfg Config, args []string) {
 func confirmSession(ctx context.Context, cfg Config, args []string) {
 	sessionID := flagValue(args, "--session-id")
 	agent := flagValue(args, "--agent")
+	humanConfirmed := hasFlag(args, "--human") || hasFlag(args, "--human-confirmed")
 	if sessionID == "" || agent == "" {
-		fmt.Fprintln(os.Stderr, "usage: ai-orch session confirm --session-id <id> --agent <name>")
+		fmt.Fprintln(os.Stderr, "usage: ai-orch session confirm --session-id <id> --agent <name> [--human]")
 		os.Exit(1)
 	}
 
 	body, _ := json.Marshal(map[string]any{
-		"agent": agent,
+		"agent":           agent,
+		"human_confirmed": humanConfirmed,
 	})
 	resp, err := doPost(ctx, cfg, fmt.Sprintf("%s/v1/sessions/%s/confirm", cfg.GovernanceURL, sessionID), body)
 	if err != nil {

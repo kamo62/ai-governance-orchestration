@@ -31,6 +31,9 @@ type SessionConfig struct {
 
 // SessionHandle abstracts a running runtime session.
 type SessionHandle interface {
+	// RuntimeName is the concrete engine that produced this session, used for
+	// truthful audit attribution instead of handler-side guesses.
+	RuntimeName() string
 	Wait() error
 	Events() <-chan RuntimeEvent
 	Stop() error

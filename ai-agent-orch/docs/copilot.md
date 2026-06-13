@@ -1,6 +1,8 @@
 # Copilot And GitHub Models Integration Plan
 
-This document records the tested local findings and the recommended path for adding GitHub-backed model access to ai-orch.
+Status: beta implementation active as of `v0.21.2-beta`; the private Copilot route remains experimental.
+
+This document records the tested local findings, what is now implemented, and the remaining hardening work for GitHub-backed model access in ai-orch.
 
 The practical goal is:
 
@@ -13,7 +15,8 @@ The preferred beta path is Option 2, per-user Copilot proxying through ai-orch. 
 
 ## Current Tested State
 
-Tests were run locally on 2026-06-08.
+Original local tests were run on 2026-06-08. The implementation status below was
+updated against the current repo on 2026-06-13.
 
 OpenCode is installed locally:
 
@@ -1015,24 +1018,36 @@ Keep the Copilot POC branch focused on model access:
 - OpenCode E2E;
 - audit and usage mapping.
 
-## Immediate Next Steps
+## Implemented Beta Status
 
-1. Keep OpenCode configured only against ai-orch in governed mode.
-2. Keep the gateway contract aligned to OpenCode `v1.16.2` request shapes.
-3. Preserve OpenAI-compatible chat and Responses payload fields through ai-orch before adding more providers.
-4. Prove Bifrost routes Bedrock and Foundry-compatible payloads without dropping tool-call fields.
-5. Create `spike/copilot-user-backend`.
-6. Implement `ai-orch copilot login` and `ai-orch copilot models`.
-7. Prove `gpt-5-mini` through a direct ai-orch Copilot smoke command.
-8. Add `copilot-gpt-5-mini` to `models/registry.yaml` using `model_id`.
-9. Route `/v1/chat/completions` through `copilot-user`.
-10. Add `/v1/responses` support for GPT-5 class Copilot models after the chat path works.
-11. Run OpenCode against ai-orch, not against `github-copilot` directly.
-12. Record audit evidence showing `gateway_enforced` Copilot model calls.
+As of `v0.21.2-beta`, the beta path is no longer just a spike plan. The repo now has:
 
-Current ACP posture: OpenCode ACP is the direct runtime lane. It should not receive MCP servers through `session/new`; MCP remains a separate gateway route. ACP file writes and workspace diffs are recorded as patch evidence, while model calls remain gateway-enforced through ai-orch.
+- remote and local `ai-orch copilot login`, `status`, `models`, `refresh`, `logout`, and
+  `smoke` commands;
+- Governance Shell `/v1/copilot/*` endpoints for actor-scoped device login, status,
+  model discovery and logout;
+- encrypted server-side Copilot/OAuth token storage when a database path and encryption
+  key are configured;
+- a `copilot-user` model backend with chat-completions, streaming and Responses support;
+- dynamic `/v1/models` imports so OpenCode sees only aliases the current backend and
+  actor can actually run;
+- `ai-orch developer enroll --client opencode` and `ai-orch opencode refresh` for
+  AI-Orch-routed OpenCode setup without wiping personal OpenCode providers;
+- 90-day, revocable developer runtime credentials stored server-side as hashes;
+- audit/usage mapping for provider, model, credential source, token counts, cost source
+  and Copilot AI-unit usage where available;
+- OpenCode subagent/model config generation that keeps Copilot credentials and provider
+  keys behind ai-orch.
 
-Implemented commands. By default they enroll through the running Governance Shell's `/v1/copilot/*` endpoints, so the credential lands in the store the model gateway reads, keyed to the same actor subject sessions use. `--local` operates on the machine-local token database instead:
+Current ACP posture: OpenCode ACP is the direct runtime lane. It should not receive MCP
+servers through `session/new`; MCP remains a separate gateway route. ACP file writes and
+workspace diffs are recorded as patch evidence, while model calls remain
+gateway-enforced through ai-orch.
+
+Implemented commands. By default they enrol through the running Governance Shell's
+`/v1/copilot/*` endpoints, so the credential lands in the store the model gateway reads,
+keyed to the same actor subject sessions use. `--local` operates on the machine-local
+token database instead:
 
 ```sh
 ai-orch copilot login
@@ -1043,29 +1058,38 @@ ai-orch copilot logout
 ai-orch copilot smoke --local --model gpt-5-mini --prompt "Reply exactly: copilot-smoke-ok"
 ```
 
-Implementation status as of 2026-06-10:
-
-- The backend exchanges the stored GitHub OAuth token for the short-lived Copilot session bearer via `copilot_internal/v2/token`, caches it per actor, and re-exchanges before expiry. If the exchange endpoint rejects the call, the OAuth token is used directly.
-- Streaming uses a dedicated no-timeout HTTP client, so Copilot streams are no longer cut at the 45 second request timeout.
-- `/v1/responses` is supported by the copilot-user backend, covering the GPT-5-class Responses path in Milestone 5.
-- A missing or revoked enrollment returns 403 from the model gateway with the enrolling command in the error, instead of a blank 502.
-- The OAuth client ID is configurable via `AI_ORCH_COPILOT_CLIENT_ID`.
-- Copilot `copilot_usage.total_nano_aiu` is captured into gateway audit usage as `copilot_nano_aiu` when present.
-
-Required local storage setting:
+Required storage setting for server-side encrypted Copilot credentials:
 
 ```sh
 AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY=<32+ byte secret>
 ```
 
-Gateway backend setting:
+Gateway backend setting for a Copilot-user deployment:
 
 ```sh
 AI_ORCH_MODEL_BACKEND=copilot-user
 AI_ORCH_COPILOT_TOKEN_DB=~/.ai-orch/copilot-tokens.db
 ```
 
-GitHub Models remains a lower-priority optional backend for environments that need an official GitHub inference API. The beta priority is Copilot user entitlement plus enterprise Bedrock and Foundry routes through the governed ai-orch gateway.
+GitHub Models remains a lower-priority optional backend for environments that need an
+official GitHub inference API. The beta priority is Copilot user entitlement plus
+enterprise Bedrock and Foundry routes through the governed ai-orch gateway.
+
+## Remaining Next Steps
+
+1. Keep OpenCode configured against ai-orch in AI-Orch-routed mode; direct OpenCode
+   Copilot remains an ungoverned/self-reported escape hatch.
+2. Keep gateway fixtures aligned with the OpenCode version teams actually deploy, because
+   OpenCode request shapes and Copilot model metadata can drift.
+3. Prove Bedrock and Azure AI Foundry routes with live tool-call payloads before marking
+   those enterprise routes healthy in demos.
+4. Decide the operator policy for expired/revoked Copilot enrolments: re-login prompt,
+   admin notification, or temporary route hiding.
+5. Add clearer runbooks for credential rotation, token-store recovery, provider readiness
+   checks, and OpenCode config refresh failures.
+6. Confirm GitHub organisation/enterprise attribution and billing outside ai-orch; the
+   private Copilot path can attribute actor usage in the ledger, but it is not the same
+   as official org-attributed GitHub Models billing.
 
 ## Open Questions
 

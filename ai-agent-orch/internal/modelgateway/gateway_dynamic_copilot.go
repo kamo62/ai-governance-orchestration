@@ -31,6 +31,9 @@ func (g *Gateway) modelListContext(r *http.Request) (string, string) {
 		classification = "internal"
 	}
 
+	if runtimeActor, ok := g.runtimeAuth(r); ok && runtimeActor != "" {
+		actor = runtimeActor
+	}
 	if actor == "" {
 		actor = strings.TrimSpace(r.Header.Get("X-AI-Orch-Actor-Subject"))
 	}
