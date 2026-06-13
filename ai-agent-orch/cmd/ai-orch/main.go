@@ -155,7 +155,7 @@ func printUsage() {
 Usage:
   ai-orch session create --agent <name> --classification <level> --prompt <text> [--workspace]
   ai-orch session message --session-id <id> --prompt <text>
-  ai-orch session confirm --session-id <id> --agent <name>
+  ai-orch session confirm --session-id <id> --agent <name> [--human]
   ai-orch session events --session-id <id>
   ai-orch audit lookup --session-id <id>
   ai-orch audit verify --session-id <id>

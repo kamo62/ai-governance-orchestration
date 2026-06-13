@@ -37,7 +37,7 @@ workflow IDs, use-case IDs, and maturity export records.
 
 ## Current Repo Baseline
 
-As of `v0.21.1-beta`, the repo uses:
+As of `v0.21.2-beta`, the repo uses:
 
 - `modernc.org/sqlite` as the cgo-free SQLite driver.
 - SQLite WAL mode for the beta audit/session database.
@@ -257,7 +257,7 @@ model change means rebuilding the entire vector projection.
 
 ### Implemented Beta Foundation
 
-Already present in `v0.21.1-beta`:
+Already present in `v0.21.2-beta`:
 
 - SQLite-backed audit, sessions, registry records, model-pricing rows, and developer
   runtime credential hashes.

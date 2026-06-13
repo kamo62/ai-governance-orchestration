@@ -16,7 +16,7 @@ The target shape is:
 
 ## Core boundary
 
-~~~mermaid
+```mermaid
 flowchart TB
     Client["Developer client or runtime"] -->|"model calls"| ModelGateway["Model compatibility gateway"]
     Client -->|"MCP/tool calls where supported"| MCPGateway["MCP gateway"]
@@ -38,7 +38,7 @@ flowchart TB
     Shell --> UI["Governance UI"]
     Shell --> Orchestrator["Internal Orchestrator"]
     Orchestrator --> Catalog["Agent catalogue and runtime dispatch"]
-~~~
+```
 
 The split matters:
 
@@ -50,7 +50,7 @@ The split matters:
 
 ## Current beta readiness
 
-As of v0.21.1-beta, the local beta proves the main product direction but does not claim production readiness.
+As of v0.21.2-beta, the local beta proves the main product direction but does not claim production readiness.
 
 | Area | Readiness | Honest read |
 | --- | --- | --- |
@@ -74,7 +74,7 @@ As of v0.21.1-beta, the local beta proves the main product direction but does no
 
 ## AI-Orch-routed OpenCode flow
 
-~~~mermaid
+```mermaid
 sequenceDiagram
     participant Dev as Developer
     participant OC as OpenCode
@@ -94,7 +94,7 @@ sequenceDiagram
     Shell->>Ledger: Record route, usage, cost, status and audit metadata
     Shell-->>GW: Governed response stream
     GW-->>OC: Compatible response
-~~~
+```
 
 This is the key scale path: OpenCode keeps the local repository and file tools; AI-Orch governs the model path and records what it can prove. When OpenCode emits model-visible tool calls such as task, AI-Orch records sanitized tool-call names/counts and can create child-session lineage for known catalog agents. It does not claim full local transcript capture unless the event crosses ACP, MCP or a deliberate client-event forwarding lane.
 

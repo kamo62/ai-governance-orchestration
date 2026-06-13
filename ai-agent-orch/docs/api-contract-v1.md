@@ -55,7 +55,7 @@ When `AI_ORCH_REQUIRE_WORK_ITEM=true`, the shell rejects governed runs unless th
 | `POST` | `/v1/sessions` | Create session (legacy; prefer `/v1/runs`) |
 | `POST` | `/v1/sessions/{id}/messages` | Route prompt to specialist (initial `created` state only) |
 | `POST` | `/v1/sessions/{id}/turns` | Same-session follow-up dispatch (`done` / `failed` / `patch_ready`) |
-| `POST` | `/v1/sessions/{id}/confirm` | Confirm routed specialist |
+| `POST` | `/v1/sessions/{id}/confirm` | Confirm routed specialist. If the route returned `human_confirmation_required=true`, the request body must include `human_confirmed:true`; otherwise the session stays `awaiting_confirmation` with `409`. In the beta this is an explicit confirmation marker, not cryptographic proof of a human identity |
 | `GET` | `/v1/sessions/{id}/events` | SSE stream (`Accept: text/event-stream`) |
 | `GET` | `/v1/sessions/{id}/patches/{patchId}` | Fetch staged patch payload |
 | `POST` | `/v1/sessions/{id}/patch-decision` | Record `applied`, `partially_applied`, or `rejected` |
@@ -169,7 +169,7 @@ Runtime patch proposals use JSON (no Markdown fences):
 
 - Fail-closed policy and auth errors return `4xx` with JSON `error` fields.
 - Runtime misconfiguration does not fall through to fake execution; EchoRuntime requires explicit `AI_ORCH_BETA_SMOKE=true`.
-- Router default/miss and conflicting keyword decisions are marked low confidence and require human confirmation.
+- Router default/miss and conflicting keyword decisions are marked low confidence and require explicit `human_confirmed:true` confirmation before dispatch.
 - Audit events use hash chaining; raw prompts are not returned from audit lookup APIs.
 - Trust labels (`gateway_enforced`, `managed_client`, `self_reported`) are reporting metadata only.
 

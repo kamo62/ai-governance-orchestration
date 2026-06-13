@@ -152,7 +152,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Transition session to awaiting_confirmation after successful routing.
 	if h.service.sessions != nil {
-		if err := h.service.setRoutedAgent(r.Context(), sessionID, decision.Specialist); err != nil {
+		if err := h.service.setRouteDecision(r.Context(), sessionID, decision); err != nil {
 			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "routed agent update failed"})
 			return
 		}

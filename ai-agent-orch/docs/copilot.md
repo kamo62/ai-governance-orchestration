@@ -1,6 +1,6 @@
 # Copilot And GitHub Models Integration Plan
 
-Status: beta implementation active as of `v0.21.1-beta`; the private Copilot route remains experimental.
+Status: beta implementation active as of `v0.21.2-beta`; the private Copilot route remains experimental.
 
 This document records the tested local findings, what is now implemented, and the remaining hardening work for GitHub-backed model access in ai-orch.
 
@@ -1020,7 +1020,7 @@ Keep the Copilot POC branch focused on model access:
 
 ## Implemented Beta Status
 
-As of `v0.21.1-beta`, the beta path is no longer just a spike plan. The repo now has:
+As of `v0.21.2-beta`, the beta path is no longer just a spike plan. The repo now has:
 
 - remote and local `ai-orch copilot login`, `status`, `models`, `refresh`, `logout`, and
   `smoke` commands;

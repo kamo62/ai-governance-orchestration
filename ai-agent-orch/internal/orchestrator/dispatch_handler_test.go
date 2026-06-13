@@ -136,6 +136,45 @@ func TestDispatchHandlerAuditsFailClosedRuntimeUnavailable(t *testing.T) {
 	}
 }
 
+func TestDispatchHandlerAuditsRuntimeFromSessionHandle(t *testing.T) {
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	dispatcher := &Dispatcher{
+		catalogRoot: filepath.Join("..", ".."),
+		broker:      mustToolBroker(t),
+		runtimes: map[string]dispatch.Runtime{
+			"direct": fakeRuntime{handle: &fakeHandle{
+				runtime: "direct_openrouter",
+				events:  []dispatch.RuntimeEvent{{Type: "done", Payload: "ok"}},
+			}},
+		},
+	}
+	handler := NewDispatchHandler(dispatcher, audit.NewFileStore(auditPath))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"unit-tests","prompt":"write tests"}`)))
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_direct_runtime")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	auditBytes, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatalf("read audit file: %v", err)
+	}
+	auditText := string(auditBytes)
+	if !strings.Contains(auditText, `"event_type":"specialist.execution"`) {
+		t.Fatalf("expected specialist.execution audit event: %s", auditText)
+	}
+	if !strings.Contains(auditText, `"runtime":"direct_openrouter"`) {
+		t.Fatalf("expected runtime from handle, got audit: %s", auditText)
+	}
+	if strings.Contains(auditText, `"runtime":"opencode_acp"`) {
+		t.Fatalf("success audit must not hard-code opencode_acp: %s", auditText)
+	}
+}
+
 func TestDispatchHandlerRuntimeContextSurvivesCallerCancellation(t *testing.T) {
 	var runtimeCtxErr error
 	dispatcher := &Dispatcher{
@@ -191,9 +230,12 @@ func (f fakeRuntime) StartSession(ctx context.Context, _ dispatch.SessionConfig)
 }
 
 type fakeHandle struct {
-	events []dispatch.RuntimeEvent
-	err    error
+	runtime string
+	events  []dispatch.RuntimeEvent
+	err     error
 }
+
+func (h *fakeHandle) RuntimeName() string { return h.runtime }
 
 func (h *fakeHandle) Wait() error { return h.err }
 

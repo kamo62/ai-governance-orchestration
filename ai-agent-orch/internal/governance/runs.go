@@ -126,7 +126,7 @@ func (h *RunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.service.sessions != nil {
-		if err := h.service.setRoutedAgent(r.Context(), sessionResp.SessionID, decision.Specialist); err != nil {
+		if err := h.service.setRouteDecision(r.Context(), sessionResp.SessionID, decision); err != nil {
 			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "routed agent update failed"})
 			return
 		}

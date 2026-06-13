@@ -142,13 +142,17 @@ func (h *DispatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Record specialist execution audit event before reporting completion.
+	runtimeName := handle.RuntimeName()
+	if runtimeName == "" {
+		runtimeName = "unknown_runtime"
+	}
 	if _, err := h.audit.Append(runtimeCtx, audit.Event{
 		EventID:            h.newID("evt"),
 		SessionID:          sessionID,
 		EventType:          "specialist.execution",
 		Actor:              "local-dev",
 		Agent:              req.Agent,
-		Runtime:            "opencode_acp",
+		Runtime:            runtimeName,
 		RuntimeStatus:      "completed",
 		DurationMS:         time.Since(startedAt).Milliseconds(),
 		EventCount:         len(events),

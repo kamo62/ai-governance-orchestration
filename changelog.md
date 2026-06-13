@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.21.2-beta - 2026-06-13 (Patch)
+
+Release impact: Patch because this hardens confirmation-gate and audit-attribution integrity without changing the normal high-confidence run path.
+
+- **Server-enforced low-confidence confirmation**: sessions routed with `human_confirmation_required=true` now persist that gate state and `/confirm` returns `409` unless the caller sends explicit `human_confirmed:true`, keeping accidental client auto-confirmation from bypassing the human gate. This is an explicit beta confirmation marker, not yet a separate human-proof token.
+- **Recorded truthful runtime attribution**: successful specialist execution audit events now use the runtime name exposed by the session handle, so Direct/OpenRouter, OpenCode ACP and explicit Echo smoke runs no longer collapse into a hard-coded `opencode_acp` label.
+- **Trimmed the root README**: the README is now evaluator-skim first, with capability inventory and developer runbook detail delegated to the changelog, deployment guide and runtime integration docs.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and current status docs now agree on v0.21.2-beta.
+
 ## v0.21.1-beta - 2026-06-13 (Patch)
 
 Release impact: Patch because this fixes fail-open runtime fallback and routing confidence audit metadata without breaking existing APIs.

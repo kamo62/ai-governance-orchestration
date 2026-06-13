@@ -162,7 +162,7 @@ func (h *TurnsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.service.rememberEventID(sessionID, eventID)
 
 	if !req.AutoConfirm {
-		if err := h.service.setRoutedAgent(r.Context(), sessionID, specialist); err != nil {
+		if err := h.service.setRouteDecision(r.Context(), sessionID, routeDecision); err != nil {
 			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "routed agent update failed"})
 			return
 		}

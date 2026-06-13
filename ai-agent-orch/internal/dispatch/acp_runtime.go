@@ -550,6 +550,8 @@ func (h *acpHandle) closeEvents() {
 	h.closed = true
 }
 
+func (h *acpHandle) RuntimeName() string { return "opencode_acp" }
+
 func (h *acpHandle) Wait() error {
 	<-h.done
 	h.mu.Lock()

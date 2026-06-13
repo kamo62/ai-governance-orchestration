@@ -570,7 +570,7 @@ export class BridgeAgentController {
 
         try {
             const streamDone = stream.promise;
-            await client.confirmSession(pending.sessionId, pending.specialist);
+            await client.confirmSession(pending.sessionId, pending.specialist, Boolean(pending.humanConfirmationRequired));
             this.outputChannel.appendLine(`[agent] session confirmed: ${pending.sessionId}`);
             await streamDone;
         } catch (err: any) {

@@ -20,7 +20,7 @@ The Governance Shell does not need the source tree. It needs session identity, m
 
 This keeps the system scalable across many developers because code execution stays close to the developer workspace, CI workspace or approved sandbox. The central system governs the boundary instead of becoming a central source-code access service.
 
-## Status As Of v0.21.1-beta
+## Status As Of v0.21.2-beta
 
 AI-Orch-routed OpenCode is the strongest current client path. It works for the model
 gateway lane: model route, provider/backend attribution, streaming, token usage, cost,
