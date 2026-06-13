@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"ai-agent-orch/internal/catalog"
-	"ai-agent-orch/internal/openrouter"
-	patchproto "ai-agent-orch/internal/patch"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/catalog"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
+	patchproto "github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/patch"
 )
 
 // DirectRuntime calls OpenRouter directly without an ACP subprocess.
@@ -28,30 +28,53 @@ func NewDirectRuntime(client openrouter.ChatClient, catalogRoot string) *DirectR
 }
 
 func (r *DirectRuntime) StartSession(ctx context.Context, cfg SessionConfig) (SessionHandle, error) {
-	modelID, err := catalog.ResolveOpenRouterModelID(r.catalogRoot, cfg.ModelID)
+	modelDef, err := catalog.ResolveModelDefinition(r.catalogRoot, cfg.ModelID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve model %q: %w", cfg.ModelID, err)
 	}
+	route, err := selectDirectRoute(modelDef)
+	if err != nil {
+		return nil, fmt.Errorf("route model %q: %w", cfg.ModelID, err)
+	}
 
 	handle := &directHandle{
-		client:  r.client,
-		config:  cfg,
-		modelID: modelID,
-		events:  make(chan RuntimeEvent, 16),
-		done:    make(chan struct{}),
+		client:   r.client,
+		config:   cfg,
+		provider: route.Provider,
+		modelID:  route.ModelID,
+		events:   make(chan RuntimeEvent, 16),
+		done:     make(chan struct{}),
 	}
 
 	go handle.run(ctx)
 	return handle, nil
 }
 
+// selectDirectRoute picks the first catalog route this lane can serve. The
+// direct runtime holds no per-actor credentials, so actor-bound routes (for
+// example copilot-user) are skipped rather than silently rewritten to the
+// model's top-level defaults.
+func selectDirectRoute(modelDef catalog.ModelDefinition) (catalog.ModelRoute, error) {
+	for _, route := range modelDef.EffectiveRoutes() {
+		if route.RequiresActorToken {
+			continue
+		}
+		if strings.TrimSpace(route.Provider) == "" || strings.TrimSpace(route.ModelID) == "" {
+			continue
+		}
+		return route, nil
+	}
+	return catalog.ModelRoute{}, fmt.Errorf("alias %q has no route usable without an actor token", modelDef.Alias)
+}
+
 type directHandle struct {
-	client  openrouter.ChatClient
-	config  SessionConfig
-	modelID string
-	events  chan RuntimeEvent
-	done    chan struct{}
-	err     error
+	client   openrouter.ChatClient
+	config   SessionConfig
+	provider string
+	modelID  string
+	events   chan RuntimeEvent
+	done     chan struct{}
+	err      error
 }
 
 func (h *directHandle) run(ctx context.Context) {
@@ -79,6 +102,7 @@ func (h *directHandle) run(ctx context.Context) {
 	req := openrouter.ChatCompletionRequest{
 		SessionID:  h.config.SessionID,
 		ModelAlias: h.config.ModelID,
+		Provider:   h.provider,
 		Model:      h.modelID,
 		Messages: []openrouter.Message{
 			{Role: "system", Content: systemPrompt},
@@ -118,6 +142,18 @@ func (h *directHandle) run(ctx context.Context) {
 		Payload: string(usagePayload),
 	}
 
+	// Enforce the agent's per-invocation cost cap. Provider cost is only
+	// known after the call, so an overrun fails the run and withholds the
+	// work product instead of letting it flow into patch review.
+	if h.config.CostCapUSD > 0 && resp.Usage.Cost > h.config.CostCapUSD {
+		h.err = fmt.Errorf("per-invocation cost cap exceeded: %.6f USD > %.6f USD cap", resp.Usage.Cost, h.config.CostCapUSD)
+		h.events <- RuntimeEvent{
+			Type:    "error",
+			Payload: h.err.Error(),
+		}
+		return
+	}
+
 	h.events <- RuntimeEvent{
 		Type:    "stream",
 		Payload: directStreamPayload(content, patch),
@@ -152,14 +188,6 @@ func (h *directHandle) tryExtractPatch(content string) string {
 		}
 	}
 	return ""
-}
-
-func extractJSONObject(content string) string {
-	objects := extractJSONObjects(content)
-	if len(objects) == 0 {
-		return ""
-	}
-	return objects[0]
 }
 
 func extractJSONObjects(content string) []string {
@@ -309,9 +337,6 @@ func openRouterReasoningConfig() *openrouter.ReasoningConfig {
 }
 
 func reasoningEffort() string {
-	if effort := os.Getenv("AI_ORCH_OPENROUTER_REASONING_EFFORT"); effort != "" {
-		return effort
-	}
 	return os.Getenv("OPENROUTER_REASONING_EFFORT")
 }
 

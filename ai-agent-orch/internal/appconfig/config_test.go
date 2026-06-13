@@ -1,6 +1,10 @@
 package appconfig
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestLoadUsesDefaults(t *testing.T) {
 	t.Setenv("AI_ORCH_ADDR", "")
@@ -43,6 +47,21 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.ToolLoopMax != 15 {
 		t.Fatalf("expected default tool loop max 15, got %d", cfg.ToolLoopMax)
 	}
+	if cfg.ModelBackend != "bifrost" {
+		t.Fatalf("expected default model backend bifrost, got %q", cfg.ModelBackend)
+	}
+	if cfg.BifrostBaseURL != "" {
+		t.Fatalf("expected empty default Bifrost base URL, got %q", cfg.BifrostBaseURL)
+	}
+	if cfg.EnableServerContextResolver {
+		t.Fatalf("expected server context resolver disabled by default")
+	}
+	if cfg.RequireWorkItem {
+		t.Fatalf("expected work item requirement disabled by default")
+	}
+	if cfg.ExecutionTimeout != 10*time.Minute {
+		t.Fatalf("expected default execution timeout 10m, got %v", cfg.ExecutionTimeout)
+	}
 }
 
 func TestLoadUsesEnvAndFlags(t *testing.T) {
@@ -57,8 +76,14 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	t.Setenv("AI_ORCH_SESSION_COST_CAP_USD", "0.50")
 	t.Setenv("AI_ORCH_POLICY_ENGINE", "agt")
 	t.Setenv("AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX", "7")
+	t.Setenv("AI_ORCH_MODEL_BACKEND", "bifrost")
+	t.Setenv("AI_ORCH_BIFROST_BASE_URL", "http://bifrost:8080")
+	t.Setenv("AI_ORCH_BIFROST_API_KEY", "env-bifrost-token")
+	t.Setenv("AI_ORCH_ENABLE_SERVER_CONTEXT_RESOLVER", "true")
+	t.Setenv("AI_ORCH_REQUIRE_WORK_ITEM", "true")
+	t.Setenv("AI_ORCH_EXECUTION_TIMEOUT", "5m")
 
-	cfg, err := Load([]string{"-addr", ":7777", "-audit-path", "/tmp/flag-audit.jsonl", "-dev-token", "flag-token", "-service-token", "flag-service-token", "-classification-max", "restricted", "-kill-switch=false", "-cost-cap-enabled=false", "-session-cost-cap-usd", "0.75", "-policy-engine", "native", "-consecutive-tool-call-max", "11"})
+	cfg, err := Load([]string{"-addr", ":7777", "-audit-path", "/tmp/flag-audit.jsonl", "-dev-token", "flag-token", "-service-token", "flag-service-token", "-classification-max", "restricted", "-kill-switch=false", "-cost-cap-enabled=false", "-session-cost-cap-usd", "0.75", "-policy-engine", "native", "-consecutive-tool-call-max", "11", "-model-backend", "copilot-user", "-bifrost-base-url", "http://flag-bifrost:8080", "-bifrost-api-key", "flag-bifrost-token", "-enable-server-context-resolver=false", "-require-work-item=false", "-execution-timeout", "30s"})
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -94,5 +119,34 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	}
 	if cfg.ToolLoopMax != 11 {
 		t.Fatalf("expected flag tool loop max to win, got %d", cfg.ToolLoopMax)
+	}
+	if cfg.ModelBackend != "copilot-user" {
+		t.Fatalf("expected flag model backend to win, got %q", cfg.ModelBackend)
+	}
+	if cfg.BifrostBaseURL != "http://flag-bifrost:8080" {
+		t.Fatalf("expected flag Bifrost base URL to win, got %q", cfg.BifrostBaseURL)
+	}
+	if cfg.BifrostAPIKey != "flag-bifrost-token" {
+		t.Fatalf("expected flag Bifrost API key to win, got %q", cfg.BifrostAPIKey)
+	}
+	if cfg.EnableServerContextResolver {
+		t.Fatalf("expected flag server context resolver setting to win")
+	}
+	if cfg.RequireWorkItem {
+		t.Fatalf("expected flag work item requirement setting to win")
+	}
+	if cfg.ExecutionTimeout != 30*time.Second {
+		t.Fatalf("expected flag execution timeout to win, got %v", cfg.ExecutionTimeout)
+	}
+}
+
+func TestLoadRejectsInvalidExecutionTimeout(t *testing.T) {
+	t.Setenv("AI_ORCH_EXECUTION_TIMEOUT", "0s")
+	_, err := Load([]string{})
+	if err == nil {
+		t.Fatal("Load should reject non-positive execution timeout")
+	}
+	if !strings.Contains(err.Error(), "AI_ORCH_EXECUTION_TIMEOUT") {
+		t.Fatalf("error should name AI_ORCH_EXECUTION_TIMEOUT, got %v", err)
 	}
 }

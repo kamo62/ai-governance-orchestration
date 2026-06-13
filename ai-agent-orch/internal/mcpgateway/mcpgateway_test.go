@@ -398,8 +398,12 @@ func TestGatewayConfigDoctor(t *testing.T) {
 }
 
 func TestGatewayConfigStartSession(t *testing.T) {
+	var gotTrustLevel string
+	var gotClient string
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/sessions" {
+			gotTrustLevel = r.Header.Get("X-AI-Orch-Trust-Level")
+			gotClient = r.Header.Get("X-AI-Orch-Client")
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]string{"session_id": "sess_123", "status": "created"})
 			return
@@ -422,7 +426,7 @@ func TestGatewayConfigStartSession(t *testing.T) {
 		Params: mustRawMessage(map[string]any{
 			"name": "start_governed_session",
 			"arguments": map[string]any{
-				"agent":          "test-generation",
+				"agent":          "unit-tests",
 				"classification": "internal",
 				"prompt":         "hello",
 			},
@@ -443,6 +447,93 @@ func TestGatewayConfigStartSession(t *testing.T) {
 	}
 	if !strings.Contains(result.Content[0].Text, "sess_123") {
 		t.Fatalf("expected session ID in response, got: %s", result.Content[0].Text)
+	}
+	// Trust level is decided server-side; the client must not declare its own.
+	if gotTrustLevel != "" {
+		t.Fatalf("client must not send a trust-level header, got %q", gotTrustLevel)
+	}
+	if gotClient != "ai-orch-mcp" {
+		t.Fatalf("expected ai-orch-mcp client header, got %q", gotClient)
+	}
+}
+
+func TestGatewayConfigStartGovernedRun(t *testing.T) {
+	var gotTrustLevel string
+	var gotBody map[string]any
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/runs" {
+			gotTrustLevel = r.Header.Get("X-AI-Orch-Trust-Level")
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"run_id":     "run_123",
+				"session_id": "sess_123",
+				"status":     "awaiting_confirmation",
+				"specialist": "unit-tests",
+				"next_gate":  "confirm",
+				"sse_url":    "/v1/sessions/sess_123/events",
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mock.Close()
+
+	cfg := &GatewayConfig{
+		GovernanceURL: mock.URL,
+		DevToken:      "test-token",
+	}
+	s := NewServer("test", "1.0")
+	RegisterPhase1GTools(s, cfg)
+
+	resp := s.Handle(context.Background(), &Request{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params: mustRawMessage(map[string]any{
+			"name": "start_governed_run",
+			"arguments": map[string]any{
+				"agent":           "unit-tests",
+				"classification":  "internal",
+				"prompt":          "hello",
+				"repo_url":        "https://example.test/repo.git",
+				"branch":          "test/ABC-123-parser",
+				"work_item_id":    "ABC-123",
+				"work_item_type":  "test",
+				"permission_mode": "full_access",
+				"approval_mode":   "yolo",
+				"workspace_mode":  "local",
+			},
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %+v", resp.Error)
+	}
+	result, ok := resp.Result.(*ToolsCallResult)
+	if !ok {
+		t.Fatalf("expected *ToolsCallResult, got %T", resp.Result)
+	}
+	if !strings.Contains(result.Content[0].Text, "run_123") || !strings.Contains(result.Content[0].Text, "sess_123") {
+		t.Fatalf("expected run and session IDs in response, got: %s", result.Content[0].Text)
+	}
+	// Trust level is decided server-side; the client must not declare its own.
+	if gotTrustLevel != "" {
+		t.Fatalf("client must not send a trust-level header, got %q", gotTrustLevel)
+	}
+	for key, want := range map[string]string{
+		"repo_url":        "https://example.test/repo.git",
+		"branch":          "test/ABC-123-parser",
+		"work_item_id":    "ABC-123",
+		"work_item_type":  "test",
+		"permission_mode": "full_access",
+		"approval_mode":   "yolo",
+		"workspace_mode":  "local",
+	} {
+		if gotBody[key] != want {
+			t.Fatalf("expected %s=%q, got %#v", key, want, gotBody[key])
+		}
 	}
 }
 

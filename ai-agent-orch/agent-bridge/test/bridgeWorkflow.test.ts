@@ -38,10 +38,19 @@ describe('Bridge workflow helpers', () => {
     test('builds governed auth headers and fails closed without a token', () => {
         expect(authHeadersForBridge({ devToken: ' local-dev ', identity: 'developer' }, { Accept: 'text/event-stream' })).toEqual({
             Authorization: 'Bearer local-dev',
+            'X-AI-Orch-Client': 'ai-agent-bridge',
             'X-AI-Orch-Local-Identity': 'developer',
+            'X-AI-Orch-Trust-Level': 'managed_client',
+            'X-AI-Orch-Enforcement-Mode': 'managed',
             Accept: 'text/event-stream',
         });
         expect(() => authHeadersForBridge({ devToken: ' ', identity: 'developer' })).toThrow('developer token is required');
+    });
+
+    test('includes trusted-client token when configured', () => {
+        const headers = authHeadersForBridge({ devToken: 'local-dev', identity: 'developer', trustedClientToken: ' trusted ' });
+
+        expect(headers['X-AI-Orch-Trusted-Client-Token']).toBe('trusted');
     });
 
     test('parses only SSE data lines used by the governed session stream', () => {

@@ -5,23 +5,87 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/envx"
 )
 
 type Config struct {
-	Addr              string
-	CatalogRoot       string
-	AuditPath         string
-	DevToken          string
-	AdminToken        string // Separate token for /v1/admin/* endpoints.
-	ServiceToken      string
-	RuntimeToken      string // Token for model compatibility gateway runtime calls.
-	ClassificationMax string
-	KillSwitch        bool
-	CostCapEnabled    bool
-	SessionCostCapUSD float64
-	PolicyEngine      string
-	ToolLoopMax       int
-	GatewayAddr       string // Listen address for the model compatibility gateway.
+	Addr                        string
+	CatalogRoot                 string
+	AuditPath                   string
+	DevToken                    string
+	AdminToken                  string // Separate token for /v1/admin/* endpoints.
+	ServiceToken                string
+	RuntimeToken                string // Token for model compatibility gateway runtime calls.
+	ClassificationMax           string
+	KillSwitch                  bool
+	CostCapEnabled              bool
+	SessionCostCapUSD           float64
+	PolicyEngine                string
+	ToolLoopMax                 int
+	GatewayAddr                 string // Listen address for the model compatibility gateway.
+	ModelBackend                string // bifrost or copilot-user.
+	BifrostBaseURL              string // Base URL for the Bifrost sidecar when selected.
+	BifrostAPIKey               string // Optional Bifrost bearer token if sidecar auth is enabled.
+	EnableServerContextResolver bool   // Local-dev only git context fallback.
+	RequireWorkItem             bool   // Require a branch or explicit work item ID before creating governed sessions.
+	BackendControlEnabled       bool   // Allow admin UI to run docker compose backend controls.
+	BackendControlWorkDir       string // Directory containing docker-compose files for backend controls.
+	TrustedClientToken          string // Shared secret that gates privileged audit trust levels (gateway_enforced, managed_client).
+	Environment                 string // Deployment posture: local (default) or production.
+	GatewayMaxRequestBytes      int    // Max request body size accepted by the model compatibility gateway.
+	RequireBackendHealth        bool   // Refuse to start when the model backend is unhealthy instead of degrading.
+	GatewayAutoSession          bool   // Allow runtime model calls without explicit session headers by creating an auto session.
+
+	ExecutionTimeout time.Duration // Wall-clock cap for a single governed runtime dispatch.
+}
+
+// IsProduction reports whether the shell runs with the production posture,
+// which makes weak local-dev defaults fail closed at startup.
+func (c Config) IsProduction() bool {
+	return c.Environment == "production"
+}
+
+// localDefaultTokens are the well-known Compose defaults that must never reach
+// a production deployment.
+var localDefaultTokens = map[string]string{
+	"AI_ORCH_DEV_TOKEN":            "local-dev",
+	"AI_ORCH_ADMIN_TOKEN":          "local-admin",
+	"AI_ORCH_SERVICE_TOKEN":        "local-service-token",
+	"AI_ORCH_RUNTIME_TOKEN":        "local-runtime-token",
+	"AI_ORCH_TRUSTED_CLIENT_TOKEN": "local-trusted-client-token",
+}
+
+// ValidateProduction returns the configuration problems that make this config
+// unsafe to run with AI_ORCH_ENV=production. An empty slice means safe.
+func (c Config) ValidateProduction() []string {
+	if !c.IsProduction() {
+		return nil
+	}
+	var problems []string
+	check := func(name, value string) {
+		if value == "" {
+			problems = append(problems, name+" must be set in production")
+			return
+		}
+		if def, ok := localDefaultTokens[name]; ok && value == def {
+			problems = append(problems, name+" must not use the local default value in production")
+		}
+	}
+	// The dev token is ignored in production (OIDC is mandatory), so it is
+	// only rejected when it carries a known local default that suggests a
+	// copied dev configuration.
+	if c.DevToken == localDefaultTokens["AI_ORCH_DEV_TOKEN"] {
+		problems = append(problems, "AI_ORCH_DEV_TOKEN must not use the local default value in production")
+	}
+	check("AI_ORCH_ADMIN_TOKEN", c.AdminToken)
+	check("AI_ORCH_SERVICE_TOKEN", c.ServiceToken)
+	if c.RuntimeToken != "" {
+		check("AI_ORCH_RUNTIME_TOKEN", c.RuntimeToken)
+	}
+	check("AI_ORCH_TRUSTED_CLIENT_TOKEN", c.TrustedClientToken)
+	return problems
 }
 
 func Load(args []string) (Config, error) {
@@ -41,21 +105,62 @@ func Load(args []string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	enableServerContextResolver, err := envBool("AI_ORCH_ENABLE_SERVER_CONTEXT_RESOLVER", false)
+	if err != nil {
+		return Config{}, err
+	}
+	requireWorkItem, err := envBool("AI_ORCH_REQUIRE_WORK_ITEM", false)
+	if err != nil {
+		return Config{}, err
+	}
+	backendControlEnabled, err := envBool("AI_ORCH_BACKEND_CONTROL_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	gatewayMaxRequestBytes, err := envInt("AI_ORCH_GATEWAY_MAX_REQUEST_BYTES", 20<<20)
+	if err != nil {
+		return Config{}, err
+	}
+	requireBackendHealth, err := envBool("AI_ORCH_REQUIRE_BACKEND_HEALTH", false)
+	if err != nil {
+		return Config{}, err
+	}
+	gatewayAutoSession, err := envBool("AI_ORCH_GATEWAY_AUTO_SESSION", true)
+	if err != nil {
+		return Config{}, err
+	}
+	executionTimeout, err := envDuration("AI_ORCH_EXECUTION_TIMEOUT", 10*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
-		Addr:              envOrDefault("AI_ORCH_ADDR", ":8080"),
-		CatalogRoot:       envOrDefault("AI_ORCH_CATALOG_ROOT", "."),
-		AuditPath:         envOrDefault("AI_ORCH_AUDIT_PATH", "var/audit/audit.jsonl"),
-		DevToken:          envOrDefault("AI_ORCH_DEV_TOKEN", ""),
-		AdminToken:        envOrDefault("AI_ORCH_ADMIN_TOKEN", ""),
-		ServiceToken:      envOrDefault("AI_ORCH_SERVICE_TOKEN", ""),
-		RuntimeToken:      envOrDefault("AI_ORCH_RUNTIME_TOKEN", ""),
-		ClassificationMax: envOrDefault("AI_ORCH_CLASSIFICATION_MAX", "internal"),
-		KillSwitch:        killSwitch,
-		CostCapEnabled:    costCapEnabled,
-		SessionCostCapUSD: sessionCostCapUSD,
-		PolicyEngine:      envOrDefault("AI_ORCH_POLICY_ENGINE", "native"),
-		ToolLoopMax:       toolLoopMax,
-		GatewayAddr:       envOrDefault("AI_ORCH_GATEWAY_ADDR", ":18082"),
+		Addr:                        envx.OrDefault("AI_ORCH_ADDR", ":8080"),
+		CatalogRoot:                 envx.OrDefault("AI_ORCH_CATALOG_ROOT", "."),
+		AuditPath:                   envx.OrDefault("AI_ORCH_AUDIT_PATH", "var/audit/audit.jsonl"),
+		DevToken:                    envx.OrDefault("AI_ORCH_DEV_TOKEN", ""),
+		AdminToken:                  envx.OrDefault("AI_ORCH_ADMIN_TOKEN", ""),
+		ServiceToken:                envx.OrDefault("AI_ORCH_SERVICE_TOKEN", ""),
+		RuntimeToken:                envx.OrDefault("AI_ORCH_RUNTIME_TOKEN", ""),
+		ClassificationMax:           envx.OrDefault("AI_ORCH_CLASSIFICATION_MAX", "internal"),
+		KillSwitch:                  killSwitch,
+		CostCapEnabled:              costCapEnabled,
+		SessionCostCapUSD:           sessionCostCapUSD,
+		PolicyEngine:                envx.OrDefault("AI_ORCH_POLICY_ENGINE", "native"),
+		ToolLoopMax:                 toolLoopMax,
+		GatewayAddr:                 envx.OrDefault("AI_ORCH_GATEWAY_ADDR", ":18082"),
+		ModelBackend:                envx.OrDefault("AI_ORCH_MODEL_BACKEND", "bifrost"),
+		BifrostBaseURL:              envx.OrDefault("AI_ORCH_BIFROST_BASE_URL", ""),
+		BifrostAPIKey:               envx.OrDefault("AI_ORCH_BIFROST_API_KEY", ""),
+		EnableServerContextResolver: enableServerContextResolver,
+		RequireWorkItem:             requireWorkItem,
+		BackendControlEnabled:       backendControlEnabled,
+		BackendControlWorkDir:       envx.OrDefault("AI_ORCH_BACKEND_CONTROL_WORKDIR", "."),
+		TrustedClientToken:          envx.OrDefault("AI_ORCH_TRUSTED_CLIENT_TOKEN", ""),
+		Environment:                 envx.OrDefault("AI_ORCH_ENV", "local"),
+		GatewayMaxRequestBytes:      gatewayMaxRequestBytes,
+		RequireBackendHealth:        requireBackendHealth,
+		GatewayAutoSession:          gatewayAutoSession,
+		ExecutionTimeout:            executionTimeout,
 	}
 
 	fs := flag.NewFlagSet("ai-agent-orch", flag.ContinueOnError)
@@ -73,6 +178,15 @@ func Load(args []string) (Config, error) {
 	fs.Float64Var(&cfg.SessionCostCapUSD, "session-cost-cap-usd", cfg.SessionCostCapUSD, "maximum estimated cost per session")
 	fs.StringVar(&cfg.PolicyEngine, "policy-engine", cfg.PolicyEngine, "policy engine adapter (native; agt is reserved)")
 	fs.IntVar(&cfg.ToolLoopMax, "consecutive-tool-call-max", cfg.ToolLoopMax, "maximum consecutive tool/MCP calls before output")
+	fs.StringVar(&cfg.ModelBackend, "model-backend", cfg.ModelBackend, "model backend adapter (bifrost or copilot-user)")
+	fs.StringVar(&cfg.BifrostBaseURL, "bifrost-base-url", cfg.BifrostBaseURL, "Bifrost sidecar base URL")
+	fs.StringVar(&cfg.BifrostAPIKey, "bifrost-api-key", cfg.BifrostAPIKey, "optional Bifrost sidecar bearer token")
+	fs.BoolVar(&cfg.EnableServerContextResolver, "enable-server-context-resolver", cfg.EnableServerContextResolver, "enable local-dev server-side git context fallback")
+	fs.BoolVar(&cfg.RequireWorkItem, "require-work-item", cfg.RequireWorkItem, "require work item ID from branch or request before governed sessions")
+	fs.BoolVar(&cfg.BackendControlEnabled, "backend-control-enabled", cfg.BackendControlEnabled, "allow admin UI to run docker compose backend controls")
+	fs.StringVar(&cfg.BackendControlWorkDir, "backend-control-workdir", cfg.BackendControlWorkDir, "directory containing docker-compose files for backend controls")
+	fs.StringVar(&cfg.TrustedClientToken, "trusted-client-token", cfg.TrustedClientToken, "shared secret that gates privileged audit trust levels")
+	fs.DurationVar(&cfg.ExecutionTimeout, "execution-timeout", cfg.ExecutionTimeout, "wall-clock cap for a single governed runtime dispatch")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -91,13 +205,6 @@ func envFloat(key string, fallback float64) (float64, error) {
 	return parsed, nil
 }
 
-func envOrDefault(key string, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
-}
-
 func envInt(key string, fallback int) (int, error) {
 	value := os.Getenv(key)
 	if value == "" {
@@ -106,6 +213,21 @@ func envInt(key string, fallback int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func envDuration(key string, fallback time.Duration) (time.Duration, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a duration like 10m or 1h: %w", key, err)
+	}
+	if parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration", key)
 	}
 	return parsed, nil
 }

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 )
 
 // TestAllBoundariesFailClosedUnderFailure proves every governance boundary
@@ -45,7 +45,7 @@ func testAuditFailureBlocksCreate(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	req := authorizedSessionRequest(`{"agent":"test-generation","classification":"internal","prompt":"normal prompt"}`)
+	req := authorizedSessionRequest(`{"agent":"unit-tests","classification":"internal","prompt":"normal prompt"}`)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -62,7 +62,7 @@ func testAuditFailureBlocksRouting(t *testing.T) {
 		DevToken: "local-test-token",
 		Audit:    failingAuditStore{},
 	})
-	orch := &fakeOrchestrator{specialist: "test-generation", reason: "test"}
+	orch := &fakeOrchestrator{specialist: "unit-tests", reason: "test"}
 	handler := NewMessagesHandler(service, orch)
 
 	body := []byte(`{"prompt":"write tests"}`)
@@ -75,7 +75,7 @@ func testAuditFailureBlocksRouting(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if strings.Contains(rec.Body.String(), "test-generation") {
+	if strings.Contains(rec.Body.String(), "unit-tests") {
 		t.Fatal("specialist must not leak when audit fails")
 	}
 }
@@ -88,7 +88,7 @@ func testAuditFailureBlocksConfirm(t *testing.T) {
 	orch := &fakeOrchestrator{}
 	handler := NewConfirmHandlerWithEvents(service, orch, nil)
 
-	body := []byte(`{"agent":"test-generation"}`)
+	body := []byte(`{"agent":"unit-tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_123/confirm", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	req.Header.Set("Content-Type", "application/json")
@@ -109,7 +109,7 @@ func testAuditFailureBlocksAbort(t *testing.T) {
 	if err := store.Create(context.Background(), SessionRecord{
 		SessionID:      "sess_abort",
 		ActorSubject:   "local-dev",
-		Agent:          "test-generation",
+		Agent:          "unit-tests",
 		Classification: "internal",
 		PromptSHA256:   "abc123",
 		Status:         "running",
@@ -191,7 +191,7 @@ func testDispatchFailure(t *testing.T) {
 	service.rememberPrompt("sess_123", "write tests")
 	handler := NewConfirmHandlerWithEvents(service, orch, events)
 
-	body := []byte(`{"agent":"test-generation"}`)
+	body := []byte(`{"agent":"unit-tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_123/confirm", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	req.Header.Set("Content-Type", "application/json")
@@ -302,7 +302,7 @@ func testKillSwitchBlocksEarly(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	body := []byte(`{"agent":"test-generation","classification":"internal","prompt":"this prompt must not be processed"}`)
+	body := []byte(`{"agent":"unit-tests","classification":"internal","prompt":"this prompt must not be processed"}`)
 	req := authorizedSessionRequest(string(body))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -330,7 +330,7 @@ func testSecretBlocksBeforeModel(t *testing.T) {
 	handler := NewSessionHandler(service)
 
 	fakeKey := "sk-or-v1-" + "test1234567890"
-	body := fmt.Sprintf(`{"agent":"test-generation","classification":"internal","prompt":"use key=%s"}`, fakeKey)
+	body := fmt.Sprintf(`{"agent":"unit-tests","classification":"internal","prompt":"use key=%s"}`, fakeKey)
 	req := authorizedSessionRequest(body)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -358,7 +358,7 @@ func testClassificationBlocks(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	body := `{"agent":"test-generation","classification":"restricted","prompt":"restricted content"}`
+	body := `{"agent":"unit-tests","classification":"restricted","prompt":"restricted content"}`
 	req := authorizedSessionRequest(body)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -384,7 +384,7 @@ func testCostCapBlocks(t *testing.T) {
 	})
 	handler := NewSessionHandler(service)
 
-	body := `{"agent":"test-generation","classification":"internal","prompt":"expensive prompt","estimated_cost_usd":0.50}`
+	body := `{"agent":"unit-tests","classification":"internal","prompt":"expensive prompt","estimated_cost_usd":0.50}`
 	req := authorizedSessionRequest(body)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -412,7 +412,7 @@ func testRawPromptNeverLeaks(t *testing.T) {
 	handler := NewSessionHandler(service)
 
 	prompt := "my super secret business logic about payment processing"
-	body := fmt.Sprintf(`{"agent":"test-generation","classification":"internal","prompt":"%s"}`, prompt)
+	body := fmt.Sprintf(`{"agent":"unit-tests","classification":"internal","prompt":"%s"}`, prompt)
 	req := authorizedSessionRequest(body)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -449,7 +449,7 @@ func testRawPromptNeverInSSE(t *testing.T) {
 	service.rememberPrompt("sess_sse", "secret prompt")
 	handler := NewConfirmHandlerWithEvents(service, orch, events)
 
-	body := []byte(`{"agent":"test-generation"}`)
+	body := []byte(`{"agent":"unit-tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_sse/confirm", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	req.Header.Set("Content-Type", "application/json")
@@ -495,7 +495,7 @@ func testRequestCancellationDoesNotCancelStream(t *testing.T) {
 	service.rememberPrompt("sess_timeout", "slow prompt")
 	handler := NewConfirmHandlerWithEvents(service, orch, events)
 
-	body := []byte(`{"agent":"test-generation"}`)
+	body := []byte(`{"agent":"unit-tests"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_timeout/confirm", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	req.Header.Set("Content-Type", "application/json")
@@ -544,13 +544,13 @@ type failingOrchestrator struct {
 	err error
 }
 
-func (f *failingOrchestrator) Route(ctx context.Context, sessionID string, prompt string) (RouteDecision, error) {
+func (f *failingOrchestrator) Route(ctx context.Context, sessionID string, prompt string, context SessionContext) (RouteDecision, error) {
 	return RouteDecision{}, f.err
 }
 func (f *failingOrchestrator) AcceptSession(ctx context.Context, sessionID string, agent string) error {
 	return f.err
 }
-func (f *failingOrchestrator) Dispatch(ctx context.Context, sessionID string, agent string, prompt string) (DispatchResult, error) {
+func (f *failingOrchestrator) Dispatch(ctx context.Context, sessionID string, agent string, prompt string, runtimeToken string) (DispatchResult, error) {
 	return DispatchResult{}, f.err
 }
 
@@ -559,13 +559,13 @@ type slowOrchestrator struct {
 	delay time.Duration
 }
 
-func (s *slowOrchestrator) Route(ctx context.Context, sessionID string, prompt string) (RouteDecision, error) {
-	return RouteDecision{Specialist: "test-generation", Reason: "slow test"}, nil
+func (s *slowOrchestrator) Route(ctx context.Context, sessionID string, prompt string, context SessionContext) (RouteDecision, error) {
+	return RouteDecision{Specialist: "unit-tests", Reason: "slow test"}, nil
 }
 func (s *slowOrchestrator) AcceptSession(ctx context.Context, sessionID string, agent string) error {
 	return nil
 }
-func (s *slowOrchestrator) Dispatch(ctx context.Context, sessionID string, agent string, prompt string) (DispatchResult, error) {
+func (s *slowOrchestrator) Dispatch(ctx context.Context, sessionID string, agent string, prompt string, runtimeToken string) (DispatchResult, error) {
 	select {
 	case <-time.After(s.delay):
 		return DispatchResult{SessionID: sessionID, Status: "completed", Agent: agent}, nil

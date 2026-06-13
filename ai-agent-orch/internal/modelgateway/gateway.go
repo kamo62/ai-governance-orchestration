@@ -4,6 +4,7 @@ package modelgateway
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -17,36 +18,111 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/openrouter"
-	"ai-agent-orch/internal/router"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/copilot"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/modelbackend"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/router"
 )
 
 // GatewayConfig holds the configuration for the model compatibility gateway.
 type GatewayConfig struct {
-	RuntimeToken    string
-	Router          *router.Router
-	OpenRouter      openrouter.ChatClient
-	Audit           audit.Store
-	NewID           func(prefix string) string
-	ValidateSession func(context.Context, string) error
-	LookupSession   func(context.Context, string) (SessionInfo, error)
+	RuntimeToken      string
+	Router            *router.Router
+	Backend           modelbackend.Backend
+	Audit             audit.Store
+	NewID             func(prefix string) string
+	ValidateSession   func(context.Context, string) error
+	LookupSession     func(context.Context, string) (SessionInfo, error)
+	AutoSession       func(context.Context, AutoSessionRequest) (SessionInfo, error)
+	FinishAutoSession func(context.Context, string, string) error
+	DelegateTask      func(context.Context, TaskDelegationRequest) error
+	// MaxRequestBytes caps inbound request bodies. Coding agents send
+	// multi-megabyte contexts, so the default is deliberately generous.
+	MaxRequestBytes int64
 }
+
+type TaskDelegationRequest struct {
+	ParentSessionID     string
+	ActorSubject        string
+	ParentAgent         string
+	Agent               string
+	Description         string
+	Prompt              string
+	ModelAlias          string
+	RequestedModelAlias string
+	Provider            string
+	ToolCallID          string
+	SourceSystem        string
+}
+
+type AutoSessionRequest struct {
+	ActorSubject       string
+	ModelAlias         string
+	PromptSHA256       string
+	Client             string
+	Endpoint           string
+	Classification     string
+	RawRequestBody     []byte
+	TrustedClientToken string
+	UseCaseID          string
+	WorkflowID         string
+	WorkItemID         string
+	WorkItemType       string
+	RepoURL            string
+	Branch             string
+	CommitSHA          string
+	Intent             string
+	ActorHint          string
+	SourceSystem       string
+	EstimatedCostUSD   float64
+}
+
+const defaultMaxRequestBytes = 20 << 20 // 20 MiB
 
 // SessionInfo is server-side session context used by runtime model routing.
 type SessionInfo struct {
+	SessionID      string
 	Classification string
+	Status         string
+	// GatewayTokenSHA256, when set, requires callers to present the matching
+	// per-session secret via X-AI-Orch-Session-Token. The runtime variant is
+	// minted at dispatch for server-side runtimes; either hash is accepted.
+	GatewayTokenSHA256        string
+	RuntimeGatewayTokenSHA256 string
+	ActorSubject              string
+	Agent                     string
+	RunID                     string
+	UseCaseID                 string
+	WorkflowID                string
+	WorkItemID                string
+	WorkItemType              string
+	RepoURL                   string
+	Branch                    string
+	CommitSHA                 string
+	ActorHint                 string
+	SourceSystem              string
+	PermissionMode            string
+	ApprovalMode              string
+	WorkspaceMode             string
+	GatewayToken              string
+	AutoCreated               bool
 }
 
 // Gateway is an OpenAI-compatible model endpoint owned by the Governance Shell.
 type Gateway struct {
-	runtimeToken    string
-	router          *router.Router
-	openRouter      openrouter.ChatClient
-	audit           audit.Store
-	newID           func(prefix string) string
-	validateSession func(context.Context, string) error
-	lookupSession   func(context.Context, string) (SessionInfo, error)
+	runtimeToken      string
+	router            *router.Router
+	backend           modelbackend.Backend
+	audit             audit.Store
+	newID             func(prefix string) string
+	validateSession   func(context.Context, string) error
+	lookupSession     func(context.Context, string) (SessionInfo, error)
+	autoSession       func(context.Context, AutoSessionRequest) (SessionInfo, error)
+	finishAutoSession func(context.Context, string, string) error
+	delegateTask      func(context.Context, TaskDelegationRequest) error
+	maxRequestBytes   int64
 }
 
 // NewGateway creates a new model compatibility gateway.
@@ -55,14 +131,22 @@ func NewGateway(cfg GatewayConfig) *Gateway {
 	if newID == nil {
 		newID = randomID
 	}
+	maxRequestBytes := cfg.MaxRequestBytes
+	if maxRequestBytes <= 0 {
+		maxRequestBytes = defaultMaxRequestBytes
+	}
 	return &Gateway{
-		runtimeToken:    cfg.RuntimeToken,
-		router:          cfg.Router,
-		openRouter:      cfg.OpenRouter,
-		audit:           cfg.Audit,
-		newID:           newID,
-		validateSession: cfg.ValidateSession,
-		lookupSession:   cfg.LookupSession,
+		runtimeToken:      cfg.RuntimeToken,
+		router:            cfg.Router,
+		backend:           cfg.Backend,
+		audit:             cfg.Audit,
+		newID:             newID,
+		validateSession:   cfg.ValidateSession,
+		lookupSession:     cfg.LookupSession,
+		autoSession:       cfg.AutoSession,
+		finishAutoSession: cfg.FinishAutoSession,
+		delegateTask:      cfg.DelegateTask,
+		maxRequestBytes:   maxRequestBytes,
 	}
 }
 
@@ -77,24 +161,24 @@ func (g *Gateway) Handler() http.Handler {
 
 func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	if !g.authorized(r) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
 	if g.router == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "router unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "router unavailable"})
 		return
 	}
 
-	classification := r.URL.Query().Get("classification")
-	if classification == "" {
-		classification = "internal" // default for runtime listings
-	}
+	// Prefer the governed session context when present; otherwise use the query,
+	// headers, and composite API key so generic provider UIs can still receive
+	// actor-bound Copilot picker models.
+	classification, actor := g.modelListContext(r)
 
-	models := g.router.Aliases(classification)
+	models := g.router.AvailableAliases(r.Context(), router.Request{Classification: classification, ActorSubject: actor})
 	data := make([]modelListEntry, 0, len(models))
 	for _, m := range models {
 		data = append(data, modelListEntry{
@@ -103,8 +187,9 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 			OwnedBy: "ai-orch",
 		})
 	}
+	data = g.appendDynamicCopilotModelEntries(r.Context(), actor, classification, data)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
 		"data":   data,
 	})
@@ -114,83 +199,113 @@ type modelListEntry struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
 	OwnedBy string `json:"owned_by"`
+	Name    string `json:"name,omitempty"`
 }
 
 func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	if !g.authorized(r) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
-	if g.router == nil || g.openRouter == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "gateway unavailable"})
+	if g.router == nil || g.backend == nil {
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "gateway unavailable"})
 		return
 	}
-	sessionID, ok := requiredSessionID(w, r)
-	if !ok {
-		return
-	}
-	session, ok := g.sessionInfo(w, r, sessionID)
-	if !ok {
-		return
-	}
-
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20)) // 1 MiB max
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, g.maxRequestBytes))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "read body: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "read body: " + err.Error()})
 		return
 	}
 
 	var req openAIChatCompletionRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + err.Error()})
 		return
 	}
 	if req.Model == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "model is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "model is required"})
 		return
 	}
 	if len(req.Messages) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "messages are required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "messages are required"})
 		return
 	}
+	sessionID, session, ok := g.resolveSession(w, r, req.Model, body, "chat.completions")
+	if !ok {
+		return
+	}
+	finishStatus := "failed"
+	defer func() {
+		if finishStatus != "" {
+			g.finishGatewayAutoSession(context.Background(), sessionID, session, finishStatus)
+		}
+	}()
 
-	decision, err := g.router.Route(r.Context(), router.Request{
-		TaskType:       inferTaskType(req.Messages),
-		Classification: session.Classification,
-		PreferredAlias: req.Model,
-	})
+	decision, err := g.routeModel(r.Context(), req.Model, session, inferTaskType(req.Messages))
 	if err != nil {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
+		return
+	}
+	body, decision, err = applyGovernedReasoning(body, decision, session)
+	if err != nil {
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 
-	// Build upstream request.
+	if req.Stream {
+		finishStatus = ""
+		g.handleStream(w, r, req, decision, session, sessionID, body)
+		return
+	}
+
+	if rawBackend, ok := g.backend.(modelbackend.RawChatBackend); ok {
+		respBody, err := rawBackend.ChatCompletionRaw(r.Context(), modelbackend.RawRequest{
+			Provider:     decision.Provider,
+			ModelAlias:   decision.SelectedAlias,
+			Model:        decision.SelectedModelID,
+			Body:         body,
+			ActorSubject: session.ActorSubject,
+		})
+		if err != nil {
+			g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, nil, nil, err.Error())
+			httpx.WriteJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
+			return
+		}
+		respBody = rewriteTopLevelModel(respBody, decision.SelectedAlias)
+		usage := usageFromRawResponse(respBody)
+		g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, respBody, usage, "")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(respBody)
+		return
+	}
+
 	upstream := openrouter.ChatCompletionRequest{
+		Provider:    decision.Provider,
 		ModelAlias:  decision.SelectedAlias,
 		Model:       decision.SelectedModelID,
 		Messages:    convertMessages(req.Messages),
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
 	}
-
-	if req.Stream {
-		g.handleStream(w, r, upstream, decision, sessionID, body)
-		return
+	if decision.ReasoningSupportsEffort && decision.ReasoningEffortApplied != "" {
+		upstream.Reasoning = &openrouter.ReasoningConfig{Effort: decision.ReasoningEffortApplied}
 	}
 
-	resp, err := g.openRouter.ChatCompletion(r.Context(), upstream)
+	resp, err := g.backend.ChatCompletion(r.Context(), upstream)
 	if err != nil {
-		g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_call", body, nil, err.Error())
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
+		g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, nil, nil, err.Error())
+		httpx.WriteJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 		return
 	}
 
 	respBody, _ := json.Marshal(resp)
-	g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_call", body, respBody, "")
+	g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, respBody, openrouterUsageMap(&resp.Usage), "")
+	finishStatus = "completed"
 
 	openAIResp := openAIChatCompletionResponse{
 		ID:      resp.ID,
@@ -204,24 +319,28 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		},
 	}
 
-	writeJSON(w, http.StatusOK, openAIResp)
+	httpx.WriteJSON(w, http.StatusOK, openAIResp)
 }
 
-func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream openrouter.ChatCompletionRequest, decision router.Decision, sessionID string, reqBody []byte) {
+func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, req openAIChatCompletionRequest, decision router.Decision, session SessionInfo, sessionID string, reqBody []byte) {
+	finishStatus := "failed"
+	defer func() {
+		g.finishGatewayAutoSession(context.Background(), sessionID, session, finishStatus)
+	}()
 	reqHash := sha256Hex(reqBody)
-	upstream.Stream = true
-	streamReader, err := g.openRouter.ChatCompletionStream(r.Context(), upstream)
+	streamBody := ensureChatStreamOptions(reqBody)
+	streamReader, err := startChatStream(r.Context(), g.backend, decision, req, session.ActorSubject, streamBody)
 	if err != nil {
-		g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", err.Error())
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("stream start failed: %v", err)})
+		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", err.Error())
+		httpx.WriteJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("stream start failed: %v", err)})
 		return
 	}
 	defer streamReader.Close()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", "streaming not supported")
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "streaming not supported"})
+		g.auditModelCallHashes(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", "streaming not supported")
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "streaming not supported"})
 		return
 	}
 
@@ -234,188 +353,53 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream 
 	scanner.Buffer(make([]byte, 0, 256*1024), 10*1024*1024)
 	responseHash := sha256.New()
 	done := false
+	var streamUsage map[string]any
+	toolCalls := newToolCallAuditTracker()
 	for scanner.Scan() {
 		select {
 		case <-r.Context().Done():
-			g.auditModelCallHashes(context.Background(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", r.Context().Err().Error())
+			g.auditModelCallHashesWithUsageAndTools(context.Background(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", nil, toolCalls.Summary(), r.Context().Err().Error())
 			return
 		default:
 		}
 		line := scanner.Text()
 		if line == "" {
+			_, _ = responseHash.Write([]byte("\n"))
+			fmt.Fprint(w, "\n")
+			flusher.Flush()
 			continue
 		}
-		chunk, err := openrouter.DecodeStreamChunk(line)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				frame := "data: [DONE]\n\n"
-				_, _ = responseHash.Write([]byte(frame))
-				fmt.Fprint(w, frame)
-				flusher.Flush()
-				done = true
-				break
-			}
-			continue // skip malformed lines
+		line, lineDone, usage := rewriteSSELine(line, decision.SelectedAlias)
+		if lineDone {
+			done = true
 		}
-		if len(chunk.Choices) == 0 {
-			continue
+		if usage != nil {
+			streamUsage = usage
 		}
-
-		// Translate provider chunk to OpenAI-compatible chunk with alias.
-		openAIChunk := openAIStreamChunk{
-			ID:     chunk.ID,
-			Object: "chat.completion.chunk",
-			Model:  decision.SelectedAlias,
-			Choices: []openAIStreamChoice{
-				{
-					Index: chunk.Choices[0].Index,
-					Delta: openAIMessageDelta{
-						Role:    chunk.Choices[0].Delta.Role,
-						Content: chunk.Choices[0].Delta.Content,
-					},
-					FinishReason: chunk.Choices[0].FinishReason,
-				},
-			},
-		}
-
-		data, _ := json.Marshal(openAIChunk)
-		frame := fmt.Sprintf("data: %s\n\n", data)
+		toolCalls.ObserveChatCompletionSSELine(line)
+		frame := line + "\n"
 		_, _ = responseHash.Write([]byte(frame))
 		fmt.Fprint(w, frame)
 		flusher.Flush()
 	}
 	if err := scanner.Err(); err != nil {
-		g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", err.Error())
+		g.auditModelCallHashesWithUsageAndTools(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", nil, toolCalls.Summary(), err.Error())
 		return
 	}
 	if !done {
-		g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.failed", reqHash, "", "stream ended before done")
+		g.auditModelCallHashesWithUsageAndTools(r.Context(), sessionID, session, decision, "model.gateway_stream.failed", reqHash, "", nil, toolCalls.Summary(), "stream ended before done")
 		return
 	}
 	respHash := "sha256:" + hex.EncodeToString(responseHash.Sum(nil))
-	g.auditModelCallHashes(r.Context(), sessionID, decision, "model.gateway_stream.completed", reqHash, respHash, "")
+	g.auditModelCallHashesWithUsageAndTools(r.Context(), sessionID, session, decision, "model.gateway_stream.completed", reqHash, respHash, streamUsage, toolCalls.Summary(), "")
+	finishStatus = "completed"
 }
 
-func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+func (g *Gateway) finishGatewayAutoSession(ctx context.Context, sessionID string, session SessionInfo, status string) {
+	if g == nil || g.finishAutoSession == nil || !session.AutoCreated || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(status) == "" {
 		return
 	}
-	if !g.authorized(r) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
-		return
-	}
-	if g.router == nil || g.openRouter == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "gateway unavailable"})
-		return
-	}
-	sessionID, ok := requiredSessionID(w, r)
-	if !ok {
-		return
-	}
-	session, ok := g.sessionInfo(w, r, sessionID)
-	if !ok {
-		return
-	}
-
-	// Phase 1G.5: Responses API MVP.
-	// For now, map responses to chat completions internally.
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "read body: " + err.Error()})
-		return
-	}
-
-	var req openAIResponsesRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + err.Error()})
-		return
-	}
-	if req.Model == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "model is required"})
-		return
-	}
-	if len(req.Input) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "input is required"})
-		return
-	}
-
-	decision, err := g.router.Route(r.Context(), router.Request{
-		TaskType:       inferTaskTypeFromInput(req.Input),
-		Classification: session.Classification,
-		PreferredAlias: req.Model,
-	})
-	if err != nil {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
-		return
-	}
-
-	upstream := openrouter.ChatCompletionRequest{
-		ModelAlias: decision.SelectedAlias,
-		Model:      decision.SelectedModelID,
-		Messages:   convertResponsesInput(req.Input),
-	}
-
-	resp, err := g.openRouter.ChatCompletion(r.Context(), upstream)
-	if err != nil {
-		g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_responses", body, nil, err.Error())
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
-		return
-	}
-
-	respBody, _ := json.Marshal(resp)
-	g.auditModelCall(r.Context(), sessionID, decision, "model.gateway_responses", body, respBody, "")
-
-	openAIResp := openAIResponsesResponse{
-		ID:     g.newID("resp"),
-		Object: "response",
-		Model:  decision.SelectedAlias,
-		Output: []openAIResponseOutput{
-			{
-				Type: "message",
-				Content: []openAIResponseContent{
-					{Type: "output_text", Text: resp.FirstContent()},
-				},
-			},
-		},
-		Usage: openAIUsage{
-			PromptTokens:     resp.Usage.PromptTokens,
-			CompletionTokens: resp.Usage.CompletionTokens,
-			TotalTokens:      resp.Usage.TotalTokens,
-		},
-	}
-
-	writeJSON(w, http.StatusOK, openAIResp)
-}
-
-func requiredSessionID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	sessionID := strings.TrimSpace(r.Header.Get("X-AI-Orch-Session-ID"))
-	if sessionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
-		return "", false
-	}
-	return sessionID, true
-}
-
-func (g *Gateway) sessionInfo(w http.ResponseWriter, r *http.Request, sessionID string) (SessionInfo, bool) {
-	if g.lookupSession != nil {
-		info, err := g.lookupSession(r.Context(), sessionID)
-		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
-			return SessionInfo{}, false
-		}
-		if strings.TrimSpace(info.Classification) == "" {
-			info.Classification = "internal"
-		}
-		return info, true
-	}
-	if g.validateSession != nil {
-		if err := g.validateSession(r.Context(), sessionID); err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
-			return SessionInfo{}, false
-		}
-	}
-	return SessionInfo{Classification: "internal"}, true
+	_ = g.finishAutoSession(ctx, sessionID, status)
 }
 
 func randomID(prefix string) string {
@@ -428,150 +412,66 @@ func randomID(prefix string) string {
 
 var fallbackIDCounter atomic.Uint64
 
-func (g *Gateway) authorized(r *http.Request) bool {
-	if g.runtimeToken == "" {
-		return false
+// providerErrorStatus distinguishes caller-fixable failures from upstream
+// outages so runtimes see an actionable status instead of a blanket 502.
+// A missing or revoked Copilot enrollment is the caller's problem to fix.
+func providerErrorStatus(err error) int {
+	if errors.Is(err, copilot.ErrTokenNotFound) || errors.Is(err, copilot.ErrTokenRevoked) {
+		return http.StatusForbidden
 	}
-	auth := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if !strings.HasPrefix(auth, prefix) {
-		return false
-	}
-	return subtleStrEq(strings.TrimPrefix(auth, prefix), g.runtimeToken)
+	return http.StatusBadGateway
 }
 
-func subtleStrEq(a, b string) bool {
-	if len(a) != len(b) {
-		return false
+func (g *Gateway) backendName() string {
+	if g == nil || g.backend == nil {
+		return ""
 	}
-	var v byte
-	for i := 0; i < len(a); i++ {
-		v |= a[i] ^ b[i]
-	}
-	return v == 0
+	return g.backend.Name()
 }
 
-func (g *Gateway) auditModelCall(ctx context.Context, sessionID string, decision router.Decision, eventType string, reqBody, respBody []byte, errMsg string) {
-	if g.audit == nil {
-		return
+func (g *Gateway) resolvedModel(decision router.Decision) string {
+	if g == nil || g.backend == nil {
+		return decision.SelectedModelID
 	}
-	var reqHash, respHash string
-	if len(reqBody) > 0 {
-		reqHash = sha256Hex(reqBody)
-	}
-	if len(respBody) > 0 {
-		respHash = sha256Hex(respBody)
-	}
-	g.auditModelCallHashes(ctx, sessionID, decision, eventType, reqHash, respHash, errMsg)
-}
-
-func (g *Gateway) auditModelCallHashes(ctx context.Context, sessionID string, decision router.Decision, eventType string, reqHash, respHash, errMsg string) {
-	if g.audit == nil {
-		return
-	}
-	reason := ""
-	if errMsg != "" {
-		reason = errMsg
-	}
-	_, _ = g.audit.Append(ctx, audit.Event{
-		EventID:            g.newID("evt"),
-		SessionID:          sessionID,
-		EventType:          eventType,
-		Actor:              "runtime",
-		Provider:           decision.Provider,
-		ModelAlias:         decision.SelectedAlias,
-		ModelResolved:      decision.SelectedModelID,
-		RequestSHA256:      reqHash,
-		ResponseSHA256:     respHash,
-		Reason:             reason,
-		RawPromptStored:    false,
-		RawResponseStored:  false,
-		CorrelationSubject: "model-gateway",
-	})
-}
-
-func sha256Hex(body []byte) string {
-	sum := sha256.Sum256(body)
-	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func inferTaskType(messages []openAIMessage) string {
-	if len(messages) == 0 {
-		return "general"
-	}
-	return inferTaskTypeFromText(messages[len(messages)-1].Content)
-}
-
-func inferTaskTypeFromInput(input []openAIResponsesInput) string {
-	if len(input) == 0 {
-		return "general"
-	}
-	return inferTaskTypeFromText(input[len(input)-1].Content)
-}
-
-func inferTaskTypeFromText(text string) string {
-	content := strings.ToLower(text)
-	switch {
-	case strings.Contains(content, "test") || strings.Contains(content, "spec"):
-		return "test"
-	case strings.Contains(content, "review") || strings.Contains(content, "audit"):
-		return "review"
-	case strings.Contains(content, "refactor") || strings.Contains(content, "architecture"):
-		return "architecture"
-	case strings.Contains(content, "implement") || strings.Contains(content, "code"):
-		return "coding"
-	default:
-		return "general"
-	}
-}
-
-func convertMessages(msgs []openAIMessage) []openrouter.Message {
-	out := make([]openrouter.Message, len(msgs))
-	for i, m := range msgs {
-		out[i] = openrouter.Message{Role: m.Role, Content: m.Content}
-	}
-	return out
-}
-
-func convertChoices(choices []struct {
-	Message openrouter.Message `json:"message"`
-}) []openAIChoice {
-	out := make([]openAIChoice, len(choices))
-	for i, c := range choices {
-		out[i] = openAIChoice{
-			Index:   i,
-			Message: openAIMessage{Role: c.Message.Role, Content: c.Message.Content},
-		}
-	}
-	return out
-}
-
-func convertResponsesInput(input []openAIResponsesInput) []openrouter.Message {
-	out := make([]openrouter.Message, 0, len(input))
-	for _, item := range input {
-		role := item.Role
-		if role == "" {
-			role = "user"
-		}
-		out = append(out, openrouter.Message{Role: role, Content: item.Content})
-	}
-	return out
+	return g.backend.ResolvedModel(decision.Provider, decision.SelectedModelID)
 }
 
 // OpenAI-compatible request/response types.
 
-type openAIChatCompletionRequest struct {
-	Model       string          `json:"model"`
-	Messages    []openAIMessage `json:"messages"`
-	Temperature float64         `json:"temperature,omitempty"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
+func (c *rawTextContent) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		*c = ""
+		return nil
+	}
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		var text string
+		if err := json.Unmarshal(trimmed, &text); err != nil {
+			return err
+		}
+		*c = rawTextContent(text)
+		return nil
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(trimmed, &parts); err == nil {
+		var texts []string
+		for _, part := range parts {
+			if part.Type == "text" || part.Type == "input_text" {
+				texts = append(texts, part.Text)
+			}
+		}
+		*c = rawTextContent(strings.Join(texts, "\n"))
+		return nil
+	}
+	*c = ""
+	return nil
+}
+
+func (c rawTextContent) String() string {
+	return string(c)
 }
 
 type openAIMessage struct {
@@ -598,34 +498,70 @@ type openAIUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
-type openAIStreamChunk struct {
-	ID      string               `json:"id"`
-	Object  string               `json:"object"`
-	Model   string               `json:"model"`
-	Choices []openAIStreamChoice `json:"choices"`
-}
-
-type openAIStreamChoice struct {
-	Index        int                `json:"index"`
-	Delta        openAIMessageDelta `json:"delta"`
-	FinishReason *string            `json:"finish_reason,omitempty"`
-}
-
-type openAIMessageDelta struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
-}
-
 // OpenAI Responses API types.
 
-type openAIResponsesRequest struct {
-	Model string                 `json:"model"`
-	Input []openAIResponsesInput `json:"input"`
+type openAIResponsesInputSet []openAIResponsesInput
+
+func (s *openAIResponsesInputSet) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var input string
+		if err := json.Unmarshal(trimmed, &input); err != nil {
+			return err
+		}
+		*s = []openAIResponsesInput{{Role: "user", Content: rawTextContent(input)}}
+		return nil
+	}
+	var rawItems []json.RawMessage
+	if err := json.Unmarshal(trimmed, &rawItems); err != nil {
+		return err
+	}
+	items := make([]openAIResponsesInput, 0, len(rawItems))
+	for _, raw := range rawItems {
+		var item openAIResponsesInput
+		if err := json.Unmarshal(raw, &item); err != nil {
+			return err
+		}
+		if item.Content.String() == "" {
+			item.Content = rawTextContent(textFromResponsesItem(raw, item))
+		}
+		items = append(items, item)
+	}
+	*s = items
+	return nil
 }
 
-type openAIResponsesInput struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+func textFromResponsesItem(raw json.RawMessage, item openAIResponsesInput) string {
+	if item.Output != "" {
+		return item.Output
+	}
+	if item.Args != "" {
+		return item.Args
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	contentRaw, ok := obj["content"]
+	if !ok {
+		return ""
+	}
+	var parts []map[string]any
+	if err := json.Unmarshal(contentRaw, &parts); err != nil {
+		return ""
+	}
+	var texts []string
+	for _, part := range parts {
+		for _, key := range []string{"text", "output"} {
+			if text, ok := part[key].(string); ok && text != "" {
+				texts = append(texts, text)
+			}
+		}
+	}
+	return strings.Join(texts, "\n")
 }
 
 type openAIResponsesResponse struct {

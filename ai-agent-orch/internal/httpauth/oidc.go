@@ -163,6 +163,9 @@ func (v *OIDCTokenValidator) validateJWT(ctx context.Context, token string) (str
 	if subject == "" {
 		subject, _ = claims["email"].(string)
 	}
+	if strings.TrimSpace(subject) == "" {
+		return "", errors.New("jwt subject is required")
+	}
 	return subject, nil
 }
 

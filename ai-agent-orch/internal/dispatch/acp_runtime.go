@@ -8,12 +8,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"ai-agent-orch/internal/appversion"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/appversion"
 )
 
 // ACPRuntime implements Runtime using OpenCode ACP JSON-RPC over stdio.
@@ -57,19 +56,28 @@ func (r *ACPRuntime) StartSession(ctx context.Context, cfg SessionConfig) (Sessi
 		done:   make(chan struct{}),
 	}
 
+	configPath, err := writeOpenCodeACPConfig(cfg)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	cmd := exec.CommandContext(runCtx, path, "acp")
+	cmd.Env = acpEnvironment(configPath, cfg.SessionID, cfg.GatewayToken)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		_ = os.Remove(configPath)
 		cancel()
 		return nil, fmt.Errorf("stdin pipe: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		_ = os.Remove(configPath)
 		cancel()
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		_ = os.Remove(configPath)
 		cancel()
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
@@ -78,8 +86,10 @@ func (r *ACPRuntime) StartSession(ctx context.Context, cfg SessionConfig) (Sessi
 	handle.stdout = stdout
 	handle.cmd = cmd
 	handle.cancel = cancel
+	handle.configPath = configPath
 
 	if err := cmd.Start(); err != nil {
+		_ = os.Remove(configPath)
 		cancel()
 		return nil, fmt.Errorf("start opencode acp: %w", err)
 	}
@@ -91,22 +101,23 @@ func (r *ACPRuntime) StartSession(ctx context.Context, cfg SessionConfig) (Sessi
 }
 
 type acpHandle struct {
-	ctx       context.Context
-	config    SessionConfig
-	stdin     io.WriteCloser
-	stdout    io.ReadCloser
-	cmd       *exec.Cmd
-	cancel    func()
-	events    chan RuntimeEvent
-	done      chan struct{}
-	err       error
-	mu        sync.Mutex
-	eventMu   sync.Mutex
-	closed    bool
-	nextID    int
-	pending   map[int]chan *jsonRPCMessage
-	pendingMu sync.Mutex
-	sessionID string
+	ctx        context.Context
+	config     SessionConfig
+	stdin      io.WriteCloser
+	stdout     io.ReadCloser
+	cmd        *exec.Cmd
+	cancel     func()
+	events     chan RuntimeEvent
+	done       chan struct{}
+	err        error
+	mu         sync.Mutex
+	eventMu    sync.Mutex
+	closed     bool
+	nextID     int
+	pending    map[int]chan *jsonRPCMessage
+	pendingMu  sync.Mutex
+	sessionID  string
+	configPath string
 	// Accumulates text content from agent_message_chunk for patch extraction.
 	accumulatedText strings.Builder
 	accumulatedMu   sync.Mutex
@@ -119,6 +130,7 @@ func (h *acpHandle) runSession() {
 	defer close(h.done)
 	defer h.closeEvents()
 	defer h.stdin.Close()
+	defer os.Remove(h.configPath)
 	defer h.cancel()
 
 	// 1. Initialize
@@ -128,11 +140,12 @@ func (h *acpHandle) runSession() {
 		"method":  "initialize",
 		"params": map[string]any{
 			"protocolVersion": 1,
-			"capabilities": map[string]any{
+			"clientCapabilities": map[string]any{
 				"fs": map[string]any{
 					"readTextFile":  true,
-					"writeTextFile": false,
+					"writeTextFile": h.acpWritesAllowed(),
 				},
+				"terminal": true,
 			},
 			"clientInfo": map[string]string{
 				"name":    "ai-agent-orch",
@@ -155,6 +168,10 @@ func (h *acpHandle) runSession() {
 		h.emitError(err.Error())
 		return
 	}
+	beforeSnapshot, snapshotErr := captureACPWorkspaceSnapshot(workspace)
+	if snapshotErr != nil {
+		h.emitEvent(RuntimeEvent{Type: "stream", Payload: fmt.Sprintf("ACP workspace snapshot skipped: %v", snapshotErr)})
+	}
 
 	// 2. Create session
 	newSessionReq := map[string]any{
@@ -163,7 +180,7 @@ func (h *acpHandle) runSession() {
 		"method":  "session/new",
 		"params": map[string]any{
 			"cwd":        workspace,
-			"mcpServers": acpMCPServers(h.config.MCPEndpoints, os.Getenv("AI_ORCH_SERVICE_TOKEN"), h.config.SessionID),
+			"mcpServers": []map[string]any{},
 		},
 	}
 	newSessionResp, err := h.sendRequest(newSessionReq)
@@ -183,7 +200,7 @@ func (h *acpHandle) runSession() {
 	}
 
 	// 3. Send prompt
-	prompt := defaultUserPrompt(h.config.UserPrompt)
+	prompt := defaultACPUserPrompt(h.config.UserPrompt)
 	promptReq := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      h.allocID(),
@@ -217,6 +234,11 @@ func (h *acpHandle) runSession() {
 	}
 	if patchPayload := extractPatchFromResult(promptResp.Result); patchPayload != "" {
 		h.emitEvent(RuntimeEvent{Type: "patch", Payload: patchPayload})
+	}
+	if beforeSnapshot != nil {
+		if patchPayload := h.workspacePatchSince(workspace, beforeSnapshot); patchPayload != "" {
+			h.emitEvent(RuntimeEvent{Type: "patch", Payload: patchPayload})
+		}
 	}
 
 	// 5. Close session
@@ -363,28 +385,63 @@ func (h *acpHandle) handleNotification(msg *jsonRPCMessage) {
 func (h *acpHandle) handleAgentRequest(msg *jsonRPCMessage) {
 	switch msg.Method {
 	case "session/request_permission":
-		// Fail closed until permission requests are wired through the governed tool broker.
-		reqID := ""
-		if p, ok := msg.Params["requestId"].(string); ok {
-			reqID = p
-		}
 		toolName := "unknown"
 		if toolCall, ok := msg.Params["toolCall"].(map[string]any); ok {
 			if name, ok := toolCall["name"].(string); ok && name != "" {
 				toolName = name
 			}
+			if title, ok := toolCall["title"].(string); ok && title != "" && toolName == "unknown" {
+				toolName = title
+			}
 		}
-		h.emitEvent(RuntimeEvent{Type: "tool_call", Payload: fmt.Sprintf("ACP permission requested for %s", toolName)})
+		allowed := h.acpToolAllowed(toolName)
+		optionID := selectedACPOptionID(msg.Params, allowed)
+		h.emitEvent(RuntimeEvent{Type: "tool_call", Payload: fmt.Sprintf("ACP permission requested for %s: %s", toolName, optionID)})
+		decision := "rejected"
+		if allowed {
+			decision = "allowed_once"
+		}
+		permissionPayload, _ := json.Marshal(map[string]string{"tool": toolName, "option_id": optionID, "decision": decision})
+		h.emitEvent(RuntimeEvent{Type: "acp_permission", Payload: string(permissionPayload)})
 		resp := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      msg.ID,
 			"result": map[string]any{
-				"requestId": reqID,
-				"outcome":   "denied",
-				"message":   "permission requests must pass through the Governance Shell tool broker",
+				"outcome": map[string]any{
+					"outcome":  "selected",
+					"optionId": optionID,
+				},
 			},
 		}
 		_ = h.sendJSON(resp)
+	case "fs/write_text_file":
+		if err := h.handleWriteTextFile(msg.Params); err != nil {
+			h.emitEvent(RuntimeEvent{Type: "error", Payload: err.Error()})
+			_ = h.sendJSON(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg.ID,
+				"error": map[string]any{
+					"code":    -32000,
+					"message": err.Error(),
+				},
+			})
+			return
+		}
+		_ = h.sendJSON(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{}})
+	case "fs/read_text_file":
+		content, err := h.handleReadTextFile(msg.Params)
+		if err != nil {
+			_ = h.sendJSON(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg.ID,
+				"error": map[string]any{
+					"code":    -32000,
+					"message": err.Error(),
+				},
+			})
+			return
+		}
+		_ = h.sendJSON(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{"content": content}})
 	default:
 		h.emitEvent(RuntimeEvent{Type: "error", Payload: fmt.Sprintf("unsupported ACP request: %s", msg.Method)})
 		resp := map[string]any{
@@ -449,6 +506,9 @@ func (h *acpHandle) emitError(msg string) {
 }
 
 func (h *acpHandle) emitEvent(event RuntimeEvent) {
+	if h == nil || h.events == nil {
+		return
+	}
 	h.eventMu.Lock()
 	defer h.eventMu.Unlock()
 	if h.closed {
@@ -512,98 +572,92 @@ func (h *acpHandle) Stop() error {
 	return nil
 }
 
-// extractPatchFromResult attempts to extract a patch envelope JSON string from an ACP result.
-func extractPatchFromResult(result map[string]any) string {
-	if result == nil {
-		return ""
+func defaultACPUserPrompt(prompt string) string {
+	base := strings.TrimSpace(prompt)
+	if base == "" {
+		base = "Please help with the requested task."
 	}
-	if content, ok := result["content"].(string); ok && content != "" {
-		return content
-	}
-	if payload, ok := result["patch"].(string); ok && payload != "" {
-		return payload
-	}
-	if payload, ok := result["output"].(string); ok && payload != "" {
-		return payload
-	}
-	return ""
+	return base + `
+
+ACP workspace instructions:
+- Use normal workspace file editing capabilities when asked to create or modify files.
+- Do not return a JSON patch envelope when file editing is available.
+- Do not include passwords, tokens, API keys, credentials, private URLs, or other secrets.`
 }
 
-// extractPatchFromText scans raw text for a JSON patch envelope.
-func extractPatchFromText(text string) string {
-	// Look for JSON object starting with {"patch" or {"file_path"
-	// This is a heuristic for extracting inline patch JSON from agent text output.
-	for i := 0; i < len(text); i++ {
-		if text[i] == '{' {
-			// Try to find matching closing brace
-			depth := 1
-			for j := i + 1; j < len(text) && depth > 0; j++ {
-				if text[j] == '{' {
-					depth++
-				} else if text[j] == '}' {
-					depth--
-				}
-				if depth == 0 {
-					sub := text[i : j+1]
-					// Heuristic: must contain patch-related keys
-					if containsPatchKey(sub) {
-						return sub
-					}
-					break
-				}
-			}
-		}
+func writeOpenCodeACPConfig(cfg SessionConfig) (string, error) {
+	baseURL := strings.TrimRight(os.Getenv("AI_ORCH_MODEL_GATEWAY_URL"), "/")
+	if baseURL == "" {
+		baseURL = "http://127.0.0.1:18082"
 	}
-	return ""
+	if !strings.HasSuffix(baseURL, "/v1") {
+		baseURL += "/v1"
+	}
+	model := cfg.ModelID
+	if !strings.Contains(model, "/") {
+		model = "ai-orch/" + model
+	}
+	modelID := strings.TrimPrefix(model, "ai-orch/")
+	config := map[string]any{
+		"$schema":           "https://opencode.ai/config.json",
+		"enabled_providers": []string{"ai-orch"},
+		"model":             model,
+		"small_model":       model,
+		"provider": map[string]any{
+			"ai-orch": map[string]any{
+				"npm":  "@ai-sdk/openai-compatible",
+				"name": "AI Orch Governed Router",
+				"options": map[string]any{
+					"baseURL": baseURL,
+					"apiKey":  "{env:AI_ORCH_RUNTIME_TOKEN}",
+					"headers": map[string]any{
+						"X-AI-Orch-Session-ID":    "{env:AI_ORCH_SESSION_ID}",
+						"X-AI-Orch-Session-Token": "{env:AI_ORCH_SESSION_TOKEN}",
+					},
+				},
+				"models": map[string]any{
+					modelID: map[string]any{"name": "Governed " + modelID},
+				},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("encode ACP OpenCode config: %w", err)
+	}
+	file, err := os.CreateTemp("", "ai-orch-acp-opencode-*.json")
+	if err != nil {
+		return "", fmt.Errorf("create ACP OpenCode config: %w", err)
+	}
+	path := file.Name()
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		os.Remove(path)
+		return "", fmt.Errorf("write ACP OpenCode config: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(path)
+		return "", fmt.Errorf("close ACP OpenCode config: %w", err)
+	}
+	return path, nil
 }
 
-func containsPatchKey(s string) bool {
-	if len(s) <= 20 || !strings.Contains(s, "\"files\"") {
-		return false
+func acpEnvironment(configPath string, sessionID string, gatewayToken string) []string {
+	env := append([]string{}, os.Environ()...)
+	env = append(env, "OPENCODE_CONFIG="+configPath)
+	if sessionID != "" {
+		env = append(env, "AI_ORCH_SESSION_ID="+sessionID)
 	}
-	return strings.Contains(s, "\"patch\"") ||
-		strings.Contains(s, "\"patchId\"") ||
-		strings.Contains(s, "\"patch_id\"")
-}
-
-func (h *acpHandle) workspacePath() (string, error) {
-	if h != nil && h.config.WorkspacePath != "" {
-		return h.config.WorkspacePath, nil
+	// Always set the session token env var so the config placeholder resolves;
+	// sessions without token binding send an empty header, which passes.
+	env = append(env, "AI_ORCH_SESSION_TOKEN="+gatewayToken)
+	if os.Getenv("AI_ORCH_RUNTIME_TOKEN") == "" {
+		env = append(env, "AI_ORCH_RUNTIME_TOKEN=local-runtime-token")
 	}
-	return "", fmt.Errorf("ACP workspace path is required")
-}
-
-func acpMCPServers(endpoints map[string]string, serviceToken string, sessionID string) []map[string]any {
-	if len(endpoints) == 0 {
-		return []map[string]any{}
+	if os.Getenv("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX") == "" {
+		env = append(env, "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=2048")
 	}
-	names := make([]string, 0, len(endpoints))
-	for name := range endpoints {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	servers := make([]map[string]any, 0, len(names))
-	for _, name := range names {
-		if endpoints[name] == "" {
-			continue
-		}
-		server := map[string]any{
-			"name": name,
-			"url":  endpoints[name],
-		}
-		headers := map[string]string{}
-		if serviceToken != "" {
-			headers["Authorization"] = "Bearer " + serviceToken
-		}
-		if sessionID != "" {
-			headers["X-AI-Orch-Session-ID"] = sessionID
-		}
-		if len(headers) > 0 {
-			server["headers"] = headers
-		}
-		servers = append(servers, server)
-	}
-	return servers
+	return env
 }
 
 func (h *acpHandle) failPending(err error) {

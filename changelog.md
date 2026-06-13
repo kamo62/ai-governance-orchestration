@@ -1,5 +1,328 @@
 # Changelog
 
+## v0.20.3-beta - 2026-06-13 (Patch)
+
+Release impact: Patch because this tightens beta safety defaults, CI verification, runtime timeout configuration, and README/OpenCode positioning without changing public API contracts.
+
+- **Removed the published Bifrost fallback key**: Compose now requires `BIFROST_ENCRYPTION_KEY` explicitly, while beta/demo verification scripts generate ephemeral keys for disposable local runs.
+- **Made backend-control Docker access opt-in**: the default Governance Shell image no longer ships the Docker CLI; trusted local backend controls use `docker-compose.backend-control.yml` to install the CLI and mount the Docker socket deliberately.
+- **Added a configurable governed execution timeout**: `AI_ORCH_EXECUTION_TIMEOUT` and `--execution-timeout` now control the wall-clock cap for a single governed runtime dispatch, with the previous 10-minute behaviour as the default.
+- **Strengthened CI and utility coverage**: CI now runs Go tests with race detection and a coverage summary, and small regression tests cover environment defaults, JSON helpers, logging setup and SQLite WAL setup.
+- **Clarified OpenCode readiness**: README now states that OpenCode is the strongest current client lane for governed model routing, attribution, cost and delegation lineage, while full local Task/Read/Edit/Bash transcript capture still requires ACP, MCP or client-event forwarding.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.20.3-beta.
+
+## v0.20.2-beta - 2026-06-12 (Patch)
+
+Release impact: Patch because this fixes a CI-only staticcheck failure and clarifies README readiness without changing runtime contracts.
+
+- **Fixed GitHub Actions staticcheck**: removed the unused `chatToolCallName` helper left behind after tool-call audit parsing moved to `chatToolCallFunction`.
+- **Revalidated the application north star**: README now states the product boundary explicitly and gives an honest local beta, team beta, V1 and production readiness read.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.20.2-beta.
+
+## v0.20.1-beta - 2026-06-12 (Patch)
+
+Release impact: Patch because this fixes OpenCode config installation to preserve default provider visibility without changing public APIs or model gateway contracts.
+
+- **Preserved existing OpenCode provider visibility**: `ai-orch opencode install-config` no longer creates a new `enabled_providers` allowlist when the user's config did not already have one, so credential-backed providers such as GitHub Copilot, Moonshot AI, OpenCode Go and xAI remain visible after installing the ai-orch provider.
+- **Kept explicit allowlists intentional**: configs that already define `enabled_providers` still have `ai-orch` added to that existing allowlist, preserving the user's deliberate restriction.
+- **Added regression coverage for installer merges**: focused OpenCode config tests now cover the default no-allowlist shape that exposed this issue.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.20.1-beta.
+
+## v0.20.0-beta - 2026-06-12 (Minor)
+
+Release impact: Minor because this adds backward-compatible session-lineage fields and governed child-session markers for model-observed Task delegations without breaking existing request contracts.
+
+- **Linked OpenCode Task delegations into the governed ledger**: when the model gateway observes an OpenCode-style `task` tool call for a known catalog agent, it now creates a `delegated` child session with `parent_session_id`, inherited work context, and a `session.delegated` audit event.
+- **Kept the transcript boundary honest**: delegated child sessions prove the model-route and agent handoff, but they do not claim to store the local child agent's Read/Edit/Bash transcript; that still requires ACP, MCP or explicit client-event forwarding.
+- **Exposed lineage in APIs, exports and UI**: session records, session-list JSON, audit events, admin CSV export and the local ledger UI now surface `parent_session_id` so parent model sessions and specialist child markers can be followed together.
+- **Added regression coverage for task-delegation routing**: gateway tests cover streamed and non-streamed `task` tool calls, governance tests cover linked child-session creation, and session-store tests cover durable `parent_session_id` migration.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.20.0-beta.
+
+## v0.19.0-beta - 2026-06-12 (Minor)
+
+Release impact: Minor because this adds backward-compatible model-gateway audit metadata and visible ledger detail for model-emitted tool calls without changing existing request contracts.
+
+- **Recorded model-emitted tool calls in gateway audit events**: streamed and non-streamed model gateway events now include sanitized `tool_call_count` and `tool_call_names` metadata when the model asks the client to run tools such as OpenCode `task`, without storing arguments, prompt text, tool output or file contents.
+- **Surfaced tool-call detail in the local ledger UI**: the audit trail now shows the gateway-observed tool-call count and names, while the sessions table can use the existing aggregate count for direct OpenCode sessions.
+- **Clarified the observability boundary**: docs now distinguish model-stream tool-call evidence from the local OpenCode Task/Read/Edit execution transcript, which still requires ACP, MCP or deliberate client-event forwarding.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.19.0-beta.
+
+## v0.18.8-beta - 2026-06-12 (Patch)
+
+Release impact: Patch because this fixes Copilot-profile route availability, OpenCode subagent prompting, and ledger cost estimates without changing public API contracts.
+
+- **Filtered OpenCode model imports to executable routes**: `/v1/models` now lists static governed aliases only when the current gateway backend and actor can actually execute the selected route, so Copilot-only servers no longer advertise OpenRouter-only aliases such as `coding-fast`.
+- **Failed closed on provider/backend mismatches**: the Copilot backend now rejects non-Copilot providers locally instead of forwarding unsupported OpenRouter or Anthropic model IDs to Copilot and surfacing confusing upstream 400s.
+- **Restored governed subagent prompting**: generated OpenCode configs now ask before launching specialist subagents, bind write-capable specialists to governed ai-orch model aliases, and explicitly tell write agents to use OpenCode edit operations rather than shell `apply_patch`.
+- **Estimated Copilot model cost from equivalent pricing**: session usage now preserves `copilot-user` attribution while estimating GPT-5.5 token cost from the equivalent OpenRouter pricing row when Copilot reports tokens but no USD.
+- **Closed auto-created gateway sessions**: generic OpenAI-compatible client sessions created by the model gateway now move to `completed` or `failed` when the request finishes instead of accumulating as `running` in the ledger.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.18.8-beta.
+
+## v0.18.7-beta - 2026-06-12 (Patch)
+
+Release impact: Patch because this fixes actor-bound Copilot model discovery and OpenCode tool-call streaming without changing public API contracts.
+
+- **Imported dynamic Copilot picker models**: /v1/models now augments governed registry aliases with the enrolled actor's live Copilot picker chat models, and ai-orch opencode install-config imports that list into OpenCode config so models such as Claude Opus and Sonnet appear when Copilot exposes them.
+- **Routed dynamic Copilot aliases**: actor-bound aliases such as copilot-claude-opus-4.8 resolve to the current Copilot model catalog at request time while preserving the existing static governed aliases.
+- **Restored OpenCode tool-call loops on Copilot GPT-5-class routes**: the chat-to-Responses bridge now translates Responses function-call stream events back into chat-completion tool_calls chunks with finish_reason=tool_calls, so OpenCode can execute its local read/list/grep tools instead of receiving plain text only.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.18.7-beta.
+
+## v0.18.6-beta - 2026-06-12 (Patch)
+
+Release impact: Patch because this fixes generated OpenCode configuration compatibility, bridges a Copilot model-endpoint mismatch, and clarifies central-server client entry paths without changing public API contracts.
+
+- **Fixed generated OpenCode task permissions**: `governance-lead.permission.task` now uses OpenCode's accepted permission-object shape instead of a string list, and the docs examples use the same shape, so generated and manual configs validate in OpenCode 1.16.x.
+- **Bridged Copilot GPT-5-class models for chat clients**: the gateway mirrors OpenCode's Copilot route rule by sending Copilot GPT-5-class non-mini models through Responses, keeping Anthropic/Claude and `gpt-5-mini` on chat completions, and translating Responses streams back into chat-completion SSE while preserving OpenAI-style function tools and tool-result turns.
+- **Clarified central-server onboarding**: README and deployment docs now separate operator-owned server startup from developer-owned OpenCode/Cline configuration, including the composite runtime-key path for manual Custom/OpenAI-compatible providers.
+- **Aligned version references**: root VERSION, README, and changelog now agree on v0.18.6-beta.
+
+## v0.18.5-beta - 2026-06-12 (Patch)
+
+Release impact: Patch because this fixes session-usage accounting, Responses stream audit labels, direct-runtime route selection, OpenCode wrapper reporting, and launcher argument forwarding without breaking public API contracts or deployment compatibility.
+
+- **Fixed Responses stream usage rollups**: session usage now includes `model.gateway_responses_stream.completed` events so streamed Responses sessions report tokens and cost.
+- **Corrected incomplete Responses auditing**: provider `response.incomplete` streams now record `model.gateway_responses_stream.incomplete` instead of looking like successful completions.
+- **Fixed direct runtime route selection**: the direct runtime now chooses from effective model routes and skips actor-bound routes it cannot serve.
+- **Corrected governed OpenCode launch reporting**: the wrapper records the local OpenCode lane as `self_reported`, keeps the routed specialist visible to the developer, and no longer claims a manual confirm gate that is not exercised.
+- **Fixed OpenCode launcher argument forwarding**: `scripts/opencode-governed.sh` and `.ps1` now forward governance flags such as `--model-only` to `ai-orch opencode` instead of hiding them behind an extra separator; added regression coverage for the documented model-only launcher path.
+- **Cleaned review-follow-up scaffolding**: test-only exports and duplicated helper loops were removed or moved to the production packages that own the behaviour.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.18.5-beta.
+
+## v0.18.4-beta - 2026-06-11 (Patch)
+
+Release impact: Patch because this fixes CI beta smoke port wiring without changing public contracts, model routing behaviour, or deployment compatibility.
+
+- **Fixed GitHub Actions beta smoke readiness**: the beta smoke workflow now publishes Governance Shell on the same host port that the readiness probe checks.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.18.4-beta.
+
+## v0.18.3-beta - 2026-06-11 (Patch)
+
+Release impact: Patch because this fixes local hardening, module identity, and documentation drift without changing public API contracts, session payloads, model routing behaviour, or deployment compatibility.
+
+- **Restored the canonical Go module identity**: the Go module and imports now use `github.com/kamo62/ai-governance-orchestration/ai-agent-orch`, matching the actual GitHub repository path.
+- **Hardened OpenCode config installation**: project or global `opencode.json` files that store a concrete ai-orch runtime token are now written with private `0600` permissions, and local OpenCode config files are ignored by git.
+- **Added regression coverage for repo identity and OpenCode file modes**: focused tests now catch module-path drift and token-bearing config files that are not private.
+- **Updated stale consolidation docs**: the roadmap and MCP README now refer to `ai-orch smoke gateway|provider` and the consolidated `mcp-stub` shape instead of deleted prototype binaries.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.18.3-beta.
+
+## v0.18.2-beta - 2026-06-11 (Patch)
+
+Release impact: Patch because this hardens local verification and test reliability without changing public APIs, model routing, session contracts, or deployment compatibility.
+
+- **Pinned the local Go toolchain to the patched standard library**: root Go commands now request Go 1.26.4, matching CI and Docker, so govulncheck no longer reports reachable standard-library vulnerabilities from Go 1.26.3.
+- **Isolated Bridge dependencies from Go package discovery**: the VS Code Bridge now has a nested module boundary so Go package discovery, tests, and vulnerability scans do not traverse Bun-installed node_modules.
+- **Added repo-health regression coverage**: a focused Go test now fails if root package discovery starts walking node_modules again.
+- **Fixed stale skillsfactory tests**: updated the Doctor test call sites to match the current Doctor(dir, gatewayURL) API.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, deployment prerequisites, and changelog now agree on v0.18.2-beta.
+
+## v0.18.1-beta - 2026-06-11 (Patch)
+
+Release impact: Patch because this hardens beta verification, SQLite contention handling, audit failure guidance, and removes unused prototype code without changing public APIs or model/session contracts.
+
+- **Hardened beta smoke startup**: CI and local beta verification now rebuild the beta services, wait for Governance Shell readiness, and clean Docker volumes after smoke runs.
+- **Improved SQLite local-store resilience**: Copilot, OAuth, and kill-switch SQLite stores now enable WAL, a busy timeout, and normal synchronous mode for local beta contention.
+- **Added audit failure guidance**: patch-decision audit write failures now return targeted hints for locked SQLite databases, stale audit-chain volumes, and generic persistence failures.
+- **Removed unused prototype code**: deleted the unused assembly-line package and the obsolete OpenCode runtime stub while keeping the active ACP/direct runtime paths.
+- **Preserved router compatibility**: restored `Router.Resolve` as a compatibility helper over the current route-selection logic.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, and changelog now agree on `v0.18.1-beta`.
+
+## v0.18.0-beta - 2026-06-11 (Minor)
+
+Release impact: Minor because this adds backwards-compatible model route metadata, reasoning-effort governance, audit fields, and OpenCode agent defaults without breaking existing session or gateway APIs.
+
+- **Made `coding-gpt55` a capability alias**: the gateway now prefers actor-bound Copilot for enrolled users and falls back to the approved Bifrost/OpenRouter `openai/gpt-5.5` route.
+- **Added provider-pinned GPT-5.5 selection**: `openrouter-openai-gpt55` gives model-only sessions an explicit Bifrost/OpenRouter path for comparison and audit clarity.
+- **Governed OpenCode reasoning effort**: the model gateway accepts `reasoningEffort`, `reasoning_effort`, and `reasoning.effort`, applies route and agent policy, forwards Bifrost-compatible `reasoning.effort`, and strips unsupported reasoning controls.
+- **Expanded model audit metadata**: model events now record requested alias, credential source, requested/applied reasoning effort, and reasoning source alongside existing provider, resolved model, token, cost and hash fields.
+- **Tightened OpenCode agent config**: generated and sandbox configs use `governance-lead` as a low-reasoning primary agent with scoped specialist delegation rather than an unrestricted task permission.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, and changelog now agree on `v0.18.0-beta`.
+
+## v0.17.0-beta - 2026-06-11 (Minor)
+
+Release impact: Minor because this changes the governed OpenCode default entry flow and adds a model-only governed lane without breaking existing specialist/session APIs.
+
+- **Changed OpenCode's default entry point**: `ai-orch opencode` now creates a `governance-lead` run by default, launches OpenCode with the `governance-lead` primary agent, and records the selected specialist separately as `routed_agent`.
+- **Added Copilot-aware default model selection**: governed OpenCode runs default to the `ai-orch/coding-gpt55` capability alias, which resolves through the actor's Copilot entitlement when available and otherwise uses the approved platform route.
+- **Added a governed model-only lane**: developers can choose `--model-only` with a required `--governance-intent`, creating a tracked `model-gateway` session instead of pretending the work started as a delivery specialist.
+- **Added OpenCode subagent config generation**: generated and sandbox configs now define `governance-lead` as the primary agent and delivery agents as subagents with session-token, actor and intent headers.
+- **Cleaned public POC docs**: examples now use org-neutral work-item IDs and stale backend-spike/OpenCode instructions were removed or updated.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, and changelog now agree on `v0.17.0-beta`.
+
+## v0.16.0-beta - 2026-06-10 (Minor)
+
+Release impact: Minor because this hardens auto-session governance and adds ledger UI/API fields without removing existing endpoints or response fields.
+
+- **Governed model-gateway auto sessions**: auto-created sessions now pass through kill switches, work-item requirements, policy evaluation, classification ceilings, secret scanning, and cost-cap checks before they can route model calls.
+- **Bound auto sessions to per-session tokens**: auto-session responses now return `X-AI-Orch-Session-ID` and `X-AI-Orch-Session-Token`; subsequent explicit calls for that session require the token.
+- **Corrected auto-session trust labels**: self-asserted runtime clients record `self_reported/advisory` unless they present the configured trusted-client token.
+- **Added ledger fields**: session list APIs now include additive activity-ledger metadata such as latest event, transport, trust/enforcement, patch state/count, tool-call count, and policy reason.
+- **Made the UI ledger-first**: the Governance UI now opens on an Activity Ledger table with model, token, cost, trust, status, and detail controls.
+- **Safe default environment**: root `.env.example` now boots with Bifrost by default and documents Copilot as opt-in.
+- **Culled redundant direct OpenRouter backend**: Bifrost remains the OpenRouter/provider route for the POC, with per-user Copilot as the actor-bound alternate.
+- **Culled redundant backend spike**: Bifrost now owns shared provider gateway plumbing for the POC; per-user Copilot remains separate for actor-bound entitlements.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, and changelog now agree on `v0.16.0-beta`.
+
+## v0.15.0-beta - 2026-06-08 (Minor)
+
+Release impact: Minor because this adds scheduled model-pricing refresh, pricing-aware session reporting, streaming token capture and UI reporting fields without breaking existing endpoints.
+
+- **Added model-pricing refresh**: Governance Shell now creates a durable SQLite `model_pricing` table when using the SQLite audit database and refreshes OpenRouter model prices on startup and every `AI_ORCH_MODEL_PRICING_REFRESH_INTERVAL` interval.
+- **Added pricing-aware session summaries**: `GET /v1/sessions` and `GET /v1/audit/sessions/{id}` now return model alias, resolved model, provider/backend, prompt/output/total token counts, estimated cost, and cost source where audit data allows it.
+- **Captured streaming usage**: the model compatibility gateway requests stream usage, preserves usage-only SSE chunks for compatible clients, and records streamed token/cost data on `model.gateway_stream.completed` audit events.
+- **Made session logs easier to read**: the Governance UI now shows human-friendly permission/approval/workspace labels plus model, token and cost lines in Recent Sessions and Session Audit Trail.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, and changelog now agree on `v0.15.0-beta`.
+
+## v0.14.0-beta - 2026-06-08 (Minor)
+
+Release impact: Minor because this adds a backward-compatible session listing API and first-class UI audit trail while preserving existing session creation, audit lookup and auth contracts.
+
+- **Added recent session listing**: `GET /v1/sessions` now returns bounded, actor-scoped session summaries for authenticated UI, CLI, IDE and MCP clients without exposing raw prompts or prompt hashes.
+- **Made audit evidence visible in the UI**: `/ui/` now shows Recent Sessions and an auto-loaded Session Audit Trail so governed activity, model-gateway events and patch decisions are visible without manually pasting session IDs.
+- **Clarified UI auth boundaries**: the UI labels developer/OIDC auth as the human/client control-plane credential and notes that runtime model calls use the separate runtime token outside this screen.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, and changelog now agree on `v0.14.0-beta`.
+
+## v0.13.0-beta - 2026-06-08 (Minor)
+
+Release impact: Minor because this adds a backwards-compatible OpenCode custom-provider install path and a real local OpenCode E2E smoke while preserving existing API contracts and beta runtime defaults.
+
+- **Added OpenCode config installation**: `opencode-smoke install-config` patches global, project, or explicit `opencode.json` files with the documented custom provider shape for `ai-orch`, backs up existing files, preserves unrelated settings, and refuses to overwrite a different `provider.ai-orch` block unless `--force` is supplied.
+- **Added macOS/Linux and Windows OpenCode wrappers**: `scripts/install-opencode-ai-orch.sh` and `scripts/install-opencode-ai-orch.ps1` give teams a direct way to install the governed provider endpoint on local OpenCode.
+- **Added local OpenCode E2E smoke**: `opencode-smoke e2e` creates a governed session, runs the local `opencode` binary against the ai-orch model gateway with `OPENCODE_CONFIG`, `AI_ORCH_RUNTIME_TOKEN`, and `AI_ORCH_SESSION_ID`, then verifies the session audit contains a `model.gateway` event.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, and changelog now agree on `v0.13.0-beta`.
+
+## v0.12.2-beta - 2026-06-08 (Patch)
+
+Release impact: Patch because this improves beta demo readiness, operator UI auth clarity, and repeatable local verification without changing public API contracts.
+
+- **Added CIO demo verification**: `scripts/cio-demo-verify.sh` builds the beta images, starts an isolated demo Compose project, validates the catalogue, runs the governed beta smoke, checks protected status/metrics/UI, and leaves the stack running for the demo.
+- **Clarified UI auth posture**: the Governance UI now treats a missing developer token as an auth-pending state instead of logging protected-endpoint failures on first load.
+- **Added demo readiness status**: the UI first screen now rolls service, auth, gateway, runtime gateway, agent catalogue and smoke evidence into a compact readiness panel for operator checks.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, and changelog now agree on `v0.12.2-beta`.
+
+## v0.12.1-beta - 2026-06-04 (Patch)
+
+Release impact: Patch because this fixes beta Bridge flow, MCP OAuth token binding, local prompt cleanup, and verification drift without changing public API contracts.
+
+- **Fixed Bridge follow-up runs**: completed or patch-ready sessions can now continue through `/v1/sessions/{id}/turns` instead of always starting a new governed run.
+- **Preserved explicit Bridge context**: attached files, terminal summaries, search hits, prior-session links and local tool notes survive the fresh workspace scan performed before sending a prompt.
+- **Restricted Bridge file attachments**: the Bridge now skips files selected outside the open workspace instead of treating absolute paths as workspace-relative input.
+- **Hardened MCP OAuth token binding**: `oauth-user` MCP forwarding now resolves user tokens from the durable session owner, not from a caller-supplied `X-AI-Orch-User-ID` header.
+- **Cleaned follow-up prompt memory**: auto-confirmed follow-up turns clear the process-local prompt copy once dispatch starts.
+- **Completed runtime enforcement labels**: runtime denial and patch-rejection audit events now carry gateway enforcement metadata.
+- **Fixed Bridge verification drift**: Bridge test typechecking no longer relies on matcher typings that are absent from the current Bun test types, and package-version alignment is now covered by a test.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, plan, and changelog now agree on `v0.12.1-beta`.
+
+## v0.12.0-beta - 2026-06-04 (Beta)
+
+Release impact: Beta marks a frozen local integration surface for governed runs, model gateway headers, and MCP session binding. Provider-backed smoke is optional and runs nightly when configured.
+
+- **Added provider-backed beta smoke**: `beta-gateway-smoke` exercises governed-run + model gateway chat completions; `provider` mode proves live orchestrator dispatch and patch envelopes.
+- **Added nightly provider workflow**: `.github/workflows/nightly-provider-smoke.yml` runs when `OPENROUTER_API_KEY` is configured.
+- **Added Compose profiles**: `docker-compose.provider.yml` for live model checks; `docker-compose.team-beta.yml` for optional OIDC on the Governance Shell.
+- **Extended OpenCode smoke**: `opencode-smoke gateway-smoke` runs the same gateway path without the OpenCode binary.
+- **Fixed provider smoke prompt wiring**: provider run smoke now uses `AI_ORCH_PROVIDER_PROMPT` instead of inheriting the gateway chat prompt default.
+
+- **Promoted local beta verification**: `scripts/beta-verify.sh`, Compose profile `beta`, and CI job `beta-smoke` run governed-run smoke without provider API keys.
+- **Added beta smoke dispatch mode**: `AI_ORCH_BETA_SMOKE=true` routes orchestrator dispatch through `EchoRuntime` for CI and local vertical-slice checks.
+- **Added offline router golden-case tests**: router-agent `golden-cases.yaml` is executed in `go test` via `TestRouterGoldenCasesOffline`.
+- **Improved keyword routing**: orchestrator keyword routing now covers frontend, backend, terraform, and security-review cases aligned with the catalog.
+- **Frozen API contract**: `docs/api-contract-v1.md` documents beta-stable `/v1` routes, auth tokens, patch envelopes, and gateway headers.
+- **Added patch protocol tests**: `internal/patch` JSON round-trip coverage for beta patch envelopes.
+- **Fixed orchestrator route context encoding**: `SessionContext` now serializes with snake_case JSON fields so `/v1/runs` routing works against the orchestrator API.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, plan, and changelog now agree on `v0.12.0-beta`.
+
+## v0.11.0-alpha - 2026-06-04 (Minor)
+
+Release impact: Minor because this adds backwards-compatible gateway runtime paths and a first Governance UI while preserving the existing APIs and Bifrost default.
+
+- **Explored alternate backend plumbing**: the beta briefly carried extra Compose/backend paths while the provider-gateway boundary was being tested; the active POC path is now Bifrost plus actor-bound Copilot.
+- **Removed the hard Bifrost startup dependency**: Governance Shell now waits for the selected backend health endpoint itself, so local startup can report backend readiness clearly.
+- **Added backend health retry tests**: Governance Shell startup now retries selected backend readiness before failing closed, covering slower sidecar startup.
+- **Added a simple Governance UI**: Governance Shell now serves `/ui/` with service posture, gateway options, metrics, agents, evidence, maturity exports, audit lookup, and use-case/workflow registration backed by existing APIs.
+- **Added system status API**: `GET /v1/system/status` returns version, active backend, model gateway status, policy settings and supported gateway options for the UI and operator checks.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README current state and changelog now agree on `v0.11.0-alpha`.
+
+## v0.10.0-alpha - 2026-06-04 (Minor)
+
+Release impact: Minor because this adds a backwards-compatible model-backend option and configuration surface while preserving the existing Bifrost path.
+
+- **Tested alternate provider plumbing**: early beta work validated that ai-orch can keep session, routing and audit ownership while delegating provider compatibility behind the shell.
+- **Kept Bifrost as the proven local sidecar**: Bifrost remains the default provider-plumbing backend for the POC.
+- **Added an OpenCode Docker sandbox path**: Compose now has an opt-in `opencode-sandbox` profile with a session-bound ai-orch OpenCode config, so provider-gateway E2E can be tested without using the local OpenCode install.
+- **Made OpenCode smoke config session-aware**: `opencode-smoke generate-config` now emits `AI_ORCH_RUNTIME_TOKEN` plus `X-AI-Orch-Session-ID` env placeholders, and `opencode-smoke run` can launch local OpenCode when a governed session is supplied.
+- **Reduced backend adapter duplication**: OpenAI-compatible HTTP/streaming adapter code is shared where the backend contract allows it.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README current state and changelog now agree on `v0.10.0-alpha`.
+
+## v0.9.2-alpha - 2026-06-04 (Patch)
+
+Release impact: Patch because this fixes governance reporting integrity, local migration safety, and generated runtime guidance without changing public API routes.
+
+- **Fixed evidence-store migrations**: existing SQLite registry databases now add `trust_level` and `enforcement_mode` columns before evidence writes use them.
+- **Hardened trust-label reporting**: Governance Shell now derives trust and enforcement labels from the request path/client class, and external native tool/model evidence is always recorded as `self_reported` and `advisory`.
+- **Completed audit enforcement labels**: model gateway, model proxy, MCP proxy, session, run, message, confirmation and patch-decision audit events now include matching `enforcement_mode` values.
+- **Stopped leaking runtime tokens in OpenCode config output**: generated OpenCode provider config now references `AI_ORCH_RUNTIME_TOKEN` instead of embedding the runtime token, and the helper no longer presents an unimplemented OpenCode E2E as executed.
+- **Sanitised CLI git context**: Go-side repository context now strips username/password data from HTTPS remotes before sending or storing repo metadata.
+- **Cleaned duplicated policy entries**: MCP registrations and command allow-lists no longer repeat `unit-tests`.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README current state and changelog now agree on `v0.9.2-alpha`.
+
+## v0.9.1-alpha - 2026-06-04 (Patch)
+
+Release impact: Patch because this corrects governance wording and generated client guidance without changing public APIs or runtime behaviour.
+
+- **Clarified trust labels as reporting facts**: README, implementation notes, runtime integration docs and MCP gateway docs now state that `gateway_enforced`, `managed_client` and `self_reported` describe how work ran, not whether a developer is allowed to use a client.
+- **Updated generated client guidance**: Skills Factory output now says trust levels are audit/reporting observations, not permission settings.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README current state and changelog now agree on `v0.9.1-alpha`.
+
+## v0.9.0-alpha - 2026-06-04 (Minor)
+
+Release impact: Minor because this adds a first-class governed run API, explicit permission/approval modes, MCP run creation, and Bridge/CLI run-flow changes while preserving the existing alpha session APIs.
+
+- **Added governed runs**: `POST /v1/runs` now creates a governed session, records run context, routes the first prompt, returns the next approval gate, and exposes the session SSE URL.
+- **Added run metadata to audit and sessions**: audit events and durable session records now carry `run_id`, `permission_mode`, `approval_mode`, `workspace_mode`, branch/work-item hints, commit SHA, actor hint and source system before routing.
+- **Made server-side context resolution opt-in**: local git context resolution is disabled by default and can only be enabled with `AI_ORCH_ENABLE_SERVER_CONTEXT_RESOLVER=true` or `--enable-server-context-resolver`; client-supplied context is the primary source.
+- **Added permission and approval labels**: `read_only`, `reviewed`, `auto_apply`, `full_access`, `manual`, `auto_approved`, `yolo` and `self_reported` are now validated and recorded for governance reporting.
+- **Added MCP run creation**: `ai-orch-mcp` now exposes `start_governed_run` so MCP clients can start a governed run with project/work-item and permission metadata in one call.
+- **Updated CLI smoke semantics**: `ai-orch smoke` now starts a governed run through `/v1/runs`, sends lightweight local git/work-item context, and says explicitly that `applied` records a patch decision without mutating the workspace.
+- **Updated VS Code Bridge run flow**: the Bridge now starts a governed run through `/v1/runs`, sends parsed branch work-item hints, then confirms and streams the routed session.
+- **Aligned agent naming**: active code, docs, policies and MCP registrations now use `unit-tests` instead of the deleted `test-generation` agent.
+- **Tightened branch routing**: broad `feature/*`, `chore/*` and `release/*` branches no longer blindly route to backend development; only specific frontend/backend/test/docs/refactor/security/bugfix hints override keyword routing.
+- **Restored local roadmap**: added ignored local `plan.md` with Phase 0 through Phase 4 and the current real-patching target.
+- **Documented patch semantics**: README, implementation notes and deployment docs now distinguish CLI decision-only behaviour, Bridge local apply behaviour and pending OpenCode sandbox/worktree patching.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README current state, and changelog now agree on `v0.9.0-alpha`.
+
+## v0.8.0-alpha - 2026-06-04 (Minor)
+
+Release impact: Minor because this adds governed MCP delegation, policy-enforced upstream MCP tool calls, and richer router decision metadata while preserving the existing alpha APIs.
+
+- **Closed Phase 1I: Governed Delegation**: added `create_context_manifest`, `attach_use_case` and `attach_workflow` MCP tools so clients can bind bounded context, use cases and workflows before delegating work.
+- **Closed Phase 1I.5: Governance Router enrichment**: router decisions now include `cost_posture`, `latency_posture`, `requested_alias` and richer reason codes (workflow stage, risk level, evidence required). Scoring now considers workflow stage, latency sensitivity and evidence needs alongside task type and risk.
+- **Closed Phase 1J: Gateway-Enforced Tool Calls**: upstream MCP tools are now exposed through `ai-orch-mcp` via `list_allowed_tools` and `call_governed_tool`. The Governance Shell MCP proxy now requires a durable governed session, filters catalog results by session agent/classification policy, denies disallowed tools before forwarding, and audits allowed/denied calls as `gateway_enforced`.
+- **Fixed MCP proxy forwarding path**: the proxy now calls upstream endpoints directly (`/{toolName}`) instead of incorrectly prefixing `/tools/`, matching the actual upstream server implementations.
+- **Loaded MCP runtime policy from registrations**: runtime MCP registrations now carry `allowed_agents` and `tool_policy` data from `mcp/registrations/*.yaml` instead of maintaining a separate hardcoded tool list.
+- **Added MCP catalog endpoint**: `GET /internal/v1/mcp/catalog` returns only the upstream servers and tools allowed for the supplied governed session.
+- **Hardened MCP audit semantics**: forwarded tool calls are audited before the upstream request is sent, denied tool calls produce `tool_call_denied` audit events with `policy_decision_id`, and audit persistence failure blocks forwarding.
+- **Added integration and policy tests**: tests now cover session-required MCP forwarding, denied tools, denied agents, policy-filtered catalog results, safe context manifest IDs, and the full MCP gateway loop from session creation through audit lookup.
+- **Made context manifest IDs route-safe**: `create_context_manifest` now sends stable hashed manifest IDs instead of raw `source_system/source_object_id` strings that can contain path separators.
+- **Updated Skills Factory guidance**: generated `AGENTS.md`, `.clinerules` and `CLAUDE.md` now reference the complete tool surface including context manifests, use cases, workflows and upstream tool calls.
+- **Fixed CLI smoke help behaviour**: `ai-orch smoke --help` and `ai-orch smoke -h` now print usage instead of accidentally running the live smoke path.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README current state, and changelog now agree on `v0.8.0-alpha`.
+
+## v0.7.0-alpha - 2026-06-04 (Minor)
+
+Release impact: Minor because this adds a selectable model-backend layer, Bifrost OSS sidecar integration, and managed MCP/doctor trust-labelling improvements.
+
+- **Added provider-neutral model backends**: Governance Shell model calls now route through a backend interface, with Bifrost as the retained local sidecar path.
+- **Added Bifrost OSS sidecar support**: Docker Compose now starts a pinned `maximhq/bifrost:v1.5.7` sidecar by default, keeps it off the host network, mounts file-based config, disables Bifrost content logging, and lets Governance Shell use it through `AI_ORCH_MODEL_BACKEND=bifrost`.
+- **Kept OpenRouter health smoke coverage**: the `openrouter-smoke` tool remains a provider-health check while runtime calls route through governed backend plumbing.
+- **Kept provider secrets out of runtimes**: the Orchestrator, VS Code Bridge, MCP clients, and runtime-facing model gateway still call ai-orch endpoints rather than Bifrost or provider APIs directly.
+- **Added Bifrost model mapping**: provider/model registry entries are translated to Bifrost model names such as `openrouter/deepseek/...`, `anthropic/...`, and `bedrock/...`.
+- **Added direct provider smoke aliases**: model registry now includes local Bifrost smoke aliases for direct OpenAI, Anthropic Haiku, and DeepSeek credentials in addition to the OpenRouter DeepSeek smoke path.
+- **Added model-backend audit metadata**: model gateway and model proxy audit events now record gateway backend, provider, resolved model, usage, request/response hashes, and `trust_level: gateway_enforced` without storing raw prompt or response content.
+- **Added managed-client trust labels**: Governance Shell audit helpers now accept `gateway_enforced`, `managed_client`, and `self_reported` labels, and the MCP gateway marks routed calls as `gateway_enforced`.
+- **Expanded MCP doctor checks**: `ai-orch mcp doctor` now reports generated client config status, developer token status, Governance Shell readiness, runtime token status, and model gateway reachability.
+- **Updated local configuration docs**: `.env.example`, README, implementation notes, deployment guide, MCP gateway notes, and model registry docs now describe Bifrost as replaceable provider plumbing rather than the governance plane.
+- **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README current state, and changelog now agree on `v0.7.0-alpha`.
+
 ## v0.6.0-alpha - 2026-06-03 (Minor)
 
 Release impact: Minor because this adds first-run Bridge onboarding plus local governance gateway hardening in the alpha line. Admin routes now use a separate local admin token, and runtime model endpoints use a separate runtime token.

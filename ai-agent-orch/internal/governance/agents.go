@@ -2,9 +2,9 @@ package governance
 
 import (
 	"net/http"
-	"path/filepath"
 
-	"ai-agent-orch/internal/catalog"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/catalog"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 // AgentListHandler serves GET /v1/agents.
@@ -18,26 +18,17 @@ func NewAgentListHandler(catalogRoot string) http.Handler {
 
 func (h *AgentListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 
 	report, err := catalog.Validate(h.catalogRoot)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"agents": report.Agents,
 	})
-}
-
-// rel returns the path relative to the catalog root for display.
-func rel(root, path string) string {
-	r, err := filepath.Rel(root, path)
-	if err != nil {
-		return path
-	}
-	return filepath.ToSlash(r)
 }

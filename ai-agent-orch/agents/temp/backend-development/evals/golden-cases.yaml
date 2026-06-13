@@ -1,0 +1,13 @@
+cases:
+  - name: "Go API endpoint with tests"
+    prompt: "Create a Go HTTP handler for a /users/{id} GET endpoint with a mock database and unit tests"
+    expected_skill: "golang"
+    expected_agent: "backend-development"
+  - name: "Python data model"
+    prompt: "Write a Python Pydantic model for a product catalog with validation and tests"
+    expected_skill: "python"
+    expected_agent: "backend-development"
+  - name: "Database migration"
+    prompt: "Create a PostgreSQL migration to add an orders table with foreign keys"
+    expected_skill: "database"
+    expected_agent: "backend-development"

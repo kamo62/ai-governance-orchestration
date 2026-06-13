@@ -1,0 +1,24 @@
+# Opt-in override that lets the Governance Shell start and stop model sidecars
+# from the admin UI (POST /v1/backends). It installs the docker CLI in the
+# image, mounts the host Docker socket, and runs the shell as root so it can
+# use that socket. Trusted local setups only; see docs/deployment.md.
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.backend-control.yml \
+#     up -d --build governance-shell orchestrator
+
+services:
+  governance-shell:
+    build:
+      context: .
+      args:
+        INSTALL_DOCKER_CLI: "true"
+    user: root
+    environment:
+      AI_ORCH_BACKEND_CONTROL_ENABLED: "true"
+      AI_ORCH_BACKEND_CONTROL_WORKDIR: /app
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./docker-compose.copilot.yml:/app/docker-compose.copilot.yml:ro

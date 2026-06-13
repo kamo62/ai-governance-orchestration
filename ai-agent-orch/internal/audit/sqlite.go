@@ -7,10 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/sqlitex"
 )
 
 // SQLiteStore is a durable audit backend backed by SQLite.
@@ -27,29 +26,9 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, errors.New("sqlite audit db path is required")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return nil, fmt.Errorf("create audit db directory: %w", err)
-	}
-
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sqlitex.Open(dbPath, "audit")
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite audit db: %w", err)
-	}
-	// WAL mode supports multiple readers and one writer concurrently.
-	// MaxOpenConns > 1 allows concurrent reads. Cap at 8 to avoid
-	// excessive connection churn while still permitting parallelism.
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
-	db.SetConnMaxLifetime(30 * time.Minute)
-
-	// WAL mode for better concurrent read/write performance.
-	if _, err := db.Exec(`
-		PRAGMA journal_mode = WAL;
-		PRAGMA busy_timeout = 10000;
-		PRAGMA synchronous = NORMAL;
-	`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("configure sqlite audit db: %w", err)
+		return nil, err
 	}
 
 	store := &SQLiteStore{
@@ -98,17 +77,57 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.ensureAuditColumn("parent_event_id", "TEXT"); err != nil {
 		return err
 	}
+	if err := s.ensureAuditColumn("parent_session_id", "TEXT"); err != nil {
+		return err
+	}
 	if err := s.ensureAuditColumn("prev_event_hash", "TEXT"); err != nil {
 		return err
 	}
 	if err := s.ensureAuditColumn("event_hash", "TEXT"); err != nil {
 		return err
 	}
+	for column, definition := range map[string]string{
+		"trust_level":                "TEXT",
+		"enforcement_mode":           "TEXT",
+		"provider":                   "TEXT",
+		"model_alias":                "TEXT",
+		"model_resolved":             "TEXT",
+		"requested_model_alias":      "TEXT",
+		"credential_source":          "TEXT",
+		"reasoning_effort_requested": "TEXT",
+		"reasoning_effort_applied":   "TEXT",
+		"reasoning_source":           "TEXT",
+		"gateway_backend":            "TEXT",
+		"run_id":                     "TEXT",
+		"work_item_id":               "TEXT",
+		"patch_id":                   "TEXT",
+		"patch_buffer_id":            "TEXT",
+		"patch_decision":             "TEXT",
+		"patch_file_count":           "INTEGER NOT NULL DEFAULT 0",
+		"runtime":                    "TEXT",
+		"runtime_status":             "TEXT",
+		"duration_ms":                "INTEGER NOT NULL DEFAULT 0",
+		"event_count":                "INTEGER NOT NULL DEFAULT 0",
+		"patch_count":                "INTEGER NOT NULL DEFAULT 0",
+		"tool_call_count":            "INTEGER NOT NULL DEFAULT 0",
+		"workspace_sha256":           "TEXT",
+		"opencode_version":           "TEXT",
+		"token_usage_json":           "TEXT",
+	} {
+		if err := s.ensureAuditColumn(column, definition); err != nil {
+			return err
+		}
+	}
 	_, err = s.db.Exec(`
 		CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_events(session_id);
 		CREATE INDEX IF NOT EXISTS idx_audit_type ON audit_events(event_type);
 		CREATE INDEX IF NOT EXISTS idx_audit_recorded ON audit_events(recorded_at);
 		CREATE INDEX IF NOT EXISTS idx_audit_parent ON audit_events(parent_event_id);
+		CREATE INDEX IF NOT EXISTS idx_audit_parent_session ON audit_events(parent_session_id);
+		CREATE INDEX IF NOT EXISTS idx_audit_trust ON audit_events(trust_level);
+		CREATE INDEX IF NOT EXISTS idx_audit_provider_model ON audit_events(provider, model_alias);
+		CREATE INDEX IF NOT EXISTS idx_audit_run ON audit_events(run_id);
+		CREATE INDEX IF NOT EXISTS idx_audit_patch ON audit_events(patch_id);
 		CREATE TABLE IF NOT EXISTS audit_chain_heads (
 			session_id TEXT PRIMARY KEY,
 			head_hash TEXT NOT NULL
@@ -181,6 +200,10 @@ func (s *SQLiteStore) insertEvent(ctx context.Context, execer sqlExecutor, event
 	if err != nil {
 		return Event{}, fmt.Errorf("encode findings: %w", err)
 	}
+	tokenUsageJSON, err := json.Marshal(event.TokenUsage)
+	if err != nil {
+		return Event{}, fmt.Errorf("encode token usage: %w", err)
+	}
 
 	// Store full event as JSON for schema flexibility.
 	payloadJSON, err := json.Marshal(event)
@@ -190,18 +213,30 @@ func (s *SQLiteStore) insertEvent(ctx context.Context, execer sqlExecutor, event
 
 	_, err = execer.ExecContext(ctx, `
 			INSERT INTO audit_events (
-				event_id, parent_event_id, session_id, event_type, actor, agent, classification,
+				event_id, parent_event_id, parent_session_id, session_id, event_type, actor, agent, classification,
 				reason, findings_json, prompt_sha256, estimated_cost_usd, cost_cap_usd,
 				raw_prompt_stored, raw_response_stored, correlation_subject, recorded_at,
-				prev_event_hash, event_hash, payload_json
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				prev_event_hash, event_hash,
+				trust_level, enforcement_mode, provider, model_alias, model_resolved,
+				requested_model_alias, credential_source, reasoning_effort_requested, reasoning_effort_applied, reasoning_source,
+				gateway_backend,
+				run_id, work_item_id, patch_id, patch_buffer_id, patch_decision, patch_file_count,
+				runtime, runtime_status, duration_ms, event_count, patch_count, tool_call_count,
+				workspace_sha256, opencode_version, token_usage_json, payload_json
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
-		event.EventID, event.ParentEventID, event.SessionID, event.EventType, event.Actor, event.Agent,
+		event.EventID, event.ParentEventID, event.ParentSessionID, event.SessionID, event.EventType, event.Actor, event.Agent,
 		event.Classification, event.Reason, string(findingsJSON), event.PromptSHA256,
 		event.EstimatedCostUSD, event.CostCapUSD,
 		boolToInt(event.RawPromptStored), boolToInt(event.RawResponseStored),
 		event.CorrelationSubject, event.RecordedAt.Format(time.RFC3339Nano),
-		event.PrevEventHash, event.EventHash, string(payloadJSON),
+		event.PrevEventHash, event.EventHash,
+		event.TrustLevel, event.EnforcementMode, event.Provider, event.ModelAlias, event.ModelResolved,
+		event.RequestedModelAlias, event.CredentialSource, event.ReasoningEffortRequested, event.ReasoningEffortApplied, event.ReasoningSource,
+		event.GatewayBackend,
+		event.RunID, event.WorkItemID, event.PatchID, event.PatchBufferID, event.PatchDecision, event.PatchFileCount,
+		event.Runtime, event.RuntimeStatus, event.DurationMS, event.EventCount, event.PatchCount, event.ToolCallCount,
+		event.WorkspaceSHA256, event.OpencodeVersion, string(tokenUsageJSON), string(payloadJSON),
 	)
 	if err != nil {
 		return Event{}, fmt.Errorf("insert audit event: %w", err)

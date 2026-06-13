@@ -5,7 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"ai-agent-orch/internal/composition"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/composition"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 // CompositionHandler serves composition lifecycle endpoints.
@@ -20,7 +21,7 @@ func NewCompositionHandler(service *SessionService, store *composition.Compositi
 
 func (h *CompositionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.service == nil || h.store == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "composition handler unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "composition handler unavailable"})
 		return
 	}
 
@@ -54,7 +55,7 @@ func (h *CompositionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+	httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 }
 
 func (h *CompositionHandler) createComposition(w http.ResponseWriter, r *http.Request) {
@@ -64,19 +65,19 @@ func (h *CompositionHandler) createComposition(w http.ResponseWriter, r *http.Re
 		Stages      []composition.Stage `json:"stages"`
 	}
 	if err := readJSON(w, r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
 	if req.SessionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id is required"})
 		return
 	}
 	if len(req.Stages) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "stages are required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "stages are required"})
 		return
 	}
 	if err := composition.ValidateStages(req.Stages, 2); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 
@@ -88,7 +89,7 @@ func (h *CompositionHandler) createComposition(w http.ResponseWriter, r *http.Re
 	comp.Description = req.Description
 	h.store.Set(req.SessionID, comp)
 
-	writeJSON(w, http.StatusCreated, map[string]any{
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
 		"session_id":  req.SessionID,
 		"status":      "created",
 		"stages":      comp.Stages,
@@ -100,7 +101,7 @@ func (h *CompositionHandler) createComposition(w http.ResponseWriter, r *http.Re
 func (h *CompositionHandler) getComposition(w http.ResponseWriter, r *http.Request) {
 	sessionID := extractSessionID(r.URL.Path, "/v1/compositions/", "")
 	if sessionID == "" || strings.Contains(sessionID, "/") {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
 		return
 	}
 
@@ -109,11 +110,11 @@ func (h *CompositionHandler) getComposition(w http.ResponseWriter, r *http.Reque
 	}
 	comp, ok := h.store.Get(sessionID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "composition not found"})
+		httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "composition not found"})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"session_id":  comp.SessionID,
 		"stages":      comp.Stages,
 		"current_idx": comp.CurrentIdx,
@@ -125,7 +126,7 @@ func (h *CompositionHandler) getComposition(w http.ResponseWriter, r *http.Reque
 func (h *CompositionHandler) approveStage(w http.ResponseWriter, r *http.Request) {
 	sessionID := extractSessionID(r.URL.Path, "/v1/compositions/", "/approve")
 	if sessionID == "" || strings.Contains(sessionID, "/") {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
 		return
 	}
 
@@ -137,15 +138,15 @@ func (h *CompositionHandler) approveStage(w http.ResponseWriter, r *http.Request
 		return comp.ApproveStage()
 	})
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "composition not found"})
+		httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "composition not found"})
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"session_id":  sessionID,
 		"status":      "stage_approved",
 		"current_idx": comp.CurrentIdx,
@@ -155,7 +156,7 @@ func (h *CompositionHandler) approveStage(w http.ResponseWriter, r *http.Request
 func (h *CompositionHandler) advanceComposition(w http.ResponseWriter, r *http.Request) {
 	sessionID := extractSessionID(r.URL.Path, "/v1/compositions/", "/advance")
 	if sessionID == "" || strings.Contains(sessionID, "/") {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
 		return
 	}
 
@@ -167,23 +168,23 @@ func (h *CompositionHandler) advanceComposition(w http.ResponseWriter, r *http.R
 		return comp.Advance()
 	})
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "composition not found"})
+		httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "composition not found"})
 		return
 	}
 	if err != nil {
 		if errors.Is(err, composition.ErrHumanGateRequired) {
-			writeJSON(w, http.StatusLocked, map[string]any{"error": err.Error()})
+			httpx.WriteJSON(w, http.StatusLocked, map[string]any{"error": err.Error()})
 			return
 		}
 		if errors.Is(err, composition.ErrMaxDepthExceeded) {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
+			httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"session_id":  sessionID,
 		"status":      "advanced",
 		"current_idx": comp.CurrentIdx,
@@ -194,7 +195,7 @@ func (h *CompositionHandler) advanceComposition(w http.ResponseWriter, r *http.R
 func (h *CompositionHandler) completeStage(w http.ResponseWriter, r *http.Request) {
 	sessionID := extractSessionID(r.URL.Path, "/v1/compositions/", "/complete")
 	if sessionID == "" || strings.Contains(sessionID, "/") {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
 		return
 	}
 
@@ -202,7 +203,7 @@ func (h *CompositionHandler) completeStage(w http.ResponseWriter, r *http.Reques
 		Output string `json:"output"`
 	}
 	if err := readJSON(w, r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
 		return
 	}
 
@@ -214,15 +215,15 @@ func (h *CompositionHandler) completeStage(w http.ResponseWriter, r *http.Reques
 		return comp.CompleteStage(req.Output)
 	})
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "composition not found"})
+		httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "composition not found"})
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"session_id":  sessionID,
 		"status":      "stage_completed",
 		"current_idx": comp.CurrentIdx,
@@ -232,16 +233,16 @@ func (h *CompositionHandler) completeStage(w http.ResponseWriter, r *http.Reques
 
 func (h *CompositionHandler) requireSessionOwner(w http.ResponseWriter, r *http.Request, sessionID string) bool {
 	if h.service == nil || h.service.sessions == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session store unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session store unavailable"})
 		return false
 	}
 	record, err := h.service.sessions.Get(r.Context(), sessionID)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+		httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
 		return false
 	}
 	if record.ActorSubject != actorFromContext(r.Context()) {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
 		return false
 	}
 	return true

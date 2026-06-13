@@ -106,3 +106,12 @@ func containsString(s, substr string) bool {
 	}
 	return false
 }
+
+// extractJSONObject returns the first JSON object found in content.
+func extractJSONObject(content string) string {
+	objects := extractJSONObjects(content)
+	if len(objects) == 0 {
+		return ""
+	}
+	return objects[0]
+}

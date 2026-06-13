@@ -1,0 +1,33 @@
+name: backend-development
+version: 0.1.0
+phase: experimental
+required_for_phase0: false
+owner: local
+runtime: opencode
+model:
+  primary: coding-balanced
+  fallback: coding-economy
+mcp_servers:
+  - repo-classification
+  - engineering-standards-kb
+tools_allowed:
+  - read_file
+  - write_file
+permissions:
+  network: deny
+  workspace_write: allow
+  outside_workspace_write: deny
+governance:
+  classification_max: internal
+cost:
+  per_invocation_cap_usd: 0.25
+  consecutive_tool_call_max: 15
+evals:
+  path: ./evals/
+  required_for_phase0: false
+skills:
+  - golang
+  - python
+  - rest-api
+  - database
+  - testing

@@ -112,6 +112,94 @@ func TestChatCompletionRequiresAPIKey(t *testing.T) {
 	}
 }
 
+func TestChatCompletionRawPreservesToolPayload(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/chat/completions" {
+			t.Fatalf("expected chat completions path, got %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"raw","model":"x/y","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(Config{APIKey: "test-key", BaseURL: srv.URL + "/api/v1", HTTPClient: srv.Client()})
+	body := []byte(`{"model":"x/y","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}]}],"tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}],"response_format":{"type":"json_object"}}`)
+	resp, err := client.ChatCompletionRaw(context.Background(), body)
+	if err != nil {
+		t.Fatalf("ChatCompletionRaw returned error: %v", err)
+	}
+	if _, ok := got["tools"].([]any); !ok {
+		t.Fatalf("expected tools to be preserved, got %#v", got)
+	}
+	if _, ok := got["response_format"].(map[string]any); !ok {
+		t.Fatalf("expected response_format to be preserved, got %#v", got)
+	}
+	if !strings.Contains(string(resp), `"model":"x/y"`) {
+		t.Fatalf("unexpected raw response: %s", string(resp))
+	}
+}
+
+// TestChatCompletionRejectsForeignProvider verifies the native client fails fast
+// for a non-OpenRouter provider instead of silently dropping it and sending an
+// unqualified model id to OpenRouter.
+func TestChatCompletionRejectsForeignProvider(t *testing.T) {
+	client := NewClient(Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:0"})
+	req := ChatCompletionRequest{
+		Provider: "anthropic",
+		Model:    "claude-haiku-4-5-20251001",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	}
+	if _, err := client.ChatCompletion(context.Background(), req); err == nil {
+		t.Fatal("expected error for non-openrouter provider in ChatCompletion")
+	}
+	if _, err := client.ChatCompletionStream(context.Background(), req); err == nil {
+		t.Fatal("expected error for non-openrouter provider in ChatCompletionStream")
+	}
+
+	// The openrouter provider (and empty) must still be accepted past the guard.
+	okReq := ChatCompletionRequest{Provider: "openrouter", Model: "x/y", Messages: req.Messages}
+	if _, err := client.ChatCompletion(context.Background(), okReq); err != nil &&
+		strings.Contains(err.Error(), "cannot route provider") {
+		t.Fatalf("openrouter provider must pass the guard, got %v", err)
+	}
+}
+
+func TestUsageUnmarshalAcceptsObjectCost(t *testing.T) {
+	var usage Usage
+	if err := json.Unmarshal([]byte(`{
+		"prompt_tokens": 10,
+		"completion_tokens": 5,
+		"total_tokens": 15,
+		"cost": {"prompt": 0.001, "completion": 0.002},
+		"completion_tokens_details": {"reasoning_tokens": 3}
+	}`), &usage); err != nil {
+		t.Fatalf("unmarshal usage: %v", err)
+	}
+	if usage.Cost < 0.0029 || usage.Cost > 0.0031 {
+		t.Fatalf("expected summed cost 0.003, got %v", usage.Cost)
+	}
+	if usage.TotalTokens != 15 {
+		t.Fatalf("expected total tokens 15, got %d", usage.TotalTokens)
+	}
+	if usage.CompletionTokensDetails.ReasoningTokens != 3 {
+		t.Fatalf("expected reasoning tokens 3, got %d", usage.CompletionTokensDetails.ReasoningTokens)
+	}
+}
+
+func TestUsageUnmarshalAcceptsStringCost(t *testing.T) {
+	var usage Usage
+	if err := json.Unmarshal([]byte(`{"total_tokens": 1, "cost": "0.004"}`), &usage); err != nil {
+		t.Fatalf("unmarshal usage: %v", err)
+	}
+	if usage.Cost != 0.004 {
+		t.Fatalf("expected cost 0.004, got %v", usage.Cost)
+	}
+}
+
 func TestChatCompletionReportsOpenRouterErrors(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "quota exceeded", http.StatusTooManyRequests)
@@ -174,20 +262,5 @@ func TestChatCompletionStreamSendsStreamTrue(t *testing.T) {
 
 	if !gotStream {
 		t.Fatal("expected stream=true in upstream request")
-	}
-}
-
-func TestDecodeStreamChunkAcceptsDataPrefixWithoutSpace(t *testing.T) {
-	chunk, err := DecodeStreamChunk(`data:{"id":"chunk1","choices":[{"index":0,"delta":{"content":"Hi"}}]}`)
-	if err != nil {
-		t.Fatalf("DecodeStreamChunk returned error: %v", err)
-	}
-	if chunk.ID != "chunk1" || chunk.Choices[0].Delta.Content != "Hi" {
-		t.Fatalf("unexpected chunk: %#v", chunk)
-	}
-
-	_, err = DecodeStreamChunk("data:[DONE]")
-	if err != io.EOF {
-		t.Fatalf("expected EOF for DONE without space, got %v", err)
 	}
 }

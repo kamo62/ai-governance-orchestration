@@ -1,6 +1,8 @@
-module ai-agent-orch
+module github.com/kamo62/ai-governance-orchestration/ai-agent-orch
 
 go 1.26
+
+toolchain go1.26.4
 
 require (
 	gopkg.in/yaml.v3 v3.0.1

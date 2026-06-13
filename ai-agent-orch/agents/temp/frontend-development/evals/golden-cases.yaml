@@ -1,0 +1,13 @@
+cases:
+  - name: "React component with a11y"
+    prompt: "Build an accessible React modal component with focus trap and keyboard navigation"
+    expected_skill: "react"
+    expected_agent: "frontend-development"
+  - name: "TypeScript utility type"
+    prompt: "Create a TypeScript utility type for deep partial objects with tests"
+    expected_skill: "typescript"
+    expected_agent: "frontend-development"
+  - name: "CSS grid layout"
+    prompt: "Write a responsive CSS grid layout for a dashboard with 3 breakpoints"
+    expected_skill: "css"
+    expected_agent: "frontend-development"

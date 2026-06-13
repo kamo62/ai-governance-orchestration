@@ -7,6 +7,7 @@ interface CommandContribution {
 }
 
 interface PackageManifest {
+    version: string;
     activationEvents: string[];
     contributes: {
         commands: CommandContribution[];
@@ -34,5 +35,13 @@ describe('VS Code command manifest', () => {
         for (const contribution of manifest.contributes.commands) {
             expect(commandPaletteIDs).toContain(contribution.command);
         }
+    });
+
+    test('keeps Bridge package version aligned with root VERSION', () => {
+        const rootVersion = readFileSync(join(import.meta.dir, '..', '..', '..', 'VERSION'), 'utf8')
+            .trim()
+            .replace(/^v/, '');
+
+        expect(manifest.version).toBe(rootVersion);
     });
 });

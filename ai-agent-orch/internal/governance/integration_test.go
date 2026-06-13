@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 )
 
 func TestEndToEndSessionFlow(t *testing.T) {
@@ -24,7 +24,7 @@ func TestEndToEndSessionFlow(t *testing.T) {
 		NewID:             fixedIDs("sess_e2e_1", "evt_create_1", "evt_route_1", "evt_confirm_1", "evt_dispatch_1", "evt_patch_1"),
 	})
 	fakeOrch := &fakeOrchestrator{
-		specialist: "test-generation",
+		specialist: "unit-tests",
 		reason:     "testing keyword match",
 	}
 	eventStore := NewEventStore()
@@ -43,7 +43,7 @@ func TestEndToEndSessionFlow(t *testing.T) {
 	}))
 
 	// POST /v1/sessions
-	body := []byte(`{"agent":"test-generation","classification":"internal","prompt":"write tests for login"}`)
+	body := []byte(`{"agent":"unit-tests","classification":"internal","prompt":"write tests for login"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	req.Header.Set("Content-Type", "application/json")
@@ -82,15 +82,15 @@ func TestEndToEndSessionFlow(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &routeResp); err != nil {
 		t.Fatalf("decode route response: %v", err)
 	}
-	if routeResp.Specialist != "test-generation" {
-		t.Fatalf("expected test-generation, got %s", routeResp.Specialist)
+	if routeResp.Specialist != "unit-tests" {
+		t.Fatalf("expected unit-tests, got %s", routeResp.Specialist)
 	}
 	if routeResp.Status != "awaiting_confirmation" {
 		t.Fatalf("expected awaiting_confirmation, got %s", routeResp.Status)
 	}
 
 	// 4. Confirm specialist.
-	body = []byte(`{"agent":"test-generation"}`)
+	body = []byte(`{"agent":"unit-tests"}`)
 	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/confirm", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer local-test-token")
 	req.Header.Set("Content-Type", "application/json")

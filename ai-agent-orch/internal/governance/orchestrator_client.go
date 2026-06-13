@@ -11,21 +11,23 @@ import (
 
 // OrchestratorHTTPClient is the concrete client that calls the Orchestrator.
 type OrchestratorHTTPClient struct {
-	baseURL      string
-	serviceToken string
-	client       *http.Client
+	baseURL        string
+	serviceToken   string
+	client         *http.Client
+	dispatchClient *http.Client
 }
 
 func NewOrchestratorHTTPClient(baseURL string, serviceToken string) *OrchestratorHTTPClient {
 	return &OrchestratorHTTPClient{
-		baseURL:      baseURL,
-		serviceToken: serviceToken,
-		client:       &http.Client{Timeout: 30 * time.Second},
+		baseURL:        baseURL,
+		serviceToken:   serviceToken,
+		client:         &http.Client{Timeout: 30 * time.Second},
+		dispatchClient: &http.Client{Timeout: 10 * time.Minute},
 	}
 }
 
-func (c *OrchestratorHTTPClient) Route(ctx context.Context, sessionID string, prompt string) (RouteDecision, error) {
-	body, _ := json.Marshal(map[string]any{"prompt": prompt})
+func (c *OrchestratorHTTPClient) Route(ctx context.Context, sessionID string, prompt string, context SessionContext) (RouteDecision, error) {
+	body, _ := json.Marshal(map[string]any{"prompt": prompt, "context": context})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/orchestrator/route", bytes.NewReader(body))
 	if err != nil {
 		return RouteDecision{}, err
@@ -73,7 +75,7 @@ func (c *OrchestratorHTTPClient) AcceptSession(ctx context.Context, sessionID st
 	return nil
 }
 
-func (c *OrchestratorHTTPClient) Dispatch(ctx context.Context, sessionID string, agent string, prompt string) (DispatchResult, error) {
+func (c *OrchestratorHTTPClient) Dispatch(ctx context.Context, sessionID string, agent string, prompt string, runtimeToken string) (DispatchResult, error) {
 	body, _ := json.Marshal(map[string]any{"agent": agent, "prompt": prompt})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/orchestrator/dispatch", bytes.NewReader(body))
 	if err != nil {
@@ -81,9 +83,16 @@ func (c *OrchestratorHTTPClient) Dispatch(ctx context.Context, sessionID string,
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-AI-Orch-Session-ID", sessionID)
+	if runtimeToken != "" {
+		req.Header.Set("X-AI-Orch-Session-Token", runtimeToken)
+	}
 	c.setServiceAuth(req)
 
-	resp, err := c.client.Do(req)
+	dispatchClient := c.dispatchClient
+	if dispatchClient == nil {
+		dispatchClient = c.client
+	}
+	resp, err := dispatchClient.Do(req)
 	if err != nil {
 		return DispatchResult{}, err
 	}

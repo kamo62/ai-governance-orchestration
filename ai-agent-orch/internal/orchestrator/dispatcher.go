@@ -7,9 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"ai-agent-orch/internal/catalog"
-	"ai-agent-orch/internal/dispatch"
-	"ai-agent-orch/internal/openrouter"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/catalog"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/dispatch"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/envx"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/openrouter"
 )
 
 // Dispatcher resolves model aliases and starts runtime sessions.
@@ -41,7 +42,7 @@ func NewDispatcher(catalogRoot string) *Dispatcher {
 			APIKey:   apiKey,
 			BaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
 			Referer:  os.Getenv("OPENROUTER_HTTP_REFERER"),
-			AppTitle: envOrDefault("OPENROUTER_APP_TITLE", "ai-agent-orch-local"),
+			AppTitle: envx.OrDefault("OPENROUTER_APP_TITLE", "ai-agent-orch-local"),
 		}), catalogRoot)
 	}
 
@@ -59,7 +60,7 @@ func NewDispatcher(catalogRoot string) *Dispatcher {
 	return d
 }
 
-func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName string, prompt string) (dispatch.SessionHandle, error) {
+func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName string, prompt string, gatewayToken string) (dispatch.SessionHandle, error) {
 	report, err := catalog.Validate(d.catalogRoot)
 	if err != nil {
 		return nil, fmt.Errorf("validate catalog: %w", err)
@@ -93,16 +94,26 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sessionID string, agentName s
 
 	sessionCfg := dispatch.SessionConfig{
 		SessionID:     sessionID,
+		GatewayToken:  gatewayToken,
 		SystemPrompt:  agentCfg.SystemPrompt(d.catalogRoot),
 		UserPrompt:    prompt,
 		ModelID:       modelAlias,
 		WorkspacePath: workspaceRoot(d.catalogRoot),
 		AllowedTools:  agentCfg.ToolsAllowed,
+		AgentName:     agentName,
+		ToolBroker:    d.broker,
+		Permissions:   permissions,
 		CostCapUSD:    agentCfg.Cost.PerInvocationCapUSD,
 		MCPEndpoints:  resolveMCPEndpoints(agentCfg.MCPServers),
 	}
 
 	// Try ACP runtime first if agent specifies opencode.
+	// Beta/CI smoke uses EchoRuntime so governed runs complete without provider keys.
+	if betaSmokeEnabled() {
+		echo := dispatch.NewEchoRuntime()
+		return echo.StartSession(ctx, sessionCfg)
+	}
+
 	if agentCfg.Runtime == "opencode" {
 		if runtime, ok := d.runtimes["opencode"]; ok {
 			handle, err := runtime.StartSession(ctx, sessionCfg)
@@ -179,11 +190,13 @@ func mcpEndpointEnvKey(name string) string {
 	return "MCP_" + normalized + "_URL"
 }
 
-func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+func betaSmokeEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("AI_ORCH_BETA_SMOKE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
-	return fallback
 }
 
 func workspaceRoot(catalogRoot string) string {

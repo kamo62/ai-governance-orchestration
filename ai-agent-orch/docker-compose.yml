@@ -12,15 +12,36 @@ x-mcp-environment: &mcp-environment
 x-catalog-volumes: &catalog-volumes
   - ./agents:/app/agents:ro
   - ./models:/app/models:ro
+  - ./mcp:/app/mcp:ro
   - ./policies:/app/policies:ro
 
 x-runtime-volumes: &runtime-volumes
   - ./agents:/app/agents:ro
   - ./models:/app/models:ro
+  - ./mcp:/app/mcp:ro
   - ./policies:/app/policies:ro
   - audit-data:/app/var/audit
 
 services:
+  bifrost:
+    image: maximhq/bifrost:v1.5.7
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8080
+      BIFROST_ENCRYPTION_KEY: ${BIFROST_ENCRYPTION_KEY:?set BIFROST_ENCRYPTION_KEY in .env, e.g. openssl rand -hex 16}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    volumes:
+      - bifrost-data:/app/data
+      - ./bifrost/config.json:/app/data/config.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   governance-shell:
     build:
       context: .
@@ -38,7 +59,17 @@ services:
       AI_ORCH_SESSION_COST_CAP_USD: ${AI_ORCH_SESSION_COST_CAP_USD:-0}
       AI_ORCH_POLICY_ENGINE: ${AI_ORCH_POLICY_ENGINE:-native}
       AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX: ${AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX:-15}
+      AI_ORCH_REQUIRE_WORK_ITEM: ${AI_ORCH_REQUIRE_WORK_ITEM:-false}
+      AI_ORCH_ENABLE_SERVER_CONTEXT_RESOLVER: ${AI_ORCH_ENABLE_SERVER_CONTEXT_RESOLVER:-false}
+      AI_ORCH_GATEWAY_AUTO_SESSION: ${AI_ORCH_GATEWAY_AUTO_SESSION:-true}
+      AI_ORCH_TRUSTED_CLIENT_TOKEN: ${AI_ORCH_TRUSTED_CLIENT_TOKEN:-}
+      AI_ORCH_ENV: ${AI_ORCH_ENV:-local}
       AI_ORCH_ORCHESTRATOR_URL: http://orchestrator:8080
+      AI_ORCH_MODEL_BACKEND: ${AI_ORCH_MODEL_BACKEND:-bifrost}
+      AI_ORCH_BIFROST_BASE_URL: ${AI_ORCH_BIFROST_BASE_URL:-http://bifrost:8080}
+      AI_ORCH_BIFROST_API_KEY: ${AI_ORCH_BIFROST_API_KEY:-}
+      AI_ORCH_COPILOT_TOKEN_DB: ${AI_ORCH_COPILOT_TOKEN_DB:-/app/var/audit/copilot-tokens.db}
+      AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY: ${AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
       OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-ai-agent-orch-local}
@@ -64,7 +95,6 @@ services:
       AI_ORCH_MODEL_PROXY_URL: http://governance-shell:8080/internal/v1/model
       AI_ORCH_MCP_PROXY_URL: http://governance-shell:8080/internal/v1/mcp
       AI_ORCH_MODEL_ALIAS_OVERRIDE: ${AI_ORCH_MODEL_ALIAS_OVERRIDE:-}
-      AI_ORCH_OPENROUTER_REASONING_EFFORT: ${AI_ORCH_OPENROUTER_REASONING_EFFORT:-}
       AI_ORCH_OPENROUTER_REASONING_EXCLUDE: ${AI_ORCH_OPENROUTER_REASONING_EXCLUDE:-true}
     volumes: *runtime-volumes
     healthcheck:
@@ -87,7 +117,9 @@ services:
     build:
       context: .
     command:
-      - openrouter-smoke
+      - ai-orch
+      - smoke
+      - openrouter
       - -catalog-root
       - /app
       - -model-alias
@@ -99,10 +131,38 @@ services:
       OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-ai-agent-orch-local}
     volumes: *catalog-volumes
 
+  opencode-sandbox:
+    profiles: ["opencode"]
+    image: ghcr.io/anomalyco/opencode:${OPENCODE_IMAGE_TAG:-latest}
+    working_dir: /workspace
+    entrypoint: ["opencode"]
+    command:
+      - run
+      - --dir
+      - /workspace
+      - --model
+      - ${OPENCODE_MODEL:-ai-orch/coding-balanced}
+      - --agent
+      - ${OPENCODE_AGENT:-governance-lead}
+      - ${OPENCODE_PROMPT:-Review this sandbox workspace briefly without editing files.}
+    environment:
+      OPENCODE_CONFIG: /opencode/opencode.json
+      AI_ORCH_RUNTIME_TOKEN: ${AI_ORCH_RUNTIME_TOKEN:-local-runtime-token}
+      AI_ORCH_SESSION_ID: ${AI_ORCH_SESSION_ID:-}
+      AI_ORCH_SESSION_TOKEN: ${AI_ORCH_SESSION_TOKEN:-}
+      AI_ORCH_ACTOR_SUBJECT: ${AI_ORCH_ACTOR_SUBJECT:-local-dev}
+      AI_ORCH_INTENT: ${AI_ORCH_INTENT:-Docker sandbox model-only review}
+    depends_on:
+      governance-shell:
+        condition: service_healthy
+    volumes:
+      - ./opencode/sandbox/opencode.json:/opencode/opencode.json:ro
+      - opencode-sandbox-workspace:/workspace
+
   mcp-repo-classification:
     build:
       context: .
-    command: ["mcp-repo-classification"]
+    command: ["mcp-stub", "repo-classification"]
     environment:
       <<: *mcp-environment
     ports:
@@ -116,7 +176,7 @@ services:
   mcp-engineering-standards-kb:
     build:
       context: .
-    command: ["mcp-engineering-standards-kb"]
+    command: ["mcp-stub", "engineering-standards-kb"]
     environment:
       <<: *mcp-environment
     ports:
@@ -130,7 +190,7 @@ services:
   mcp-catalog-introspection:
     build:
       context: .
-    command: ["mcp-catalog-introspection"]
+    command: ["mcp-stub", "catalog-introspection"]
     environment:
       <<: *mcp-environment
     ports:
@@ -144,7 +204,7 @@ services:
   mcp-playwright-cli:
     build:
       context: .
-    command: ["mcp-playwright-cli"]
+    command: ["mcp-stub", "playwright-cli"]
     environment:
       <<: *mcp-environment
     ports:
@@ -159,7 +219,7 @@ services:
     profiles: ["phase2"]
     build:
       context: .
-    command: ["mcp-issue-tracker"]
+    command: ["mcp-stub", "issue-tracker"]
     environment:
       <<: *mcp-environment
     ports:
@@ -174,7 +234,7 @@ services:
     profiles: ["phase2"]
     build:
       context: .
-    command: ["mcp-documentation"]
+    command: ["mcp-stub", "documentation"]
     environment:
       <<: *mcp-environment
     ports:
@@ -189,7 +249,7 @@ services:
     profiles: ["phase2"]
     build:
       context: .
-    command: ["mcp-test-management"]
+    command: ["mcp-stub", "test-management"]
     environment:
       <<: *mcp-environment
     ports:
@@ -216,4 +276,6 @@ services:
         condition: service_healthy
 
 volumes:
+  bifrost-data:
   audit-data:
+  opencode-sandbox-workspace:

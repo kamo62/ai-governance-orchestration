@@ -41,6 +41,28 @@ models:
 	}
 }
 
+func TestResolveModelDefinitionFindsProviderNativeAlias(t *testing.T) {
+	root := t.TempDir()
+	writeRegistry(t, root, `
+models:
+  - alias: bedrock-sonnet
+    provider: bedrock
+    model_id: anthropic.claude-3-5-sonnet-20240620-v1:0
+    fallback_alias: null
+`)
+
+	model, err := ResolveModelDefinition(root, "bedrock-sonnet")
+	if err != nil {
+		t.Fatalf("ResolveModelDefinition returned error: %v", err)
+	}
+	if model.Provider != "bedrock" {
+		t.Fatalf("unexpected provider %q", model.Provider)
+	}
+	if model.ModelID != "anthropic.claude-3-5-sonnet-20240620-v1:0" {
+		t.Fatalf("unexpected model ID %q", model.ModelID)
+	}
+}
+
 func writeRegistry(t *testing.T, root string, contents string) {
 	t.Helper()
 	modelsDir := filepath.Join(root, "models")

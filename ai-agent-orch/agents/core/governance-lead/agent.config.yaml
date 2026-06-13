@@ -1,0 +1,28 @@
+name: governance-lead
+version: 0.1.0
+phase: experimental
+owner: core
+runtime: opencode
+model:
+  primary: coding-gpt55
+  fallback: coding-balanced
+mcp_servers:
+  - catalog-introspection
+  - repo-classification
+tools_allowed:
+  - list_specialists
+  - get_specialist_metadata
+  - validate_agent_ref
+  - get_repo_classification
+permissions:
+  network: deny
+  workspace_write: deny
+  outside_workspace_write: deny
+governance:
+  classification_max: internal
+cost:
+  per_invocation_cap_usd: 0.10
+  consecutive_tool_call_max: 8
+evals:
+  path: ./evals/
+  required_for_phase0: false

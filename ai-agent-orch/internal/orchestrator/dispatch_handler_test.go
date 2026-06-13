@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/dispatch"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/dispatch"
 )
 
 func TestDispatchHandlerFailsClosedWhenAuditWriteFails(t *testing.T) {
@@ -24,7 +24,7 @@ func TestDispatchHandlerFailsClosedWhenAuditWriteFails(t *testing.T) {
 	}
 	handler := NewDispatchHandler(dispatcher, failingAuditStore{})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"test-generation","prompt":"write tests"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"unit-tests","prompt":"write tests"}`)))
 	req.Header.Set("X-AI-Orch-Session-ID", "sess_dispatch_1")
 	rec := httptest.NewRecorder()
 
@@ -51,7 +51,7 @@ func TestDispatchHandlerFailsWhenRuntimeWaitFails(t *testing.T) {
 	}
 	handler := NewDispatchHandler(dispatcher, audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")))
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"test-generation","prompt":"write tests"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"unit-tests","prompt":"write tests"}`)))
 	req.Header.Set("X-AI-Orch-Session-ID", "sess_dispatch_1")
 	rec := httptest.NewRecorder()
 
@@ -77,7 +77,7 @@ func TestDispatchHandlerFailsWhenRuntimeEmitsError(t *testing.T) {
 	}
 	handler := NewDispatchHandler(dispatcher, audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")))
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"test-generation","prompt":"write tests"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"unit-tests","prompt":"write tests"}`)))
 	req.Header.Set("X-AI-Orch-Session-ID", "sess_dispatch_1")
 	rec := httptest.NewRecorder()
 
@@ -91,6 +91,38 @@ func TestDispatchHandlerFailsWhenRuntimeEmitsError(t *testing.T) {
 	}
 }
 
+func TestDispatchHandlerRuntimeContextSurvivesCallerCancellation(t *testing.T) {
+	var runtimeCtxErr error
+	dispatcher := &Dispatcher{
+		catalogRoot: filepath.Join("..", ".."),
+		broker:      mustToolBroker(t),
+		runtimes: map[string]dispatch.Runtime{
+			"opencode": fakeRuntime{
+				handle: &fakeHandle{events: []dispatch.RuntimeEvent{{Type: "done", Payload: "ok"}}},
+				onStart: func(ctx context.Context) {
+					runtimeCtxErr = ctx.Err()
+				},
+			},
+		},
+	}
+	handler := NewDispatchHandler(dispatcher, audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")))
+
+	baseCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/orchestrator/dispatch", bytes.NewReader([]byte(`{"agent":"unit-tests","prompt":"write tests"}`))).WithContext(baseCtx)
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_dispatch_cancelled")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if runtimeCtxErr != nil {
+		t.Fatalf("expected runtime context to survive caller cancellation, got %v", runtimeCtxErr)
+	}
+}
+
 type failingAuditStore struct{}
 
 func (failingAuditStore) Append(context.Context, audit.Event) (audit.Event, error) {
@@ -98,11 +130,15 @@ func (failingAuditStore) Append(context.Context, audit.Event) (audit.Event, erro
 }
 
 type fakeRuntime struct {
-	handle dispatch.SessionHandle
-	err    error
+	handle  dispatch.SessionHandle
+	err     error
+	onStart func(context.Context)
 }
 
-func (f fakeRuntime) StartSession(context.Context, dispatch.SessionConfig) (dispatch.SessionHandle, error) {
+func (f fakeRuntime) StartSession(ctx context.Context, _ dispatch.SessionConfig) (dispatch.SessionHandle, error) {
+	if f.onStart != nil {
+		f.onStart(ctx)
+	}
 	if f.err != nil {
 		return nil, f.err
 	}

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 )
 
 func TestRouterSelectsSpecialistsForGoldenPrompts(t *testing.T) {
@@ -22,7 +22,7 @@ func TestRouterSelectsSpecialistsForGoldenPrompts(t *testing.T) {
 		prompt string
 		want   string
 	}{
-		{prompt: "Write Playwright tests for this login page.", want: "test-generation"},
+		{prompt: "Write Playwright tests for this login page.", want: "unit-tests"},
 		{prompt: "Review this diff for bugs and risky changes.", want: "code-review"},
 		{prompt: "Improve the README for this package.", want: "documentation"},
 		{prompt: "Refactor this module without changing behavior.", want: "refactor"},
@@ -32,7 +32,7 @@ func TestRouterSelectsSpecialistsForGoldenPrompts(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.want, func(t *testing.T) {
-			decision, err := router.SelectSpecialist(tc.prompt)
+			decision, err := router.SelectSpecialist(tc.prompt, SessionContext{})
 			if err != nil {
 				t.Fatalf("SelectSpecialist returned error: %v", err)
 			}
@@ -41,6 +41,59 @@ func TestRouterSelectsSpecialistsForGoldenPrompts(t *testing.T) {
 			}
 			if decision.Reason == "" {
 				t.Fatalf("expected selection reason")
+			}
+		})
+	}
+}
+
+func TestRouterDoesNotMapBroadFeatureBranchToBackend(t *testing.T) {
+	router := NewRouter(RouterConfig{
+		CatalogRoot: filepath.Join("..", ".."),
+	})
+
+	decision, err := router.SelectSpecialist("Review this diff for risky changes.", SessionContext{
+		Branch:       "feature/ABC-123-general-work",
+		WorkItemType: "feature",
+	})
+	if err != nil {
+		t.Fatalf("SelectSpecialist returned error: %v", err)
+	}
+	if decision.Specialist == "backend-development" {
+		t.Fatalf("feature branches must not blindly route to backend-development: %#v", decision)
+	}
+	if decision.Specialist != "code-review" {
+		t.Fatalf("expected keyword fallback to code-review, got %q", decision.Specialist)
+	}
+}
+
+func TestRouterUsesSpecificBranchWorkTypes(t *testing.T) {
+	router := NewRouter(RouterConfig{
+		CatalogRoot: filepath.Join("..", ".."),
+	})
+
+	cases := []struct {
+		name         string
+		branch       string
+		workItemType string
+		prompt       string
+		want         string
+	}{
+		{name: "frontend prefix", branch: "frontend/ABC-123-nav", workItemType: "frontend", prompt: "Build the navigation UI.", want: "frontend-development"},
+		{name: "backend prefix", branch: "backend/ABC-123-api", workItemType: "backend", prompt: "Build the user API.", want: "backend-development"},
+		{name: "test prefix", branch: "test/ABC-123-parser", workItemType: "test", prompt: "Add coverage.", want: "unit-tests"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			decision, err := router.SelectSpecialist(tc.prompt, SessionContext{
+				Branch:       tc.branch,
+				WorkItemType: tc.workItemType,
+			})
+			if err != nil {
+				t.Fatalf("SelectSpecialist returned error: %v", err)
+			}
+			if decision.Specialist != tc.want {
+				t.Fatalf("expected %q, got %q (%s)", tc.want, decision.Specialist, decision.Reason)
 			}
 		})
 	}
@@ -75,8 +128,8 @@ func TestRouteEndpointWritesAuditWithoutRawPrompt(t *testing.T) {
 	if response.SessionID != "sess_router_1" {
 		t.Fatalf("unexpected session ID %q", response.SessionID)
 	}
-	if response.Specialist != "test-generation" {
-		t.Fatalf("expected test-generation, got %q", response.Specialist)
+	if response.Specialist != "unit-tests" {
+		t.Fatalf("expected unit-tests, got %q", response.Specialist)
 	}
 	if response.AuditEventID != "evt_router_selected_1" {
 		t.Fatalf("unexpected audit event ID %q", response.AuditEventID)
@@ -90,7 +143,7 @@ func TestRouteEndpointWritesAuditWithoutRawPrompt(t *testing.T) {
 	for _, want := range []string{
 		`"session_id":"sess_router_1"`,
 		`"event_type":"router.specialist.selected"`,
-		`"agent":"test-generation"`,
+		`"agent":"unit-tests"`,
 		`"correlation_subject":"orchestrator"`,
 	} {
 		if !strings.Contains(auditText, want) {

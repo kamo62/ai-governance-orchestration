@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 // KillSwitchStore manages kill-switch state.
@@ -86,11 +88,11 @@ func NewAdminHandler(store KillSwitchStore, service *SessionService) http.Handle
 
 func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.service == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return
 	}
 	if h.store == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "kill switch store unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "kill switch store unavailable"})
 		return
 	}
 	if !h.service.RequireAdminRequest(w, r) {
@@ -101,10 +103,10 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if path == "" || path == "/" {
 		// List all kill switches.
 		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+			httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"killswitches": h.store.List(),
 		})
 		return
@@ -112,7 +114,7 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) != 2 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "path must be /v1/admin/killswitch/{scope}/{id}"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "path must be /v1/admin/killswitch/{scope}/{id}"})
 		return
 	}
 	scope, id := parts[0], parts[1]
@@ -120,25 +122,25 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		if err := h.store.Block(scope, id); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"scope":  scope,
 			"id":     id,
 			"status": "blocked",
 		})
 	case http.MethodDelete:
 		if err := h.store.Unblock(scope, id); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"scope":  scope,
 			"id":     id,
 			"status": "unblocked",
 		})
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 	}
 }

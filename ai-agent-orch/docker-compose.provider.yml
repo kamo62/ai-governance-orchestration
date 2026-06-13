@@ -1,0 +1,38 @@
+# Provider-backed beta profile: real model gateway and orchestrator dispatch.
+# Requires OPENROUTER_API_KEY in the environment or ../.env.dev.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.provider.yml --profile provider up -d bifrost orchestrator governance-shell
+#   docker compose -f docker-compose.yml -f docker-compose.provider.yml --profile provider run --rm provider-gateway-smoke
+#   docker compose -f docker-compose.yml -f docker-compose.provider.yml --profile provider run --rm provider-run-smoke
+
+services:
+  orchestrator:
+    environment:
+      AI_ORCH_BETA_SMOKE: "false"
+      AI_ORCH_MODEL_ALIAS_OVERRIDE: ${AI_ORCH_MODEL_ALIAS_OVERRIDE:-smoke-deepseek-v4-flash}
+
+  provider-gateway-smoke:
+    profiles: ["provider"]
+    build:
+      context: .
+    command: ["ai-orch", "smoke", "gateway"]
+    environment:
+      AI_ORCH_GOVERNANCE_URL: http://governance-shell:8080
+      AI_ORCH_MODEL_GATEWAY_URL: http://governance-shell:18082
+      AI_ORCH_DEV_TOKEN: ${AI_ORCH_DEV_TOKEN:-local-dev}
+      AI_ORCH_RUNTIME_TOKEN: ${AI_ORCH_RUNTIME_TOKEN:-local-runtime-token}
+      AI_ORCH_GATEWAY_MODEL: ${AI_ORCH_GATEWAY_MODEL:-smoke-deepseek-v4-flash}
+      AI_ORCH_GATEWAY_CLASSIFICATION: ${AI_ORCH_GATEWAY_CLASSIFICATION:-public}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+
+  provider-run-smoke:
+    profiles: ["provider"]
+    build:
+      context: .
+    command: ["ai-orch", "smoke", "provider"]
+    environment:
+      AI_ORCH_GOVERNANCE_URL: http://governance-shell:8080
+      AI_ORCH_DEV_TOKEN: ${AI_ORCH_DEV_TOKEN:-local-dev}
+      AI_ORCH_SMOKE_SSE_TIMEOUT: ${AI_ORCH_SMOKE_SSE_TIMEOUT:-4m}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}

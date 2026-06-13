@@ -26,7 +26,7 @@ Return exact JSON:
 
 ```json
 {
-  "specialist": "test-generation",
+  "specialist": "unit-tests",
   "confidence": "high",
   "reasoning": "The request asks for Playwright tests."
 }

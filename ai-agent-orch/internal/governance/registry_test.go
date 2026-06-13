@@ -12,7 +12,7 @@ import (
 func TestRegistryHandler_CreateAndGetUseCase(t *testing.T) {
 	store := NewRegistryStore()
 	svc := NewSessionService(SessionConfig{DevToken: "test"})
-	h := NewRegistryHandler(store, svc)
+	h := NewRegistryHandlerWithMetrics(store, svc, nil)
 
 	// Create.
 	body, _ := json.Marshal(map[string]any{
@@ -54,7 +54,7 @@ func TestRegistryHandler_CreateAndGetUseCase(t *testing.T) {
 func TestRegistryHandler_CreateAndGetWorkflow(t *testing.T) {
 	store := NewRegistryStore()
 	svc := NewSessionService(SessionConfig{DevToken: "test"})
-	h := NewRegistryHandler(store, svc)
+	h := NewRegistryHandlerWithMetrics(store, svc, nil)
 
 	body, _ := json.Marshal(map[string]any{
 		"id":          "wf_devsecops",
@@ -85,7 +85,7 @@ func TestRegistryHandler_CreateAndGetWorkflow(t *testing.T) {
 func TestRegistryHandler_CreateAndGetManifest(t *testing.T) {
 	store := NewRegistryStore()
 	svc := registryTestService(t, "sess_a", "local-dev")
-	h := NewRegistryHandler(store, svc)
+	h := NewRegistryHandlerWithMetrics(store, svc, nil)
 
 	body, _ := json.Marshal(map[string]any{
 		"id":               "ctx_1",
@@ -136,7 +136,7 @@ func TestRegistryHandler_ManifestRequiresSessionOwnership(t *testing.T) {
 		"sess_a":     "local-dev",
 		"sess_other": "other-user",
 	})
-	h := NewRegistryHandler(store, svc)
+	h := NewRegistryHandlerWithMetrics(store, svc, nil)
 
 	body, _ := json.Marshal(map[string]any{
 		"id":               "ctx_other",
@@ -186,7 +186,7 @@ func TestRegistryHandler_MaturityExports(t *testing.T) {
 		"sess_1":     "local-dev",
 		"sess_other": "other-user",
 	})
-	h := NewRegistryHandler(store, svc)
+	h := NewRegistryHandlerWithMetrics(store, svc, nil)
 
 	if err := store.AppendExport(MaturityExportRecord{
 		SessionID:      "sess_1",

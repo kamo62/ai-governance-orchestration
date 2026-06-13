@@ -1,23 +1,28 @@
 package main
 
 import (
-	"log"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
-	"ai-agent-orch/internal/appconfig"
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/catalog"
-	"ai-agent-orch/internal/httpauth"
-	"ai-agent-orch/internal/orchestrator"
-	"ai-agent-orch/internal/server"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/appconfig"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/catalog"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpauth"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/logx"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/orchestrator"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/server"
 )
 
 func main() {
+	logx.Setup()
 	cfg, err := appconfig.Load(os.Args[1:])
 	if err != nil {
-		log.Fatal(err)
+		logx.Fatal(err)
 	}
 
 	baseHandler := server.New("orchestrator", func() error {
@@ -33,7 +38,7 @@ func main() {
 
 	auditStore, err := audit.NewStore(cfg.AuditPath)
 	if err != nil {
-		log.Fatal(err)
+		logx.Fatal(err)
 	}
 	chainAudit := audit.NewChainAppender(auditStore)
 	sessionIntake := orchestrator.NewSessionIntake(orchestrator.SessionIntakeConfig{
@@ -61,18 +66,33 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1 MiB
 	}
-	log.Printf("orchestrator listening on %s", cfg.Addr)
-	log.Fatal(srv.ListenAndServe())
+	logx.Infof("orchestrator listening on %s", cfg.Addr)
+	logx.Fatal(srv.ListenAndServe())
 }
 
-// logRequestLatency wraps an http.Handler and logs requests that exceed a threshold.
+// logRequestLatency wraps an http.Handler, tags requests with an ID, and logs
+// requests that exceed a threshold. The governance shell forwards its own
+// X-Request-ID so cross-service calls share one correlation ID.
 func logRequestLatency(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		if requestID == "" {
+			requestID = newRequestID()
+		}
+		w.Header().Set("X-Request-ID", requestID)
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		dur := time.Since(start)
 		if dur > 500*time.Millisecond {
-			log.Printf("slow request: %s %s %s", r.Method, r.URL.Path, dur)
+			logx.Infof("slow request: %s %s %s request_id=%s", r.Method, r.URL.Path, dur, requestID)
 		}
 	})
+}
+
+func newRequestID() string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("req_%d", time.Now().UnixNano())
+	}
+	return "req_" + hex.EncodeToString(b[:])
 }

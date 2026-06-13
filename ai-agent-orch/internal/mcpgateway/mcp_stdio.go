@@ -22,41 +22,7 @@ func NewStdioTransport(mcp *Server) *StdioTransport {
 
 // Run starts reading from stdin and writing responses to stdout.
 func (t *StdioTransport) Run(ctx context.Context) error {
-	reader := bufio.NewReader(os.Stdin)
-	for {
-		line, eof, err := readJSONRPCLine(reader)
-		if err != nil {
-			return err
-		}
-		if line == "" {
-			if eof {
-				return nil
-			}
-			continue
-		}
-
-		var req Request
-		if err := json.Unmarshal([]byte(line), &req); err != nil {
-			t.writeResponse(errorResponse(nil, ErrParseError, "parse error"))
-			continue
-		}
-
-		resp := t.mcp.Handle(ctx, &req)
-		if resp != nil {
-			t.writeResponse(resp)
-		}
-		if eof {
-			return nil
-		}
-	}
-}
-
-func (t *StdioTransport) writeResponse(resp *Response) {
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return
-	}
-	fmt.Fprintln(os.Stdout, string(data))
+	return NewReadWriteTransport(t.mcp, os.Stdin, os.Stdout).Run(ctx)
 }
 
 // ReadWriteTransport is an MCP transport over arbitrary io.Reader/io.Writer.

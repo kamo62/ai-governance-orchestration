@@ -243,13 +243,3 @@ func VerifyChain(events []Event) error {
 
 	return nil
 }
-
-// VerifyChainForSession loads all events for the given session from the
-// store and runs VerifyChain on them.
-func VerifyChainForSession(ctx context.Context, store Store, sessionID string) error {
-	events, err := store.EventsBySession(ctx, sessionID)
-	if err != nil {
-		return fmt.Errorf("load events: %w", err)
-	}
-	return VerifyChain(events)
-}

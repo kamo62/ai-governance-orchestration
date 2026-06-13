@@ -30,23 +30,26 @@ describe('Bridge configuration helpers', () => {
             configuredGovernanceUrl: 'localhost:8080/',
             configuredDevToken: 'settings-token',
             configuredIdentity: ' developer ',
+            configuredTrustedClientToken: ' trusted-token ',
             envDevToken: 'env-token',
+            envTrustedClientToken: 'env-trusted-token',
             secretDevToken: 'secret-token',
         });
 
         expect(settings.governanceUrl).toBe('http://localhost:8080');
         expect(settings.devToken).toBe('secret-token');
         expect(settings.identity).toBe('developer');
+        expect(settings.trustedClientToken).toBe('trusted-token');
     });
 
     test('detects missing dev token after trimming whitespace', () => {
-        expect(hasUsableDevToken({ governanceUrl: DEFAULT_GOVERNANCE_URL, devToken: ' ', identity: 'developer' })).toBe(false);
-        expect(hasUsableDevToken({ governanceUrl: DEFAULT_GOVERNANCE_URL, devToken: 'local-dev', identity: 'developer' })).toBe(true);
+        expect(hasUsableDevToken({ governanceUrl: DEFAULT_GOVERNANCE_URL, devToken: ' ', identity: 'developer', trustedClientToken: '' })).toBe(false);
+        expect(hasUsableDevToken({ governanceUrl: DEFAULT_GOVERNANCE_URL, devToken: 'local-dev', identity: 'developer', trustedClientToken: '' })).toBe(true);
     });
 
     test('marks a ready service without a token as needing setup', () => {
         const status = bridgeConnectionStatus({
-            settings: { governanceUrl: DEFAULT_GOVERNANCE_URL, devToken: '', identity: 'developer' },
+            settings: { governanceUrl: DEFAULT_GOVERNANCE_URL, devToken: '', identity: 'developer', trustedClientToken: '' },
             ready: true,
         });
 

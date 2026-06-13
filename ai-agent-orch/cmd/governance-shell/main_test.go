@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,9 +12,23 @@ import (
 	"testing"
 	"time"
 
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/governance"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/governance"
 )
+
+type testHealthBackend struct {
+	failuresRemaining int
+	attempts          int
+}
+
+func (b *testHealthBackend) Health(context.Context) error {
+	b.attempts++
+	if b.failuresRemaining > 0 {
+		b.failuresRemaining--
+		return errors.New("not ready")
+	}
+	return nil
+}
 
 func TestHasSQLiteExt(t *testing.T) {
 	tests := []struct {
@@ -58,6 +73,33 @@ func TestNewAuditStoreReturnsSQLiteErrors(t *testing.T) {
 	}
 }
 
+func TestWaitForModelBackendHealthRetriesUntilReady(t *testing.T) {
+	backend := &testHealthBackend{failuresRemaining: 2}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if err := waitForModelBackendHealth(ctx, backend, time.Millisecond); err != nil {
+		t.Fatalf("waitForModelBackendHealth returned error: %v", err)
+	}
+	if backend.attempts != 3 {
+		t.Fatalf("expected 3 health attempts, got %d", backend.attempts)
+	}
+}
+
+func TestWaitForModelBackendHealthReturnsTimeout(t *testing.T) {
+	backend := &testHealthBackend{failuresRemaining: 100}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+
+	err := waitForModelBackendHealth(ctx, backend, time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline exceeded error, got %v", err)
+	}
+}
+
 func TestRegisterRegistryHandlersIncludesEvidenceAndCacheRoutes(t *testing.T) {
 	sessionStore, err := governance.NewSQLiteSessionStore(filepath.Join(t.TempDir(), "sessions.db"))
 	if err != nil {
@@ -67,7 +109,7 @@ func TestRegisterRegistryHandlersIncludesEvidenceAndCacheRoutes(t *testing.T) {
 	if err := sessionStore.Create(context.Background(), governance.SessionRecord{
 		SessionID:      "sess_registry",
 		ActorSubject:   "local-dev",
-		Agent:          "test-generation",
+		Agent:          "unit-tests",
 		Classification: "internal",
 		PromptSHA256:   "abc123",
 		Status:         "created",
@@ -81,7 +123,7 @@ func TestRegisterRegistryHandlersIncludesEvidenceAndCacheRoutes(t *testing.T) {
 		Audit:    audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
 		Sessions: sessionStore,
 	})
-	handler := governance.NewRegistryHandler(governance.NewRegistryStore(), service)
+	handler := governance.NewRegistryHandlerWithMetrics(governance.NewRegistryStore(), service, nil)
 	mux := http.NewServeMux()
 	registerRegistryHandlers(mux, handler)
 

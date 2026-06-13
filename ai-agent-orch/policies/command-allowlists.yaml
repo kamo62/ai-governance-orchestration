@@ -18,19 +18,19 @@ system_commands:
       - name: playwright
         description: Run Playwright tests.
         allowed_agents:
-          - test-generation
+          - unit-tests
       - name: go
         description: Run Go commands (test, build, fmt).
         allowed_agents:
-          - test-generation
+          - unit-tests
           - code-review
       - name: bun
         description: Run Bun scripts (test, lint, typecheck).
         allowed_agents:
-          - test-generation
+          - unit-tests
           - code-review
       - name: npm
         description: Run npm scripts.
         allowed_agents:
-          - test-generation
+          - unit-tests
     # Deny by default: curl, wget, aws, kubectl, terraform, docker, etc.

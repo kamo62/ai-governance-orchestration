@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"ai-agent-orch/internal/dispatch"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/dispatch"
 )
 
 func TestDispatcherUsesModelAliasOverride(t *testing.T) {
@@ -19,7 +19,7 @@ func TestDispatcherUsesModelAliasOverride(t *testing.T) {
 		},
 	}
 
-	_, err := dispatcher.Dispatch(context.Background(), "sess_test", "test-generation", "write tests")
+	_, err := dispatcher.Dispatch(context.Background(), "sess_test", "unit-tests", "write tests", "")
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}

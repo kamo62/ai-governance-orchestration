@@ -26,6 +26,23 @@ func AuthMiddleware(svc *SessionService, publicPrefixes []string) func(http.Hand
 				next.ServeHTTP(w, r)
 				return
 			}
+			// Backend control mutations are admin actions: the handler checks
+			// the admin token on the same Authorization header, so the
+			// middleware must not consume it as a dev credential first.
+			if path == "/v1/backends" && r.Method != http.MethodGet {
+				if !svc.RequireAdminRequest(w, r) {
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+			// The admin token is a superset credential: a governance operator
+			// holding it can read every actor-scoped surface as the
+			// admin-operator subject without also carrying a dev token.
+			if subject, ok := svc.AdminBearerSubject(r.Header.Get("Authorization")); ok {
+				next.ServeHTTP(w, r.WithContext(WithAuthInfo(r.Context(), AuthInfo{Subject: subject, Method: "admin"})))
+				return
+			}
 			authReq, ok := svc.RequireAuthorizedRequest(w, r)
 			if !ok {
 				return

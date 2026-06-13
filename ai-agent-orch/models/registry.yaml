@@ -59,12 +59,111 @@ models:
       pricing_source: openrouter
       verified_on: 2026-05-23
 
+  - alias: smoke-openai-gpt4o-mini
+    provider: openai
+    model_id: gpt-4o-mini
+    purpose: Local Bifrost provider-routing smoke test for direct OpenAI API credentials.
+    allowed_classifications: [public, internal]
+    fallback_alias: smoke-anthropic-haiku
+    cost:
+      pricing_source: openai
+      verified_on: 2026-06-04
+
+  - alias: smoke-anthropic-haiku
+    provider: anthropic
+    model_id: claude-haiku-4-5-20251001
+    purpose: Local Bifrost provider-routing smoke test for direct Anthropic API credentials.
+    allowed_classifications: [public, internal]
+    fallback_alias: smoke-deepseek-chat
+    cost:
+      pricing_source: anthropic
+      verified_on: 2026-06-04
+
+  - alias: smoke-deepseek-chat
+    provider: deepseek
+    model_id: deepseek-chat
+    purpose: Local Bifrost provider-routing smoke test for direct DeepSeek API credentials.
+    allowed_classifications: [public, internal]
+    fallback_alias: smoke-deepseek-v4-flash
+    cost:
+      pricing_source: deepseek
+      verified_on: 2026-06-04
+
   - alias: coding-gpt55
     provider: openrouter
     model_id: openai/gpt-5.5
-    purpose: GPT-5.5 coding validation alias for local orchestration smoke tests.
+    purpose: Capability alias for GPT-5.5 coding work; prefers actor-bound Copilot when enrolled, then falls back to Bifrost/OpenRouter.
     allowed_classifications: [public, internal]
     fallback_alias: coding-balanced
+    routes:
+      - provider: copilot-user
+        model_id: gpt-5.5
+        credential_source: copilot-user
+        requires_actor_token: true
+        reasoning:
+          default_effort: low
+          max_effort: medium
+          supports_effort: false
+      - provider: openrouter
+        model_id: openai/gpt-5.5
+        credential_source: platform-openrouter
+        reasoning:
+          default_effort: medium
+          max_effort: high
+          supports_effort: true
     cost:
       pricing_source: openrouter
       verified_on: 2026-05-24
+
+  - alias: openrouter-openai-gpt55
+    provider: openrouter
+    model_id: openai/gpt-5.5
+    purpose: Provider-pinned OpenRouter route to OpenAI GPT-5.5 for explicit model-only sessions and comparison.
+    allowed_classifications: [public, internal]
+    fallback_alias: coding-balanced
+    routes:
+      - provider: openrouter
+        model_id: openai/gpt-5.5
+        credential_source: platform-openrouter
+        reasoning:
+          default_effort: medium
+          max_effort: high
+          supports_effort: true
+    cost:
+      pricing_source: openrouter
+      verified_on: 2026-05-24
+
+  # Copilot aliases fall back only within the copilot-user provider. A Copilot
+  # outage must not silently shift traffic from the developer's Copilot seat to
+  # the organisation's API-key providers.
+  - alias: copilot-gpt-5-mini
+    provider: copilot-user
+    model_id: gpt-5-mini
+    purpose: Governed per-user GitHub Copilot GPT-5 Mini route.
+    allowed_classifications: [public, internal]
+    reasoning:
+      default_effort: low
+      max_effort: medium
+      supports_effort: false
+
+  - alias: copilot-gpt-5.3-codex
+    provider: copilot-user
+    model_id: gpt-5.3-codex
+    purpose: Governed per-user GitHub Copilot Codex route.
+    allowed_classifications: [public, internal]
+    fallback_alias: copilot-gpt-5-mini
+    reasoning:
+      default_effort: low
+      max_effort: medium
+      supports_effort: false
+
+  - alias: copilot-gpt-5.5
+    provider: copilot-user
+    model_id: gpt-5.5
+    purpose: Governed per-user GitHub Copilot high-reasoning route.
+    allowed_classifications: [public, internal]
+    fallback_alias: copilot-gpt-5-mini
+    reasoning:
+      default_effort: low
+      max_effort: medium
+      supports_effort: false

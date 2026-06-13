@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -42,19 +43,25 @@ type Message struct {
 }
 
 type ChatCompletionRequest struct {
-	SessionID   string           `json:"-"`
-	ModelAlias  string           `json:"-"`
-	Model       string           `json:"model"`
-	Messages    []Message        `json:"messages"`
-	Temperature float64          `json:"temperature,omitempty"`
-	MaxTokens   int              `json:"max_tokens,omitempty"`
-	Reasoning   *ReasoningConfig `json:"reasoning,omitempty"`
-	Stream      bool             `json:"stream,omitempty"`
+	SessionID     string           `json:"-"`
+	ModelAlias    string           `json:"-"`
+	Provider      string           `json:"-"`
+	Model         string           `json:"model"`
+	Messages      []Message        `json:"messages"`
+	Temperature   float64          `json:"temperature,omitempty"`
+	MaxTokens     int              `json:"max_tokens,omitempty"`
+	Reasoning     *ReasoningConfig `json:"reasoning,omitempty"`
+	Stream        bool             `json:"stream,omitempty"`
+	StreamOptions *StreamOptions   `json:"stream_options,omitempty"`
 }
 
 type ReasoningConfig struct {
 	Effort  string `json:"effort,omitempty"`
 	Exclude bool   `json:"exclude,omitempty"`
+}
+
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage,omitempty"`
 }
 
 type ChatCompletionResponse struct {
@@ -74,6 +81,61 @@ type Usage struct {
 	CompletionTokensDetails struct {
 		ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 	} `json:"completion_tokens_details,omitempty"`
+}
+
+func (u *Usage) UnmarshalJSON(data []byte) error {
+	type usageAlias struct {
+		PromptTokens            int             `json:"prompt_tokens"`
+		CompletionTokens        int             `json:"completion_tokens"`
+		TotalTokens             int             `json:"total_tokens"`
+		Cost                    json.RawMessage `json:"cost,omitempty"`
+		CompletionTokensDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+		} `json:"completion_tokens_details,omitempty"`
+	}
+	var raw usageAlias
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	u.PromptTokens = raw.PromptTokens
+	u.CompletionTokens = raw.CompletionTokens
+	u.TotalTokens = raw.TotalTokens
+	u.CompletionTokensDetails = raw.CompletionTokensDetails
+	if len(raw.Cost) > 0 {
+		u.Cost = parseCost(raw.Cost)
+	}
+	return nil
+}
+
+func parseCost(raw json.RawMessage) float64 {
+	var asNumber float64
+	if err := json.Unmarshal(raw, &asNumber); err == nil {
+		return asNumber
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		if n, err := strconv.ParseFloat(strings.TrimSpace(asString), 64); err == nil {
+			return n
+		}
+		return 0
+	}
+	var asObject map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &asObject); err != nil {
+		return 0
+	}
+	for _, key := range []string{"total", "total_cost", "cost", "cost_usd", "amount"} {
+		if value, ok := asObject[key]; ok {
+			// A present total field is authoritative even when it is zero, so we
+			// must not fall through and sum sibling component fields (which would
+			// double-count or invent a cost).
+			return parseCost(value)
+		}
+	}
+	var sum float64
+	for _, value := range asObject {
+		sum += parseCost(value)
+	}
+	return sum
 }
 
 func NewClient(cfg Config) *Client {
@@ -102,6 +164,9 @@ func NewClient(cfg Config) *Client {
 func (c *Client) ChatCompletion(ctx context.Context, request ChatCompletionRequest) (ChatCompletionResponse, error) {
 	if c.apiKey == "" {
 		return ChatCompletionResponse{}, errors.New("OPENROUTER_API_KEY is required")
+	}
+	if request.Provider != "" && request.Provider != "openrouter" {
+		return ChatCompletionResponse{}, fmt.Errorf("OpenRouter client cannot route provider %q; use Bifrost or another provider-aware gateway", request.Provider)
 	}
 	if request.Model == "" {
 		return ChatCompletionResponse{}, errors.New("model is required")
@@ -146,6 +211,33 @@ func (c *Client) ChatCompletion(ctx context.Context, request ChatCompletionReque
 	return result, nil
 }
 
+// ChatCompletionRaw forwards an already-validated OpenAI-compatible request
+// body to OpenRouter without narrowing fields such as tools, tool_choice,
+// tool_calls, response_format, or multimodal content arrays.
+func (c *Client) ChatCompletionRaw(ctx context.Context, body []byte) ([]byte, error) {
+	if c.apiKey == "" {
+		return nil, errors.New("OPENROUTER_API_KEY is required")
+	}
+	if len(body) == 0 {
+		return nil, errors.New("request body is required")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create OpenRouter raw chat completion request: %w", err)
+	}
+	c.setHeaders(httpReq)
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("call OpenRouter raw chat completions: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("OpenRouter returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return respBody, nil
+}
+
 func (r ChatCompletionResponse) FirstContent() string {
 	if len(r.Choices) == 0 {
 		return ""
@@ -159,6 +251,9 @@ func (r ChatCompletionResponse) FirstContent() string {
 func (c *Client) ChatCompletionStream(ctx context.Context, request ChatCompletionRequest) (io.ReadCloser, error) {
 	if c.apiKey == "" {
 		return nil, errors.New("OPENROUTER_API_KEY is required")
+	}
+	if request.Provider != "" && request.Provider != "openrouter" {
+		return nil, fmt.Errorf("OpenRouter client cannot route provider %q; use Bifrost or another provider-aware gateway", request.Provider)
 	}
 	if request.Model == "" {
 		return nil, errors.New("model is required")
@@ -198,34 +293,39 @@ func (c *Client) ChatCompletionStream(ctx context.Context, request ChatCompletio
 	return resp.Body, nil
 }
 
-// StreamChunk is a single SSE chunk from a streaming chat completion.
-type StreamChunk struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role    string `json:"role,omitempty"`
-			Content string `json:"content,omitempty"`
-		} `json:"delta"`
-		FinishReason *string `json:"finish_reason,omitempty"`
-	} `json:"choices"`
+// ChatCompletionStreamRaw is the streaming equivalent of ChatCompletionRaw.
+func (c *Client) ChatCompletionStreamRaw(ctx context.Context, body []byte) (io.ReadCloser, error) {
+	if c.apiKey == "" {
+		return nil, errors.New("OPENROUTER_API_KEY is required")
+	}
+	if len(body) == 0 {
+		return nil, errors.New("request body is required")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create OpenRouter raw chat completion stream request: %w", err)
+	}
+	c.setHeaders(httpReq)
+	httpReq.Header.Set("Accept", "text/event-stream")
+	resp, err := c.streamClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("call OpenRouter raw chat completions stream: %w", err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		return nil, fmt.Errorf("OpenRouter returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return resp.Body, nil
 }
 
-// DecodeStreamChunk parses a single SSE data line into a StreamChunk.
-func DecodeStreamChunk(line string) (StreamChunk, error) {
-	const prefix = "data:"
-	if !strings.HasPrefix(line, prefix) {
-		return StreamChunk{}, fmt.Errorf("not a data line")
+func (c *Client) setHeaders(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	if c.referer != "" {
+		req.Header.Set("HTTP-Referer", c.referer)
 	}
-	data := strings.TrimSpace(strings.TrimPrefix(line, prefix))
-	if data == "[DONE]" {
-		return StreamChunk{}, io.EOF
+	if c.appTitle != "" {
+		req.Header.Set("X-Title", c.appTitle)
 	}
-	var chunk StreamChunk
-	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-		return StreamChunk{}, fmt.Errorf("decode chunk: %w", err)
-	}
-	return chunk, nil
 }

@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AI Orch Governance</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/ui/styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-dot" aria-hidden="true"></span>
+          <div>
+            <strong>AI Orch Governance</strong>
+            <span>Control Plane</span>
+          </div>
+        </div>
+
+        <nav class="nav">
+          <a href="#/sessions" data-page-link="sessions">Activity Ledger</a>
+          <a href="#/overview" data-page-link="overview">Overview</a>
+          <a href="#/catalog" data-page-link="catalog">Evidence &amp; Reporting</a>
+          <a href="#/gateways" data-page-link="gateways">Gateways</a>
+          <a href="#/governance" data-page-link="governance">Risk Controls</a>
+          <a href="#/settings" data-page-link="settings">Settings</a>
+        </nav>
+
+        <div class="sidebar-foot">
+          <span id="envBadge" class="badge env-badge">local</span>
+          <span id="versionBadge" class="badge">-</span>
+        </div>
+      </aside>
+
+      <div class="main">
+        <header class="topbar">
+          <h1 id="pageTitle">Overview</h1>
+          <div class="topbar-right">
+            <label class="auto-refresh">
+              <input id="autoRefresh" type="checkbox" checked>
+              <span>Live</span>
+            </label>
+            <div class="status-line" id="statusLine">
+              <span class="status-dot"></span>
+              <span>Waiting</span>
+            </div>
+          </div>
+        </header>
+
+        <main class="pages">
+          <!-- Overview -->
+          <section class="page" data-page="overview">
+            <div class="summary-grid">
+              <article class="metric-tile"><span>Backend</span><strong id="modelBackend">-</strong></article>
+              <article class="metric-tile"><span>Agents</span><strong id="agentCount">-</strong></article>
+              <article class="metric-tile"><span>Recent sessions</span><strong id="sessionCount">-</strong></article>
+              <article class="metric-tile"><span>Evidence records</span><strong id="evidenceCount">-</strong></article>
+              <article class="metric-tile"><span>Cache hit</span><strong id="cacheRate">-</strong></article>
+              <article class="metric-tile"><span>Patch decisions</span><strong id="patchCount">-</strong></article>
+              <article class="metric-tile"><span>Copilot enrollments</span><strong id="copilotEnrollments">-</strong></article>
+            </div>
+
+            <section class="panel" aria-label="Governance posture">
+              <div class="panel-head">
+                <h2>Governance Posture</h2>
+                <span id="readinessBadge" class="badge">Pending</span>
+              </div>
+              <p id="readinessSummary" class="field-note">Waiting for service checks</p>
+              <div id="readinessList" class="readiness-list"></div>
+            </section>
+          </section>
+
+          <!-- Sessions & Audit -->
+          <section class="page" data-page="sessions">
+            <div class="ledger-stack">
+              <section class="panel ledger-panel" aria-label="Organization activity ledger">
+                <div class="panel-head">
+                  <h2>Organization Activity</h2>
+                  <div class="button-row">
+                    <button id="exportCsv" type="button" title="Download the full org session ledger (CSV, up to 5000 rows)">Export CSV</button>
+                    <button id="exportJson" type="button" title="Download the full org session ledger (JSON)">Export JSON</button>
+                  </div>
+                  <span id="sessionBadge" class="badge">0</span>
+                </div>
+                <div id="sessionList" class="ledger-table-wrap"></div>
+              </section>
+
+              <section class="panel" aria-label="Session audit trail">
+                <div class="panel-head">
+                  <h2 id="auditSessionTitle">Session Audit Trail</h2>
+                  <form id="auditForm" class="head-lookup" title="Load any session ID, including older or copied ones">
+                    <input name="session_id" placeholder="lookup session_id" required>
+                    <button type="submit" class="primary">Load</button>
+                  </form>
+                  <button id="exportTrail" type="button" title="Download this session's hash-chained audit trail (JSON)">Download Trail</button>
+                  <span id="auditEventBadge" class="badge">0</span>
+                </div>
+                <p id="auditSummary" class="audit-summary">Select a session to inspect its governed events.</p>
+                <div id="auditList" class="list audit-list"></div>
+              </section>
+            </div>
+
+          </section>
+
+          <!-- Gateways -->
+          <section class="page" data-page="gateways">
+            <section class="panel" aria-label="Gateway posture">
+              <div class="panel-head"><h2>Gateway Posture</h2></div>
+              <div id="gatewayList" class="gateway-list"></div>
+              <div id="backendCommandList" class="command-list"></div>
+            </section>
+          </section>
+
+          <!-- Governance -->
+          <section class="page" data-page="governance">
+            <div class="two-up">
+              <section class="panel danger-panel" aria-label="Kill switches">
+                <div class="panel-head">
+                  <h2>Kill Switches</h2>
+                  <span id="killSwitchBadge" class="badge">-</span>
+                </div>
+                <p class="field-note">Blocks new governed sessions immediately. Durable; survives restarts. Admin token required.</p>
+                <div class="kill-switch-row">
+                  <button id="killSwitchGlobalOn" type="button" class="danger">Block all sessions</button>
+                  <button id="killSwitchGlobalOff" type="button">Unblock all</button>
+                </div>
+                <form id="killSwitchAgentForm" class="stack-form">
+                  <input name="agent" placeholder="agent name" required>
+                  <div class="two-col">
+                    <button type="submit" data-action="block" class="danger">Block agent</button>
+                    <button type="submit" data-action="unblock">Unblock agent</button>
+                  </div>
+                </form>
+                <div id="killSwitchList" class="list"></div>
+              </section>
+
+              <div class="stack">
+                <section class="panel" aria-label="Register use case">
+                  <div class="panel-head"><h2>Register Use Case</h2></div>
+                  <form id="useCaseForm" class="stack-form">
+                    <input name="id" placeholder="use-case-id" required>
+                    <input name="owner" placeholder="owner" required>
+                    <input name="domain" placeholder="domain" required>
+                    <input name="expected_benefit" placeholder="expected benefit" required>
+                    <div class="two-col">
+                      <select name="classification" required>
+                        <option value="internal">internal</option>
+                        <option value="public">public</option>
+                        <option value="confidential">confidential</option>
+                      </select>
+                      <select name="risk_level" required>
+                        <option value="low">low</option>
+                        <option value="medium">medium</option>
+                        <option value="high">high</option>
+                      </select>
+                    </div>
+                    <button type="submit" class="primary">Register</button>
+                  </form>
+                </section>
+
+                <section class="panel" aria-label="Register workflow">
+                  <div class="panel-head"><h2>Register Workflow</h2></div>
+                  <form id="workflowForm" class="stack-form">
+                    <input name="id" placeholder="workflow-id" required>
+                    <input name="name" placeholder="name" required>
+                    <input name="description" placeholder="description" required>
+                    <input name="stages" placeholder="stages, comma separated">
+                    <button type="submit" class="primary">Register</button>
+                  </form>
+                </section>
+              </div>
+            </div>
+          </section>
+
+          <!-- Catalog -->
+          <section class="page" data-page="catalog">
+            <div class="three-up">
+              <section class="panel" aria-label="Agents">
+                <div class="panel-head">
+                  <h2>Agent Catalog</h2>
+                  <span class="badge" id="agentBadge">0</span>
+                </div>
+                <div id="agentList" class="list"></div>
+              </section>
+
+              <section class="panel" aria-label="Evidence">
+                <div class="panel-head">
+                  <h2>Evidence</h2>
+                  <span class="badge" id="evidenceBadge">0</span>
+                </div>
+                <div id="evidenceList" class="list"></div>
+              </section>
+
+              <section class="panel" aria-label="Maturity export">
+                <div class="panel-head">
+                  <h2>Maturity Reporting</h2>
+                  <span class="badge" id="maturityBadge">0</span>
+                </div>
+                <div id="maturityList" class="list"></div>
+              </section>
+            </div>
+          </section>
+
+          <!-- Settings -->
+          <section class="page" data-page="settings">
+            <section class="panel narrow" aria-label="Connection">
+              <div class="panel-head"><h2>Connection</h2></div>
+              <div class="stack-form">
+                <label>
+                  <span class="microlabel">Governance URL</span>
+                  <input id="baseUrl" type="url" value="" autocomplete="off">
+                </label>
+                <label>
+                  <span class="microlabel">Admin token</span>
+                  <input id="adminToken" type="password" placeholder="local-admin; unlocks org-wide views" autocomplete="off">
+                </label>
+                <div class="button-row">
+                  <button id="saveConnection" type="button" class="primary">Save</button>
+                  <button id="refresh" type="button">Refresh</button>
+                </div>
+              </div>
+              <p class="field-note">This console is for governance operators and shows org-wide activity. Developers never use it: their surface is OpenCode plus scripts/enroll-developer-copilot-opencode.sh, which configures everything on their machine.</p>
+            </section>
+
+            <section class="panel" aria-label="Console log">
+              <div class="panel-head">
+                <h2>Console Log</h2>
+                <button id="clearLog" type="button">Clear</button>
+              </div>
+              <p class="field-note">Client-side log of this console's API activity. Server-side activity lives in Sessions &amp; Audit.</p>
+              <ol id="activityLog" class="activity-list"></ol>
+            </section>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <script src="/ui/app.js"></script>
+  </body>
+</html>

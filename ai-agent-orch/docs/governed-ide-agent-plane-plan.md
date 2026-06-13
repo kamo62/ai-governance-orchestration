@@ -4,7 +4,7 @@
 
 The goal is to make the VS Code experience feel much closer to a practical coding agent, without turning this repository into a CLine clone.
 
-The Governance Shell remains the product bet. The IDE agent plane is the developer-facing surface that makes the governance layer usable from any project folder. It should feel natural inside an engineer's workspace, but model calls, tool calls, patch visibility, audit, cost, and approvals should still pass through the Governance Shell.
+The Governance Shell remains the product bet. The IDE agent plane is the developer-facing surface that makes the governance layer usable from any project folder. It should feel natural inside an engineer's workspace, but model calls, tool calls where supported, patch visibility, audit, cost and approvals should still pass through the Governance Shell.
 
 ## Current State
 
@@ -35,7 +35,7 @@ What is still missing compared with a CLine-style experience:
 - Streaming assistant text in the IDE, not only output-panel logs.
 - Clear task state: planning, running, waiting for approval, patch proposed, completed, blocked.
 - Recovery/resume for an interrupted session.
-- A runtime adapter strategy for OpenCode, ACP, CLine-like runtimes, or other IDE-native agents.
+- A runtime adapter strategy for OpenCode, ACP, CLine-like runtimes, or other IDE-native agents that keeps repository access local while pointing model/tool traffic at ai-orch.
 
 ## Recommendation
 
@@ -59,9 +59,10 @@ This plan should not:
 - Replace CLine, Claude Code, OpenCode, Cursor, Aider, or similar tools.
 - Build an autonomous agent loop before the governed local workflow is solid.
 - Let a runtime call model providers directly with provider secrets.
-- Let a runtime write directly to the workspace without staged patch review.
+- Let a runtime write directly to the workspace without checkpoints, diff capture or staged patch review.
 - Store all repo content in prompt context.
 - Turn the Governance Shell into an IDE extension.
+- Turn the Governance Shell into a central repo browser for every developer.
 
 ## Target Experience
 
@@ -90,24 +91,20 @@ VS Code Project Folder
   v
 VS Code Bridge Agent Plane
   |
-  |  session create, context manifests, approval decisions
+  |  session create, context manifests, approval decisions, evidence
   v
 Governance Shell
   |
   |  policy, audit, model proxy, MCP proxy, patch buffer, cost, evidence
   v
-Orchestrator
+Local Runtime Adapter
   |
-  |  route, runtime dispatch, tool event relay
+  |  OpenCode / Cline-style client / ACP / future runtime candidate
   v
-Runtime Adapter
-  |
-  |  OpenCode / ACP / future runtime candidate
-  v
-Model + Tools
+Local repo + governed model/tool endpoints
 ```
 
-The Bridge owns UX. The Governance Shell owns authority. The Orchestrator owns routing and runtime dispatch. Runtime adapters execute behind the governed boundary.
+The Bridge owns UX. The Governance Shell owns authority. Local runtime adapters own repo access and user interaction. The Orchestrator can still route governed sessions, but it should not be treated as a central service that needs access to every developer repository.
 
 ## Phase 1: Better Bridge Panel
 
@@ -227,9 +224,9 @@ Options:
    - Highest risk of becoming a CLine clone.
 
 2. **OpenCode / ACP Adapter**
-   - Use ACP-style session protocol and keep the runtime behind the Governance Shell.
+   - Configure OpenCode to use the ai-orch model gateway and ai-orch-mcp while it runs locally.
    - Best fit with current repo direction.
-   - Needs proof that runtime events, tools, and patches can be fully governed.
+   - Needs proof that model routing, MCP tool routing and patch/evidence reporting can be fully governed.
 
 3. **External IDE Runtime Adapter**
    - Treat CLine-like tools as runtime candidates.
@@ -245,8 +242,8 @@ Recommendation:
 Acceptance criteria:
 
 - A runtime cannot bypass the model proxy.
-- A runtime cannot bypass patch buffering.
-- A runtime cannot bypass tool-call policy.
+- A runtime cannot present patch evidence as governed unless patch metadata/content crosses the buffer or evidence API.
+- A runtime cannot present tool calls as gateway-enforced unless they route through ai-orch-mcp.
 - A runtime emits enough events for audit, cost, approvals, and evidence.
 
 ## Phase 6: Multi-Turn Session State

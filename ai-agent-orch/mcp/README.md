@@ -15,7 +15,7 @@ server_id: repo-classification
 endpoint: http://mcp-repo-classification:8091
 auth_mode: platform          # none | local-dev-token | platform | oauth-user
 allowed_agents:              # Optional: restrict which agents can use this MCP
-  - test-generation
+  - unit-tests
   - code-review
   - refactor
 ```
@@ -61,8 +61,9 @@ docker compose --profile phase2 up
 
 1. Create `mcp/registrations/<server-id>.yaml`
 2. Add the server ID to agent configs that need it
-3. Ensure the MCP server binary exists in `cmd/mcp-<server-id>/`
-4. Register in Docker Compose if needed
+3. Point the registration at a real MCP service endpoint, or add a local
+   `mcp-stub <server-id>` handler when the endpoint is only for demos
+4. Register the service in Docker Compose if it should run with the local stack
 
 ## Agent Configuration
 

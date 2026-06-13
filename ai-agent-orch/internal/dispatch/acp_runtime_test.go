@@ -3,6 +3,8 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -103,15 +105,11 @@ func TestACPHandle_failPendingUnblocksRequests(t *testing.T) {
 	}
 }
 
-func TestACPHandle_WorkspaceAndMCPParams(t *testing.T) {
+func TestACPHandle_WorkspacePath(t *testing.T) {
 	h := &acpHandle{
 		config: SessionConfig{
 			WorkspacePath: "/workspace/project",
 			SessionID:     "sess_acp",
-			MCPEndpoints: map[string]string{
-				"zeta":  "http://zeta",
-				"alpha": "http://alpha",
-			},
 		},
 	}
 	got, err := h.workspacePath()
@@ -120,23 +118,6 @@ func TestACPHandle_WorkspaceAndMCPParams(t *testing.T) {
 	}
 	if got != "/workspace/project" {
 		t.Fatalf("unexpected workspace path: %s", got)
-	}
-	servers := acpMCPServers(h.config.MCPEndpoints, "service-token", h.config.SessionID)
-	if len(servers) != 2 {
-		t.Fatalf("expected 2 MCP servers, got %d", len(servers))
-	}
-	if servers[0]["name"] != "alpha" || servers[0]["url"] != "http://alpha" {
-		t.Fatalf("expected deterministic alpha server first, got %#v", servers[0])
-	}
-	headers, ok := servers[0]["headers"].(map[string]string)
-	if !ok {
-		t.Fatalf("expected governed MCP headers, got %#v", servers[0])
-	}
-	if headers["Authorization"] != "Bearer service-token" {
-		t.Fatalf("expected service bearer header, got %#v", headers)
-	}
-	if headers["X-AI-Orch-Session-ID"] != "sess_acp" {
-		t.Fatalf("expected session header, got %#v", headers)
 	}
 }
 
@@ -259,6 +240,9 @@ func TestACPHandle_handleAgentRequest_permission(t *testing.T) {
 		done:      make(chan struct{}),
 		stdin:     &fakeWriteCloser{},
 		sessionID: "sess_123",
+		config: SessionConfig{
+			AllowedTools: []string{"run_command"},
+		},
 	}
 
 	msg := &jsonRPCMessage{
@@ -280,7 +264,7 @@ func TestACPHandle_handleAgentRequest_permission(t *testing.T) {
 		t.Fatal("expected permission response to be written")
 	}
 	last := fwc.written[len(fwc.written)-1]
-	if !strContains(last, `"id":42`) || !strContains(last, `"outcome":"denied"`) {
+	if !strContains(last, `"id":42`) || !strContains(last, `"outcome":"selected"`) || !strContains(last, `"optionId":"once"`) {
 		t.Fatalf("unexpected permission response: %s", last)
 	}
 	select {
@@ -290,6 +274,138 @@ func TestACPHandle_handleAgentRequest_permission(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected tool_call event")
+	}
+}
+
+func TestACPHandle_acpToolAllowedUsesToolBrokerForScopedCommands(t *testing.T) {
+	broker, err := NewToolBroker(filepath.Join("..", "..", "policies", "command-allowlists.yaml"))
+	if err != nil {
+		t.Fatalf("load tool broker: %v", err)
+	}
+
+	denied := &acpHandle{
+		config: SessionConfig{
+			AgentName:    "code-review",
+			AllowedTools: []string{"run_command:playwright"},
+			ToolBroker:   broker,
+			Permissions:  map[string]string{"workspace_write": "deny"},
+		},
+	}
+	if denied.acpToolAllowed("run_command:playwright") {
+		t.Fatal("code-review must not be allowed to run the playwright subcommand")
+	}
+
+	allowed := &acpHandle{
+		config: SessionConfig{
+			AgentName:    "unit-tests",
+			AllowedTools: []string{"run_command:playwright"},
+			ToolBroker:   broker,
+			Permissions:  map[string]string{"workspace_write": "allow"},
+		},
+	}
+	if !allowed.acpToolAllowed("run_command:playwright") {
+		t.Fatal("unit-tests should be allowed to run the playwright subcommand")
+	}
+}
+
+func TestSelectedACPOptionIDPrefersAllowOnce(t *testing.T) {
+	got := selectedACPOptionID(map[string]any{
+		"options": []any{
+			map[string]any{"optionId": "once", "kind": "allow_once"},
+			map[string]any{"optionId": "always", "kind": "allow_always"},
+			map[string]any{"optionId": "reject", "kind": "reject_once"},
+		},
+	}, true)
+	if got != "once" {
+		t.Fatalf("expected once, got %q", got)
+	}
+}
+
+func TestSelectedACPOptionIDRejectsWhenToolNotAllowed(t *testing.T) {
+	got := selectedACPOptionID(map[string]any{
+		"options": []any{
+			map[string]any{"optionId": "once", "kind": "allow_once"},
+			map[string]any{"optionId": "always", "kind": "allow_always"},
+			map[string]any{"optionId": "reject", "kind": "reject_once"},
+		},
+	}, false)
+	if got != "reject" {
+		t.Fatalf("expected reject, got %q", got)
+	}
+}
+
+func TestACPHandle_handleWriteTextFileHonorsWorkspacePermission(t *testing.T) {
+	workspace := t.TempDir()
+	h := &acpHandle{
+		events: make(chan RuntimeEvent, 64),
+		config: SessionConfig{
+			WorkspacePath: workspace,
+			AllowedTools:  []string{"write_file"},
+			Permissions:   map[string]string{"workspace_write": "allow"},
+		},
+	}
+	if err := h.handleWriteTextFile(map[string]any{"path": "AI_ORCH_REVIEW_FINDINGS.md", "content": "findings"}); err != nil {
+		t.Fatalf("handleWriteTextFile returned error: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "AI_ORCH_REVIEW_FINDINGS.md"))
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if string(data) != "findings" {
+		t.Fatalf("unexpected file content %q", string(data))
+	}
+	var sawPatch bool
+	for len(h.events) > 0 {
+		evt := <-h.events
+		if evt.Type == "patch" && strContains(evt.Payload, "AI_ORCH_REVIEW_FINDINGS.md") {
+			sawPatch = true
+		}
+	}
+	if !sawPatch {
+		t.Fatal("expected ACP write to emit patch evidence")
+	}
+}
+
+func TestACPHandle_handleWriteTextFileRejectsWorkspaceEscape(t *testing.T) {
+	h := &acpHandle{
+		config: SessionConfig{
+			WorkspacePath: t.TempDir(),
+		},
+	}
+	if err := h.handleWriteTextFile(map[string]any{"path": "../outside.md", "content": "nope"}); err == nil {
+		t.Fatal("expected workspace escape to be rejected")
+	}
+}
+
+func TestACPHandle_handleWriteTextFileDoesNotUseAgentPermissionFlags(t *testing.T) {
+	h := &acpHandle{
+		config: SessionConfig{
+			WorkspacePath: t.TempDir(),
+			AllowedTools:  []string{"write_file"},
+			Permissions:   map[string]string{"workspace_write": "deny"},
+		},
+	}
+	if err := h.handleWriteTextFile(map[string]any{"path": "x.md", "content": "ok"}); err == nil {
+		t.Fatal("expected ACP write to honor workspace_write deny")
+	}
+}
+
+func TestACPHandle_workspacePatchSinceCapturesDirectWorkspaceEdit(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("before\n"), 0o644); err != nil {
+		t.Fatalf("write initial file: %v", err)
+	}
+	before, err := captureACPWorkspaceSnapshot(workspace)
+	if err != nil {
+		t.Fatalf("capture before snapshot: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "AI_ORCH_REVIEW_FINDINGS.md"), []byte("findings\n"), 0o644); err != nil {
+		t.Fatalf("write findings file: %v", err)
+	}
+	h := &acpHandle{config: SessionConfig{SessionID: "sess_acp"}, events: make(chan RuntimeEvent, 4)}
+	patch := h.workspacePatchSince(workspace, before)
+	if !strContains(patch, "AI_ORCH_REVIEW_FINDINGS.md") || !strContains(patch, `"action":"create"`) {
+		t.Fatalf("expected create patch for findings file, got %s", patch)
 	}
 }
 
@@ -327,7 +443,7 @@ func TestACPHandle_handleNotification_routesToSessionUpdate(t *testing.T) {
 
 func TestACPHandle_emitNonCriticalEventNonBlocking(t *testing.T) {
 	h := &acpHandle{
-		events: make(chan RuntimeEvent, 0), // unbuffered
+		events: make(chan RuntimeEvent), // unbuffered
 		done:   make(chan struct{}),
 	}
 	h.emitEvent(RuntimeEvent{Type: "stream", Payload: "drop me"})
@@ -338,7 +454,7 @@ func TestACPHandle_emitErrorStopsOnContextCancellation(t *testing.T) {
 	cancel()
 	h := &acpHandle{
 		ctx:    ctx,
-		events: make(chan RuntimeEvent, 0), // unbuffered
+		events: make(chan RuntimeEvent), // unbuffered
 		done:   make(chan struct{}),
 	}
 	h.emitError("test error")

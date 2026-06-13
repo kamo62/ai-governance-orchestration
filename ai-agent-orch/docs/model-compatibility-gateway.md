@@ -2,22 +2,23 @@
 
 ## Summary
 
-OpenCode can be the worker runtime, but it still needs a model API to call. If the runtime calls OpenRouter, OpenAI, Anthropic, Azure OpenAI, LiteLLM or another provider directly, the governance boundary is weakened.
+OpenCode, Cline and similar developer tools can keep local repository access, but they still need a model API to call. If the runtime calls Bifrost, OpenRouter, OpenAI, Anthropic, Bedrock, Azure OpenAI, LiteLLM or another provider directly, the governance boundary is weakened.
 
 The missing piece is a small model compatibility gateway owned by this system:
 
 ```text
-OpenCode runtime model calls
+Developer runtime model calls
   -> ai-orch Model Compatibility Gateway
   -> Governance Shell
   -> Governance Router
-  -> OpenRouter or another approved provider
+  -> selected model backend
+  -> approved provider
 ```
 
 This is separate from the MCP gateway:
 
 ```text
-OpenCode runtime tool calls
+Developer runtime tool calls
   -> ai-orch MCP Gateway
   -> Governance Shell
   -> approved tools and upstream MCP servers
@@ -27,21 +28,23 @@ The two gateways solve different problems:
 
 | Gateway | Purpose | Governance question |
 | --- | --- | --- |
-| Model Compatibility Gateway | Expose OpenAI-compatible model endpoints for runtimes such as OpenCode | Which model is allowed for this work, and how should usage be audited? |
+| Model Compatibility Gateway | Expose provider-compatible model endpoints for runtimes such as OpenCode and Cline | Which model is allowed for this work, and how should usage be audited? |
 | MCP Gateway | Expose governed tools, prompts and resources | Which tools can this agent use, with which arguments, and under which approval path? |
 
 Both must report to the Governance Shell. Neither should become the source of authority.
 
 ## Why This Exists
 
-OpenCode and similar runtimes need a model provider surface. The practical provider surface is usually OpenAI-compatible:
+OpenCode, Cline and similar runtimes need a model provider surface. The practical provider surface is often OpenAI-compatible:
 
 - `/v1/models`;
 - `/v1/chat/completions`;
 - `/v1/responses`;
 - streaming through `text/event-stream`.
 
-OpenCode supports custom providers with a `baseURL`, including OpenAI-compatible provider packages. That means the runtime can point at `ai-orch` as if it were a model provider, while `ai-orch` still owns the routing, policy, secrets and audit trail.
+OpenCode and Cline both have documented paths for custom/OpenAI-compatible model providers. That means the runtime can point at `ai-orch` as if it were a model provider, while `ai-orch` still owns the routing, policy, secrets and audit trail.
+
+Claude Code is a related but different path. It can use MCP for tools now, and it can route Claude API traffic through `ANTHROPIC_BASE_URL`, but that requires an Anthropic-compatible ai-orch endpoint or adapter. Do not present Claude Code model routing as complete until that compatibility path is implemented and tested.
 
 This avoids giving the worker runtime provider keys. The runtime receives only a session-scoped token for the compatibility gateway.
 
@@ -49,7 +52,7 @@ This avoids giving the worker runtime provider keys. The runtime receives only a
 
 The model compatibility gateway should be boring and narrow.
 
-It should not try to compete with OpenRouter, LiteLLM or provider-native gateways. Its job is to translate common runtime-facing model APIs into governed model calls.
+It should not try to compete with Bifrost, OpenRouter, LiteLLM or provider-native gateways. Its job is to translate common runtime-facing model APIs into governed model calls.
 
 The authority stays here:
 
@@ -63,7 +66,7 @@ Governance Shell
   -> cost and usage records
 ```
 
-The provider abstraction can remain OpenRouter in the current POC. LiteLLM can be evaluated later as an optional backend adapter if compatibility work grows too large.
+Bifrost is the default OSS provider-plumbing sidecar in the current Compose path. LiteLLM or other gateways can still be evaluated later, but the current POC keeps shared provider routing consolidated in Bifrost.
 
 ## Minimal API Surface
 
@@ -77,7 +80,7 @@ POST /v1/responses
 
 ### `GET /v1/models`
 
-Return governed aliases, not raw provider inventory.
+Return governed aliases, not raw provider inventory. When the active backend can list actor-bound Copilot models and the request includes actor context, the gateway also includes the enrolled actor's current Copilot picker chat models as governed `copilot-...` aliases. Hidden Copilot entries and non-chat models are filtered out.
 
 Example:
 
@@ -105,13 +108,15 @@ The gateway may include only aliases allowed for the current session, actor, cla
 
 Support the OpenAI-compatible chat-completions shape first, because many runtimes already know how to use it.
 
+For the Copilot user backend, ai-orch mirrors OpenCode's Copilot route selection at the gateway boundary. GPT-5-class non-mini Copilot models are sent upstream through Responses and translated back into chat-completion SSE for Custom/OpenAI-compatible clients. Anthropic/Claude, Gemini-style, `gpt-5-mini` and GPT-4-class Copilot models remain on chat completions. The chat-to-Responses bridge must preserve function tool definitions, assistant tool calls and tool-result turns, and it must translate Responses function-call stream events back into chat `tool_calls` chunks so agent loops keep working.
+
 Requirements:
 
 - require a session-scoped runtime token;
 - accept model aliases, not raw provider model IDs;
 - reject unknown or disallowed aliases;
 - route through the Governance Router;
-- call the existing Governance Shell model proxy;
+- call the selected Governance Shell model backend;
 - support `stream: true`;
 - redact or hash sensitive request/response metadata in audit;
 - record token usage, estimated cost, selected model and router reasons.
@@ -152,17 +157,21 @@ Audit should record:
 - stream started;
 - selected alias;
 - selected provider model;
+- credential source;
+- requested and applied reasoning effort;
 - routing reasons;
 - request hash;
 - final response hash;
+- sanitized model-emitted tool-call count and names when the response asks the client to run tools;
+- `parent_session_id` lineage when a model-observed OpenCode `task` call creates a delegated child session for a known catalog agent;
 - usage;
 - stream completed or failed.
 
-Audit should not store raw prompts, raw provider responses or provider credentials by default.
+Audit should not store raw prompts, raw provider responses or provider credentials by default. The gateway can observe model-emitted function/tool calls that cross the model stream, such as OpenCode's `task` delegation request, and records only count/name metadata. When a `task` call names a known ai-orch catalog agent, the shell also creates a `delegated` child session linked to the parent by `parent_session_id`; this is lineage evidence, not a stored copy of the client-side subagent transcript. The gateway still cannot see file contents, Read/Edit/Bash output or the child subagent local loop unless that work routes through ACP, the MCP gateway or a deliberate client-event forwarding path.
 
 ## OpenCode Configuration Shape
 
-The eventual OpenCode provider configuration should point at the local compatibility gateway:
+The OpenCode provider configuration should point at the compatibility gateway. Prefer `ai-orch opencode install-config` for real developers because it imports the current actor-bound `/v1/models` list into the provider config:
 
 ```json
 {
@@ -173,14 +182,43 @@ The eventual OpenCode provider configuration should point at the local compatibi
       "name": "AI Orch Governed Router",
       "options": {
         "baseURL": "http://127.0.0.1:18082/v1",
-        "apiKey": "{env:AI_ORCH_RUNTIME_TOKEN}"
+        "apiKey": "{env:AI_ORCH_RUNTIME_TOKEN}",
+        "headers": {
+          "X-AI-Orch-Session-ID": "{env:AI_ORCH_SESSION_ID}",
+          "X-AI-Orch-Session-Token": "{env:AI_ORCH_SESSION_TOKEN}",
+          "X-AI-Orch-Actor-Subject": "{env:AI_ORCH_ACTOR_SUBJECT}",
+          "X-AI-Orch-Intent": "{env:AI_ORCH_INTENT}",
+          "X-AI-Orch-Client": "opencode",
+          "X-AI-Orch-Classification": "internal"
+        }
       },
       "models": {
-        "coding-balanced": {
-          "name": "Governed Coding Balanced"
+        "coding-gpt55": {
+          "name": "Governed GPT-5.5 Capability Route"
         },
-        "coding-fast": {
-          "name": "Governed Coding Fast"
+        "openrouter-openai-gpt55": {
+          "name": "Governed OpenRouter OpenAI GPT-5.5"
+        }
+      }
+    }
+  },
+  "enabled_providers": ["ai-orch"],
+  "model": "ai-orch/coding-gpt55",
+  "small_model": "ai-orch/coding-fast",
+  "agent": {
+    "governance-lead": {
+      "mode": "primary",
+      "model": "ai-orch/coding-gpt55",
+      "reasoningEffort": "low",
+      "permission": {
+        "edit": "deny",
+        "bash": "deny",
+        "task": {
+          "code-review": "allow",
+          "unit-tests": "allow",
+          "backend-development": "allow",
+          "frontend-development": "allow",
+          "security-review": "allow"
         }
       }
     }
@@ -188,16 +226,66 @@ The eventual OpenCode provider configuration should point at the local compatibi
 }
 ```
 
-The runtime should never receive `OPENROUTER_API_KEY`.
+The runtime should never receive `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, AWS credentials, Bifrost tokens or any provider key.
 
 The runtime should receive:
 
 - `AI_ORCH_RUNTIME_TOKEN`;
+- `AI_ORCH_SESSION_ID`;
+- `AI_ORCH_SESSION_TOKEN`;
+- `AI_ORCH_ACTOR_SUBJECT`;
 - model aliases;
 - MCP gateway URL;
 - session ID;
 - workspace path or mounted workspace;
 - policy-limited tool configuration.
+
+The equivalent Cline shape is the OpenAI-compatible provider with:
+
+```text
+Base URL: http://127.0.0.1:18082/v1
+API key: AI_ORCH_RUNTIME_TOKEN
+Model ID: coding-balanced
+```
+
+The equivalent Claude Code shape is future work:
+
+```text
+ANTHROPIC_BASE_URL=<ai-orch anthropic-compatible gateway>
+ANTHROPIC_AUTH_TOKEN=<session or runtime token>
+```
+
+That endpoint is not the same as `/v1/chat/completions`, so it belongs in the roadmap until implemented.
+
+## Relationship To Provider Gateways
+
+Bifrost is useful because it already handles a large part of the provider-compatibility problem as open-source plumbing. Direct one-off provider backends were removed so the POC keeps shared provider plumbing behind one sidecar abstraction.
+
+Possible roles:
+
+- default local Compose backend for OpenAI-compatible provider calls through Bifrost;
+- provider translation for OpenRouter, Anthropic, Bedrock, OpenAI, Vertex, Azure, Ollama/vLLM-style providers;
+- streaming and retry plumbing behind the Governance Shell;
+- replaceable backend adapter if another provider gateway fits better later.
+
+Non-goal:
+
+- replace the Governance Shell;
+- let Bifrost, OpenRouter or another gateway own policy, audit, session identity, patch buffering, evidence, or model-routing decisions;
+- use Bifrost governance/UI features as the ai-orch control plane in this phase;
+- route runtimes directly to Bifrost, OpenRouter or a provider without the Governance Shell.
+
+The correct relationship is:
+
+```text
+Runtime
+  -> ai-orch Model Compatibility Gateway
+  -> Governance Shell
+  -> Bifrost or per-user Copilot
+  -> approved provider
+```
+
+Bifrost remains the default OpenRouter/provider route for this POC.
 
 ## Relationship To LiteLLM
 
@@ -221,7 +309,7 @@ The correct relationship is:
 Runtime
   -> ai-orch Model Compatibility Gateway
   -> Governance Shell
-  -> optional LiteLLM backend or OpenRouter backend
+  -> optional Bifrost, LiteLLM or per-user Copilot backend
 ```
 
 ## Security Contract
@@ -229,6 +317,7 @@ Runtime
 The gateway must enforce:
 
 - no provider keys in runtime environment;
+- no Bifrost endpoint exposed to runtimes or host network by default;
 - session-scoped runtime token required;
 - model aliases only;
 - classification ceilings;
@@ -264,6 +353,9 @@ router_reasons:
   - workflow_requires_higher_quality
 request_hash: sha256:...
 response_hash: sha256:...
+tool_call_count: 1
+tool_call_names:
+  - task
 usage:
   input_tokens: 1234
   output_tokens: 567
@@ -274,7 +366,7 @@ enforcement_mode: gateway
 trust_level: gateway_enforced
 ```
 
-This gives reporting and maturity exports a clean record without making the audit log a raw transcript store.
+This gives reporting and maturity exports a clean record without making the audit log a raw transcript store. For local tools, the model gateway audit proves that the model requested a tool/subagent call; it is not a substitute for ACP/MCP/client-event evidence of what the local tool actually did.
 
 ## Build Order
 
@@ -282,6 +374,8 @@ This gives reporting and maturity exports a clean record without making the audi
 
 Deliverables:
 
+- define selectable model backends: `bifrost` and `copilot-user`;
+- define provider-sidecar health and fail-closed startup behaviour for selected backends;
 - define runtime-token authentication for model calls;
 - define OpenAI-compatible response shapes for `/v1/models`, `/v1/chat/completions` and `/v1/responses`;
 - define streaming subset and failure semantics;
@@ -295,7 +389,10 @@ Deliverables:
 
 - implement `GET /v1/models`;
 - implement non-streaming `POST /v1/chat/completions`;
-- route model alias through the Governance Shell model proxy;
+- preserve OpenAI-compatible request fields such as `tools`, `tool_choice`, `tool_calls`, `tool_call_id`, `response_format`, multimodal content arrays and provider metadata;
+- route model alias through the Governance Shell backend selector;
+- rewrite only the concrete upstream `model` field before provider forwarding;
+- return the governed alias in the response `model` field;
 - record model decision audit event;
 - prove the runtime does not receive provider keys.
 
@@ -304,31 +401,47 @@ Deliverables:
 Deliverables:
 
 - support `stream: true` for chat completions;
-- translate provider stream chunks into OpenAI-compatible streaming chunks;
-- record stream start, completion and failure audit events.
+- proxy OpenAI-compatible SSE chunks while rewriting only the chunk `model` field where present;
+- preserve tool-call deltas, reasoning deltas, provider-specific fields and usage chunks;
+- record stream start, completion and failure audit events with sanitized tool-call count/name metadata.
 
 ### Phase 1G.5: Responses API MVP
 
 Deliverables:
 
 - implement non-streaming `POST /v1/responses`;
-- support a small text-output subset;
+- forward raw OpenAI-compatible Responses payloads for backends that support `/v1/responses`;
+- preserve `input`, `tools`, `tool_choice`, `include`, `store`, `reasoning`, `text`, `previous_response_id`, `prompt_cache_key` and provider metadata;
+- support Responses streaming for raw-compatible backends;
 - add response ID correlation;
 - add response usage audit records.
 
-### Phase 1M Dependency: OpenCode Sandbox
+### Phase 1G.6: Enterprise Provider Compatibility
 
-The local OpenCode sandbox should not start until the compatibility gateway can prove:
+Deliverables:
+
+- verify OpenCode `v1.16.2` fixture payloads against the gateway contract;
+- prove `OpenCode -> ai-orch -> Bifrost -> Bedrock` with tool-call payloads;
+- prove `OpenCode -> ai-orch -> Bifrost or Foundry adapter -> Azure AI Foundry` with tool-call payloads;
+- keep direct Anthropic, Bedrock and Foundry SDK translation behind Bifrost or a dedicated backend adapter;
+- do not expose Bifrost, Bedrock, Foundry or provider credentials directly to OpenCode.
+
+### Phase 1M Dependency: OpenCode Managed-Provider E2E
+
+The local OpenCode E2E should not start until the compatibility gateway can prove:
 
 - runtime token works;
 - model aliases resolve through Governance Shell;
 - provider key is absent from runtime env;
 - model calls are audited;
-- tool calls can be pointed at `ai-orch-mcp`.
+- ACP runtime file changes produce durable patch evidence;
+- MCP calls, when needed, use the MCP gateway route rather than the ACP session configuration.
+
+The first E2E should run OpenCode locally against a real repo or disposable worktree while routing model calls through ai-orch. Sandbox/worktree isolation remains a later risk-based mode, not the default proof of the provider endpoint lane.
 
 ## References
 
 - [OpenCode providers](https://opencode.ai/docs/providers/)
+- [Bifrost](https://github.com/maximhq/bifrost)
 - [LiteLLM Responses API](https://docs.litellm.ai/docs/response_api)
 - [OpenAI streaming Responses guide](https://platform.openai.com/docs/guides/streaming-responses)
-

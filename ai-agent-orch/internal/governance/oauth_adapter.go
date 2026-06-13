@@ -3,7 +3,7 @@ package governance
 import (
 	"context"
 
-	"ai-agent-orch/internal/oauth"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/oauth"
 )
 
 // OAuthTokenStoreAdapter adapts internal/oauth.TokenStore to the

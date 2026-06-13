@@ -5,7 +5,7 @@ endpoint: http://localhost:8094
 auth_mode: local-dev-token
 credential_scope: local
 allowed_agents:
-  - test-generation
+  - unit-tests
 tool_policy:
   default_approval: manual
   allow:

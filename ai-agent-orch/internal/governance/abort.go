@@ -5,7 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
 // AbortHandler handles POST /v1/sessions/{id}/abort.
@@ -20,17 +21,17 @@ func NewAbortHandler(service *SessionService, events *EventStore) http.Handler {
 
 func (h *AbortHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	if h == nil || h.service == nil || h.service.audit == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session service unavailable"})
 		return
 	}
 
 	sessionID := extractSessionID(r.URL.Path, "/v1/sessions/", "/abort")
 	if sessionID == "" || strings.Contains(sessionID, "/") {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "valid session ID is required"})
 		return
 	}
 
@@ -41,11 +42,11 @@ func (h *AbortHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.service.sessions != nil {
 		record, err := h.service.sessions.Get(r.Context(), sessionID)
 		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+			httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "session not found"})
 			return
 		}
 		if record.ActorSubject != actor {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
+			httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": "session ownership mismatch"})
 			return
 		}
 		currentStatus = record.Status
@@ -65,13 +66,13 @@ func (h *AbortHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		RawResponseStored:  false,
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 		return
 	}
 	h.service.rememberEventID(sessionID, eventID)
 	if h.service.sessions != nil {
 		if err := h.service.sessions.CompareAndSwapStatus(r.Context(), sessionID, currentStatus, "aborted"); err != nil {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "session state transition failed"})
+			httpx.WriteJSON(w, http.StatusConflict, map[string]any{"error": "session state transition failed"})
 			return
 		}
 	}
@@ -89,7 +90,7 @@ func (h *AbortHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.events.Close(sessionID)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"session_id": sessionID,
 		"status":     "aborted",
 	})

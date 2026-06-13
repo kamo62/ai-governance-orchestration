@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"ai-agent-orch/internal/audit"
-	"ai-agent-orch/internal/composition"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/composition"
 )
 
 type noopAudit struct{}
@@ -206,7 +206,7 @@ func compositionSessionStore(t *testing.T, sessionID string, actor string) *SQLi
 	if err := store.Create(context.Background(), SessionRecord{
 		SessionID:      sessionID,
 		ActorSubject:   actor,
-		Agent:          "test-generation",
+		Agent:          "unit-tests",
 		Classification: "internal",
 		PromptSHA256:   "abc123",
 		Status:         "created",

@@ -39,12 +39,12 @@ system_commands:
       - name: playwright
         description: Run Playwright tests.
         allowed_agents:
-          - test-generation            # ONLY test-generation can run Playwright
+          - unit-tests            # ONLY unit-tests can run Playwright
 
       - name: go
         description: Run Go commands.
         allowed_agents:
-          - test-generation
+          - unit-tests
           - code-review
 
       - name: curl                    # NOT listed = denied for all agents
@@ -57,7 +57,7 @@ The `dispatch.ToolBroker` loads this file and validates every tool call before t
 
 ```go
 broker, _ := dispatch.NewToolBroker("policies/command-allowlists.yaml")
-err := broker.Validate("run_command", "playwright", "test-generation")
+err := broker.Validate("run_command", "playwright", "unit-tests")
 // err == nil → allowed
 // err != nil → denied, runtime blocked
 ```
