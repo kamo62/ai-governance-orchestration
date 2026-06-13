@@ -2,7 +2,7 @@
   "name": "ai-agent-bridge",
   "displayName": "AI Agent Bridge",
   "description": "Governed AI agent panel for VS Code — chat, streaming, context attachments, and patch review via the Governance Shell",
-  "version": "0.20.2-beta",
+  "version": "0.20.3-beta",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

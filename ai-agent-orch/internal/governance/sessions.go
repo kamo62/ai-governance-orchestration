@@ -46,6 +46,9 @@ type SessionConfig struct {
 	NewID             func(prefix string) string
 	LocalStateTTL     time.Duration
 	RequireWorkItem   bool
+	// ExecutionTimeout caps the wall-clock time of a single governed runtime
+	// dispatch. Zero or negative means the 10-minute default.
+	ExecutionTimeout time.Duration
 	// ContextResolver auto-resolves git/repo/branch metadata when not provided explicitly.
 	ContextResolver ContextResolver
 	// TrustedClientToken, when set, gates the privileged trust levels
@@ -109,8 +112,9 @@ type SessionService struct {
 	lastEventMu sync.Mutex
 	lastEventID map[string]string
 	// localStateTTL controls how long abandoned in-process state is retained.
-	localStateTTL   time.Duration
-	requireWorkItem bool
+	localStateTTL    time.Duration
+	requireWorkItem  bool
+	executionTimeout time.Duration
 }
 
 func (s *SessionService) setSessionStatus(ctx context.Context, sessionID string, status string) {
@@ -273,6 +277,10 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 	if ttl <= 0 {
 		ttl = defaultLocalStateTTL
 	}
+	executionTimeout := cfg.ExecutionTimeout
+	if executionTimeout <= 0 {
+		executionTimeout = 10 * time.Minute
+	}
 	auditReader := cfg.AuditReader
 	if auditReader == nil {
 		if reader, ok := cfg.Audit.(AuditReader); ok {
@@ -307,6 +315,7 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 		cancelTimes:        make(map[string]time.Time),
 		localStateTTL:      ttl,
 		requireWorkItem:    cfg.RequireWorkItem,
+		executionTimeout:   executionTimeout,
 	}
 }
 

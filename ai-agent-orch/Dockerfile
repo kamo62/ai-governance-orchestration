@@ -14,7 +14,10 @@ RUN for bin in catalog-validator governance-shell orchestrator ai-orch mcp-stub;
 	done
 
 FROM alpine:3.22
-RUN apk add --no-cache docker-cli docker-cli-compose
+# Backend control (POST /v1/backends) shells out to docker compose. The CLI is
+# excluded from the default image; docker-compose.backend-control.yml opts in.
+ARG INSTALL_DOCKER_CLI=false
+RUN if [ "$INSTALL_DOCKER_CLI" = "true" ]; then apk add --no-cache docker-cli docker-cli-compose; fi
 RUN adduser -D -H aiagent
 WORKDIR /app
 

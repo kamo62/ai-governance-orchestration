@@ -35,6 +35,10 @@ env_value() {
 }
 
 DEV_TOKEN="$(env_value AI_ORCH_DEV_TOKEN local-dev)"
+# Compose requires BIFROST_ENCRYPTION_KEY with no default. Prefer the shell or
+# .env.dev value so re-runs against a persisted bifrost volume keep working;
+# fall back to an ephemeral key for one-off demo runs.
+export BIFROST_ENCRYPTION_KEY="$(env_value BIFROST_ENCRYPTION_KEY "$(openssl rand -hex 16)")"
 BASE_URL="http://127.0.0.1:${GOVERNANCE_SHELL_PORT}"
 UI_URL="${BASE_URL}/ui/"
 

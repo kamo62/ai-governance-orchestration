@@ -149,6 +149,7 @@ func main() {
 		ContextResolver:    sessionContextResolver,
 		RequireWorkItem:    cfg.RequireWorkItem,
 		TrustedClientToken: cfg.TrustedClientToken,
+		ExecutionTimeout:   cfg.ExecutionTimeout,
 	})
 	eventStore := governance.NewEventStore()
 	compositionStore := composition.NewCompositionStore()

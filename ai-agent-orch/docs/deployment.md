@@ -28,11 +28,15 @@ The Orchestrator is intentionally internal to Docker Compose. Provider credentia
 
 Keep local secrets in the ignored root `.env.dev` file. Do not commit it.
 
-For the default Compose path, the only required secret is:
+For the default Compose path, the required secrets are:
 
 ```sh
 OPENROUTER_API_KEY=...
+# Bifrost config-store encryption key. Generate one per deployment:
+BIFROST_ENCRYPTION_KEY=$(openssl rand -hex 16)
 ```
+
+Compose refuses to start the Bifrost sidecar when `BIFROST_ENCRYPTION_KEY` is unset or empty. There is no default: a published fallback key would mean every deployment that skipped the variable shared the same encryption key.
 
 The local tokens and ports have Compose defaults. Add these fields only when you want to override those defaults locally:
 
@@ -46,9 +50,9 @@ AI_ORCH_MODEL_BACKEND=bifrost
 AI_ORCH_MODEL_PRICING_REFRESH_INTERVAL=24h
 AI_ORCH_BIFROST_BASE_URL=http://bifrost:8080
 AI_ORCH_TRUSTED_CLIENT_TOKEN=local-trusted-client-token
-BIFROST_ENCRYPTION_KEY=local-bifrost-enc-key-32-bytes!!
 AI_ORCH_ENV=local
 AI_ORCH_GATEWAY_MAX_REQUEST_BYTES=20971520
+AI_ORCH_EXECUTION_TIMEOUT=10m
 AI_ORCH_REQUIRE_BACKEND_HEALTH=false
 AI_ORCH_COPILOT_CLIENT_ID=
 AI_ORCH_OAUTH_TOKEN_ENCRYPTION_KEY=
@@ -375,7 +379,7 @@ Generic OpenAI-compatible clients often call `/v1/chat/completions`. ai-orch fol
 
 ### Backend Control From The UI
 
-The Governance UI can start and stop model sidecars when backend control is explicitly enabled. This requires Docker access inside the Governance Shell container.
+The Governance UI can start and stop model sidecars when backend control is explicitly enabled. This requires Docker access inside the Governance Shell container. The default image does not ship the docker CLI; the backend-control override builds it in via the `INSTALL_DOCKER_CLI` build arg.
 
 Local trusted setup:
 
@@ -383,10 +387,10 @@ Local trusted setup:
 docker compose \
   -f docker-compose.yml \
   -f docker-compose.backend-control.yml \
-  up -d governance-shell orchestrator
+  up -d --build governance-shell orchestrator
 ```
 
-The override mounts `/var/run/docker.sock`, runs `governance-shell` as root, and enables:
+The override installs the docker CLI, mounts `/var/run/docker.sock`, runs `governance-shell` as root, and enables:
 
 ```text
 AI_ORCH_BACKEND_CONTROL_ENABLED=true

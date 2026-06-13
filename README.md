@@ -52,11 +52,11 @@ This repo is an attempt to answer those questions without rebuilding the whole d
 
 ## Current State
 
-Current version: `v0.20.2-beta`.
+Current version: `v0.20.3-beta`.
 
 This is a **local beta** for the Governance Shell vertical slice. It is useful for team-local evaluation and demos, but it is not a production deployment.
 
-Honest read as of 2026-06-12:
+Honest read as of 2026-06-13:
 
 - The core control-plane shape is now real: sessions, policy gates, model routing, patch decisions, cost metadata, audit records, and the local Governance UI all run in the beta stack.
 - The strongest implemented path is OpenCode or a similar OpenAI-compatible client pointing at ai-orch, with ai-orch owning the model endpoint and Bifrost sitting behind it as provider plumbing.
@@ -66,6 +66,16 @@ Honest read as of 2026-06-12:
 - The MCP direction is sensible, but client-specific MCP setup for Cline, Copilot, Claude Code, Codex and Cursor is still adapter work, not a finished rollout path.
 - State is still mostly local SQLite plus process-local pieces. That is fine for the POC, but production needs durable multi-instance audit-chain handling, stronger identity, secret management, release automation and operational controls.
 - The repo should be read as a public POC with working beta paths and visible open questions, not as a packaged enterprise product.
+
+### OpenCode Reality Check
+
+OpenCode is currently the strongest and most honest client path in this POC. It is working well as an OpenAI-compatible client pointed at the ai-orch model gateway: sessions auto-create, model traffic streams through the Governance Shell, actor-bound Copilot can be selected behind the `coding-gpt55` route, Bifrost/OpenRouter remains the fallback provider plumbing, and completed ledger rows now show real provider attribution, token counts and non-zero cost estimates when pricing data is available.
+
+The sub-agent story is also materially better than it was. The governed OpenCode config starts through a low-reasoning `governance-lead`; model-emitted `task` calls are visible to ai-orch as sanitized tool-call metadata, and known specialists can appear as delegated child-session lineage. That is enough to prove route, stream, cost, session lifecycle and delegation shape.
+
+The caveat is important: ai-orch still does not automatically see the full local OpenCode Task/Read/Edit/Bash transcript. Those details remain on the client side unless the work routes through ACP, the MCP gateway, a managed-client event lane or deliberate client-event forwarding. So the current OpenCode lane is very good for governed model routing and useful ledger evidence, but it is not yet a complete remote replay of every local tool action.
+
+The OpenCode setup tooling is also safer now: installing the ai-orch provider should not wipe out the user's existing providers such as Copilot, Moonshot, DeepSeek or OpenRouter. It adds the governed route while preserving the broader local toolbench.
 
 What exists today:
 
@@ -90,7 +100,9 @@ What exists today:
 - Local MCP gateway CLI scaffold with stdio client config generation, fail-closed local HTTP transport, and `start_governed_run` for MCP clients.
 - Audit trust labels for gateway-enforced, managed-client and self-reported activity.
 - Command allow-list and tool-loop cap enforcement.
-- Docker Compose local runner, Bifrost sidecar and direct OpenRouter provider-health smoke tooling.
+- Docker Compose local runner, Bifrost sidecar and direct OpenRouter provider-health smoke tooling. The Bifrost sidecar now requires an explicit per-deployment config-store encryption key instead of shipping a published fallback key.
+- Optional backend-control Compose override for trusted local setups that deliberately mount the Docker socket and install the Docker CLI; the default image no longer includes Docker control tooling.
+- Configurable governed runtime dispatch timeout, defaulting to 10 minutes, so long-running local executions have an explicit operator knob.
 - OpenCode config install tooling and local E2E smoke for testing the governed provider endpoint without putting provider keys in OpenCode.
 - Governed OpenCode launcher defaults to a read-only, low-reasoning `governance-lead` primary agent, starts on the `ai-orch/coding-gpt55` capability alias, and records the routed specialist separately when work is delegated.
 - Beta verification path: `scripts/beta-verify.sh`, CIO demo verification path `scripts/cio-demo-verify.sh`, Compose profile `beta`, offline router golden-case tests, and frozen API contract in `docs/api-contract-v1.md`.
@@ -108,7 +120,7 @@ The shape I am aiming for is:
 - MCP becomes the governed tool boundary where clients support it;
 - GitHub or Azure DevOps becomes the delivery evidence boundary when the local contract is boring enough to trust.
 
-Honest closeness as of 2026-06-12:
+Honest closeness as of 2026-06-13:
 
 - **Core bet:** close. The local beta now proves governed sessions, policy gates, model gateway routing, actor-bound Copilot, Bifrost/OpenRouter fallback, cost attribution, audit, patch decisions, OpenCode model traffic, and a useful local ledger UI.
 - **Team beta:** partly there. A small technical team could evaluate it with a central ai-orch server and developer-owned clients, but onboarding, MCP ergonomics, operational controls and support scripts still need hardening.

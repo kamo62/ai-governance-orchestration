@@ -34,6 +34,7 @@ package-lock.json
 **/package-lock.json
 *.vsix
 review_*.md
+CIO*.md
 bin/
 **/bin/
 ai-agent-orch/ai-orch

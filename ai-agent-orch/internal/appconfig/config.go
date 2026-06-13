@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/envx"
 )
@@ -36,6 +37,8 @@ type Config struct {
 	GatewayMaxRequestBytes      int    // Max request body size accepted by the model compatibility gateway.
 	RequireBackendHealth        bool   // Refuse to start when the model backend is unhealthy instead of degrading.
 	GatewayAutoSession          bool   // Allow runtime model calls without explicit session headers by creating an auto session.
+
+	ExecutionTimeout time.Duration // Wall-clock cap for a single governed runtime dispatch.
 }
 
 // IsProduction reports whether the shell runs with the production posture,
@@ -126,6 +129,10 @@ func Load(args []string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	executionTimeout, err := envDuration("AI_ORCH_EXECUTION_TIMEOUT", 10*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		Addr:                        envx.OrDefault("AI_ORCH_ADDR", ":8080"),
 		CatalogRoot:                 envx.OrDefault("AI_ORCH_CATALOG_ROOT", "."),
@@ -153,6 +160,7 @@ func Load(args []string) (Config, error) {
 		GatewayMaxRequestBytes:      gatewayMaxRequestBytes,
 		RequireBackendHealth:        requireBackendHealth,
 		GatewayAutoSession:          gatewayAutoSession,
+		ExecutionTimeout:            executionTimeout,
 	}
 
 	fs := flag.NewFlagSet("ai-agent-orch", flag.ContinueOnError)
@@ -178,6 +186,7 @@ func Load(args []string) (Config, error) {
 	fs.BoolVar(&cfg.BackendControlEnabled, "backend-control-enabled", cfg.BackendControlEnabled, "allow admin UI to run docker compose backend controls")
 	fs.StringVar(&cfg.BackendControlWorkDir, "backend-control-workdir", cfg.BackendControlWorkDir, "directory containing docker-compose files for backend controls")
 	fs.StringVar(&cfg.TrustedClientToken, "trusted-client-token", cfg.TrustedClientToken, "shared secret that gates privileged audit trust levels")
+	fs.DurationVar(&cfg.ExecutionTimeout, "execution-timeout", cfg.ExecutionTimeout, "wall-clock cap for a single governed runtime dispatch")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -204,6 +213,21 @@ func envInt(key string, fallback int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func envDuration(key string, fallback time.Duration) (time.Duration, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a duration like 10m or 1h: %w", key, err)
+	}
+	if parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration", key)
 	}
 	return parsed, nil
 }

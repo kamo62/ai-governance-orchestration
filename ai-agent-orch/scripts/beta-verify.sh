@@ -22,6 +22,9 @@ fi
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   echo "==> Docker Compose beta smoke (no provider keys required)"
+  # Compose requires BIFROST_ENCRYPTION_KEY with no default. The verify run
+  # wipes the bifrost volume on every pass, so an ephemeral key is safe here.
+  export BIFROST_ENCRYPTION_KEY="${BIFROST_ENCRYPTION_KEY:-$(openssl rand -hex 16)}"
   ENV_FILE="${ROOT}/../.env.dev"
   COMPOSE=(docker compose -p ai-agent-orch-beta-verify -f docker-compose.yml -f docker-compose.beta.yml)
   if [ -f "$ENV_FILE" ]; then

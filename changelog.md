@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.20.3-beta - 2026-06-13 (Patch)
+
+Release impact: Patch because this tightens beta safety defaults, CI verification, runtime timeout configuration, and README/OpenCode positioning without changing public API contracts.
+
+- **Removed the published Bifrost fallback key**: Compose now requires `BIFROST_ENCRYPTION_KEY` explicitly, while beta/demo verification scripts generate ephemeral keys for disposable local runs.
+- **Made backend-control Docker access opt-in**: the default Governance Shell image no longer ships the Docker CLI; trusted local backend controls use `docker-compose.backend-control.yml` to install the CLI and mount the Docker socket deliberately.
+- **Added a configurable governed execution timeout**: `AI_ORCH_EXECUTION_TIMEOUT` and `--execution-timeout` now control the wall-clock cap for a single governed runtime dispatch, with the previous 10-minute behaviour as the default.
+- **Strengthened CI and utility coverage**: CI now runs Go tests with race detection and a coverage summary, and small regression tests cover environment defaults, JSON helpers, logging setup and SQLite WAL setup.
+- **Clarified OpenCode readiness**: README now states that OpenCode is the strongest current client lane for governed model routing, attribution, cost and delegation lineage, while full local Task/Read/Edit/Bash transcript capture still requires ACP, MCP or client-event forwarding.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.20.3-beta.
+
 ## v0.20.2-beta - 2026-06-12 (Patch)
 
 Release impact: Patch because this fixes a CI-only staticcheck failure and clarifies README readiness without changing runtime contracts.

@@ -28,7 +28,7 @@ services:
     environment:
       APP_HOST: 0.0.0.0
       APP_PORT: 8080
-      BIFROST_ENCRYPTION_KEY: ${BIFROST_ENCRYPTION_KEY:-local-bifrost-enc-key-32-bytes!!}
+      BIFROST_ENCRYPTION_KEY: ${BIFROST_ENCRYPTION_KEY:?set BIFROST_ENCRYPTION_KEY in .env, e.g. openssl rand -hex 16}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

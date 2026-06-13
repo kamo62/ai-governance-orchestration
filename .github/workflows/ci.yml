@@ -31,7 +31,10 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test ./...
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -1
 
       - name: Format check
         run: |
@@ -68,6 +71,7 @@ jobs:
         env:
           GOVERNANCE_SHELL_PORT: "18081"
         run: |
+          export BIFROST_ENCRYPTION_KEY="$(openssl rand -hex 16)"
           docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta up -d --build bifrost orchestrator governance-shell
           ./scripts/wait-readyz.sh
           docker compose -f docker-compose.yml -f docker-compose.beta.yml --profile beta run --rm beta-catalog

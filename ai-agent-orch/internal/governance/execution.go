@@ -44,7 +44,7 @@ func (e *SessionExecutor) RunAsync(sessionID, agent, prompt string) {
 		return
 	}
 	e.service.setSessionStatus(context.Background(), sessionID, "running")
-	execCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	execCtx, cancel := context.WithTimeout(context.Background(), e.service.executionTimeout)
 	e.service.registerCancel(sessionID, cancel)
 	go func() {
 		defer cancel()
