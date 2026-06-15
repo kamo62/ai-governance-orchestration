@@ -110,7 +110,13 @@ func estimateCostFromPricing(ctx context.Context, event audit.Event, pricing Mod
 			continue
 		}
 		promptTokens := intFromAny(event.TokenUsage["prompt_tokens"])
+		if promptTokens == 0 {
+			promptTokens = intFromAny(event.TokenUsage["input_tokens"])
+		}
 		completionTokens := intFromAny(event.TokenUsage["completion_tokens"])
+		if completionTokens == 0 {
+			completionTokens = intFromAny(event.TokenUsage["output_tokens"])
+		}
 		estimate := float64(promptTokens)*record.PromptCostPerToken + float64(completionTokens)*record.CompletionCostPerToken
 		return estimate, estimate > 0
 	}

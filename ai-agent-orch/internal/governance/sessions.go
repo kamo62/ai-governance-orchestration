@@ -235,6 +235,7 @@ type SessionSummary struct {
 	Intent                    string              `json:"intent,omitempty"`
 	ActorHint                 string              `json:"actor_hint,omitempty"`
 	SourceSystem              string              `json:"source_system,omitempty"`
+	ClientSessionID           string              `json:"client_session_id,omitempty"`
 	StoryPoints               int                 `json:"story_points,omitempty"`
 	EstimatedDevDays          float64             `json:"estimated_dev_days,omitempty"`
 	BlendedDayRateUSD         float64             `json:"blended_day_rate_usd,omitempty"`
@@ -466,6 +467,7 @@ func sessionSummaryFromRecord(record SessionRecord) SessionSummary {
 		Intent:                    record.Intent,
 		ActorHint:                 record.ActorHint,
 		SourceSystem:              record.SourceSystem,
+		ClientSessionID:           record.ClientSessionID,
 		StoryPoints:               record.StoryPoints,
 		EstimatedDevDays:          record.EstimatedDevDays,
 		BlendedDayRateUSD:         record.BlendedDayRateUSD,

@@ -366,6 +366,7 @@ body {
 
 .ledger-child-count,
 .ledger-status-delegated,
+.ledger-rollup,
 .ledger-orphan {
   display: inline-flex;
   align-items: center;
@@ -388,6 +389,12 @@ body {
   height: 6px;
   border-radius: 50%;
   background: currentColor;
+}
+
+.ledger-rollup {
+  color: #42526f;
+  border-color: var(--hairline-strong);
+  background: var(--muted);
 }
 
 .ledger-orphan {

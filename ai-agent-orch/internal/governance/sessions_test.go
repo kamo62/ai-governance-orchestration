@@ -899,6 +899,21 @@ func authorizedSessionRequest(body string) *http.Request {
 	return req
 }
 
+func TestSessionSummaryIncludesClientSessionID(t *testing.T) {
+	summary := sessionSummaryFromRecord(SessionRecord{
+		SessionID:       "sess_auto",
+		ActorSubject:    "dev@example.test",
+		Agent:           "model-gateway",
+		Classification:  "internal",
+		Status:          "running",
+		CreatedAt:       time.Now().UTC(),
+		ClientSessionID: "opencode-session-123",
+	})
+	if summary.ClientSessionID != "opencode-session-123" {
+		t.Fatalf("expected client session id in summary, got %#v", summary)
+	}
+}
+
 func TestCreateAutoGatewaySessionAppliesGovernanceAndTokenBinding(t *testing.T) {
 	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
 	store := &recordingSessionStore{}

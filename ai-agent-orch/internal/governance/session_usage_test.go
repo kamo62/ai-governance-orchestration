@@ -174,6 +174,39 @@ func TestSummarizeSessionUsageEstimatesCopilotGPT55FromOpenRouterEquivalentPrici
 	}
 }
 
+func TestSummarizeSessionUsagePricesResponsesInputOutputTokens(t *testing.T) {
+	events := []audit.Event{
+		{
+			EventType:     "model.gateway_call",
+			Provider:      "copilot-user",
+			ModelAlias:    "coding-gpt55",
+			ModelResolved: "gpt-5.5",
+			TokenUsage: map[string]any{
+				"input_tokens":  float64(11),
+				"output_tokens": float64(18),
+				"total_tokens":  float64(29),
+			},
+		},
+	}
+	pricing := fakeModelPricingStore{
+		record: ModelPricingRecord{
+			Provider:               "openrouter",
+			ModelID:                "openai/gpt-5.5",
+			PromptCostPerToken:     0.000005,
+			CompletionCostPerToken: 0.00003,
+		},
+	}
+
+	summary := SummarizeSessionUsageWithPricing(context.Background(), events, pricing)
+	want := 11*0.000005 + 18*0.00003
+	if math.Abs(summary.EstimatedCostUSD-want) > 0.000000001 {
+		t.Fatalf("expected pricing-table estimate %v, got %v", want, summary.EstimatedCostUSD)
+	}
+	if summary.CostSource != "pricing_table" {
+		t.Fatalf("expected pricing_table cost source, got %q", summary.CostSource)
+	}
+}
+
 type fakeModelPricingStore struct {
 	record ModelPricingRecord
 }

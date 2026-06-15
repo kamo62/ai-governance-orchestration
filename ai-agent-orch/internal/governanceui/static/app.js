@@ -444,7 +444,7 @@
       emptyList(el.sessionList, "No governed sessions");
       return;
     }
-    const grouped = groupSessions(list).slice(0, 50);
+    const grouped = groupSessions(list).slice(0, 100);
     const table = document.createElement("table");
     table.className = "ledger-table";
     table.innerHTML = [
@@ -463,7 +463,7 @@
     const tbody = table.querySelector("tbody");
     grouped.forEach((item) => {
       const session = item.session;
-      const summary = session.usage_summary || {};
+      const summary = item.rollup || session.usage_summary || {};
       const row = document.createElement("tr");
       row.dataset.sessionId = session.session_id || "";
       row.dataset.depth = String(item.depth || 0);
@@ -479,19 +479,20 @@
         row.setAttribute("aria-selected", "false");
       }
       const childHint = item.childCount > 0 ? "<span class=\"ledger-child-count\">" + item.childCount + " delegated</span>" : "";
+      const rollupHint = item.rollupChildCount > 0 ? "<span class=\"ledger-rollup\">cost rollup</span>" : "";
       const delegatedHint = item.depth > 0 ? "<span class=\"ledger-status-delegated\">delegated</span>" : "";
       const orphanHint = item.orphanChild ? "<span class=\"ledger-orphan\">parent not in view</span>" : "";
       row.title = item.depth > 0 && session.parent_session_id ? "Child of " + session.parent_session_id : session.session_id || "";
       const modeLabel = escapeHtml(formatModeLabels(session));
       row.innerHTML = [
         cell(formatShortDate(session.latest_event_at || session.created_at), session.latest_event_type || "created", "mono", item.depth),
-        cell(session.actor_subject || "-", session.source_system || session.actor_hint || "-"),
+        cell(session.actor_subject || "-", [session.source_system || session.actor_hint || "-", session.client_session_id ? "OpenCode " + shortSessionID(session.client_session_id) : ""].filter(Boolean).join(" / ")),
         cell(session.work_item_id || session.branch || "-", [session.repo_url, session.branch].filter(Boolean).join(" / ") || session.use_case_id || "-"),
-        cell(session.routed_agent || session.agent || "-", [orphanHint, delegatedHint, childHint, modeLabel].filter(Boolean).join(" ") || "-", "", 0, true),
+        cell(session.routed_agent || session.agent || "-", [orphanHint, delegatedHint, childHint, rollupHint, modeLabel].filter(Boolean).join(" ") || "-", "", 0, true),
         cell(summary.model_alias || "-", [summary.model_resolved, summary.gateway_backend].filter(Boolean).join(" / ") || "-"),
         cell(humanLabel(session.status) || "-", session.patch_state ? "patch " + session.patch_state : (session.tool_call_count ? session.tool_call_count + " tool calls" : "-")),
         cell(String(summary.total_tokens || 0), (summary.prompt_tokens || 0) + " in / " + (summary.completion_tokens || 0) + " out", "tokens"),
-        cell(formatCostValue(summary.estimated_cost_usd), costSourceLabel(summary.cost_source) || "unpriced", "cost"),
+        cell(formatCostValue(summary), costSourceLabel(summary.cost_source) || "unpriced", "cost"),
         cell(session.trust_level || "-", session.enforcement_mode || "-"),
       ].join("");
       row.addEventListener("click", () => loadAuditTrail(session.session_id));
@@ -532,10 +533,36 @@
       const parentID = session && session.session_id;
       const isOrphanChild = Boolean(session && session.parent_session_id && !byID.has(session.parent_session_id));
       const children = parentID ? childrenByParent.get(parentID) || [] : [];
-      rows.push({ session, depth: 0, childCount: children.length, orphanChild: isOrphanChild });
-      children.forEach((child) => rows.push({ session: child, depth: 1, childCount: 0, orphanChild: false }));
+      rows.push({ session, depth: 0, childCount: children.length, rollupChildCount: rollupCostChildCount(children), orphanChild: isOrphanChild, rollup: rollupUsage(session, children) });
+      children.forEach((child) => rows.push({ session: child, depth: 1, childCount: 0, orphanChild: false, rollup: child.usage_summary || {} }));
     });
     return rows;
+  }
+
+  function rollupCostChildCount(children) {
+    const childList = Array.isArray(children) ? children : [];
+    return childList.filter((child) => Number(((child && child.usage_summary) || {}).total_tokens || 0) > 0).length;
+  }
+
+  function rollupUsage(parent, children) {
+    const rollup = Object.assign({}, (parent && parent.usage_summary) || {});
+    const childList = Array.isArray(children) ? children : [];
+    for (const child of childList) {
+      const usage = (child && child.usage_summary) || {};
+      rollup.total_tokens = Number(rollup.total_tokens || 0) + Number(usage.total_tokens || 0);
+      rollup.prompt_tokens = Number(rollup.prompt_tokens || 0) + Number(usage.prompt_tokens || 0);
+      rollup.completion_tokens = Number(rollup.completion_tokens || 0) + Number(usage.completion_tokens || 0);
+      rollup.estimated_cost_usd = Number(rollup.estimated_cost_usd || 0) + Number(usage.estimated_cost_usd || 0);
+      if (usage.cost_source) rollup.cost_source = mergeCostSource(rollup.cost_source, usage.cost_source);
+    }
+    return rollup;
+  }
+
+  function mergeCostSource(current, next) {
+    if (!next || current === next) return current || next || "";
+    if (!current || current === "unavailable") return next;
+    if (next === "unavailable") return current;
+    return "mixed";
   }
 
   function sessionTime(session) {
@@ -748,9 +775,12 @@
 	return "$" + value.toFixed(2);
       }
 
-      function formatCostValue(value) {
-	const cost = Number(value || 0);
-	return cost > 0 ? formatCost(cost) : "$0";
+      function formatCostValue(summary) {
+	const cost = Number((summary && summary.estimated_cost_usd) || 0);
+	if (cost > 0) return formatCost(cost);
+	const total = Number((summary && summary.total_tokens) || 0);
+	if (total > 0) return "unpriced";
+	return "-";
       }
 
       function costSourceLabel(value) {
@@ -821,8 +851,8 @@
       // (governance oversight); otherwise it shows the configured actor's own.
       const orgWide = hasAdminToken();
       const response = orgWide
-        ? await api("/v1/admin/sessions?limit=20", { headers: adminHeaders() })
-        : await api("/v1/sessions?limit=20", { headers: devHeaders() });
+        ? await api("/v1/admin/sessions?limit=100", { headers: adminHeaders() })
+        : await api("/v1/sessions?limit=100", { headers: devHeaders() });
       const sessions = response.sessions || [];
       const selectedStillExists = sessions.some((session) => session.session_id === state.selectedSessionID);
       renderSessions(sessions);
