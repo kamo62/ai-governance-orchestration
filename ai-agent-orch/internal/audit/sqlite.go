@@ -100,6 +100,9 @@ func (s *SQLiteStore) migrate() error {
 		"gateway_backend":            "TEXT",
 		"run_id":                     "TEXT",
 		"work_item_id":               "TEXT",
+		"repo_url":                   "TEXT",
+		"branch":                     "TEXT",
+		"commit_sha":                 "TEXT",
 		"patch_id":                   "TEXT",
 		"patch_buffer_id":            "TEXT",
 		"patch_decision":             "TEXT",
@@ -220,10 +223,10 @@ func (s *SQLiteStore) insertEvent(ctx context.Context, execer sqlExecutor, event
 				trust_level, enforcement_mode, provider, model_alias, model_resolved,
 				requested_model_alias, credential_source, reasoning_effort_requested, reasoning_effort_applied, reasoning_source,
 				gateway_backend,
-				run_id, work_item_id, patch_id, patch_buffer_id, patch_decision, patch_file_count,
+				run_id, work_item_id, repo_url, branch, commit_sha, patch_id, patch_buffer_id, patch_decision, patch_file_count,
 				runtime, runtime_status, duration_ms, event_count, patch_count, tool_call_count,
 				workspace_sha256, opencode_version, token_usage_json, payload_json
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 		event.EventID, event.ParentEventID, event.ParentSessionID, event.SessionID, event.EventType, event.Actor, event.Agent,
 		event.Classification, event.Reason, string(findingsJSON), event.PromptSHA256,
@@ -234,7 +237,7 @@ func (s *SQLiteStore) insertEvent(ctx context.Context, execer sqlExecutor, event
 		event.TrustLevel, event.EnforcementMode, event.Provider, event.ModelAlias, event.ModelResolved,
 		event.RequestedModelAlias, event.CredentialSource, event.ReasoningEffortRequested, event.ReasoningEffortApplied, event.ReasoningSource,
 		event.GatewayBackend,
-		event.RunID, event.WorkItemID, event.PatchID, event.PatchBufferID, event.PatchDecision, event.PatchFileCount,
+		event.RunID, event.WorkItemID, event.RepoURL, event.Branch, event.CommitSHA, event.PatchID, event.PatchBufferID, event.PatchDecision, event.PatchFileCount,
 		event.Runtime, event.RuntimeStatus, event.DurationMS, event.EventCount, event.PatchCount, event.ToolCallCount,
 		event.WorkspaceSHA256, event.OpencodeVersion, string(tokenUsageJSON), string(payloadJSON),
 	)

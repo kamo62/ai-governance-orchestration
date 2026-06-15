@@ -287,7 +287,35 @@ func pricingLookups(provider string, modelID string) []pricingLookup {
 		add("openrouter", provider+"/"+model)
 	}
 	add("openrouter", model)
+	// 3. Vendor-prefixed OpenRouter fallback for per-user Copilot routes. Copilot
+	// reports bare upstream ids (for example "gemini-3.5-flash"), while the
+	// OpenRouter price book keys models as "<vendor>/<model>". The list price for
+	// a model is the same regardless of being served via Copilot, so map the bare
+	// id to its OpenRouter equivalent to price Copilot routes.
+	if vendorModel := openRouterVendorModel(model); vendorModel != "" {
+		add("openrouter", vendorModel)
+	}
 	return lookups
+}
+
+// openRouterVendorModel maps a bare upstream model id (as Copilot reports it) to
+// the vendor-prefixed id used by the OpenRouter price book. Returns "" when the
+// vendor cannot be inferred.
+func openRouterVendorModel(model string) string {
+	model = strings.Trim(strings.ToLower(model), "/ ")
+	if model == "" || strings.Contains(model, "/") {
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(model, "claude-"):
+		return "anthropic/" + model
+	case strings.HasPrefix(model, "gemini-"):
+		return "google/" + model
+	case strings.HasPrefix(model, "gpt-"), strings.HasPrefix(model, "o1"), strings.HasPrefix(model, "o3"), strings.HasPrefix(model, "o4"):
+		return "openai/" + model
+	default:
+		return ""
+	}
 }
 
 func normalizePricingProvider(provider string) string {

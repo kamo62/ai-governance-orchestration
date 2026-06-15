@@ -472,25 +472,27 @@ func main() {
 				}
 				gatewayConfig.AutoSession = func(ctx context.Context, request modelgateway.AutoSessionRequest) (modelgateway.SessionInfo, error) {
 					result, err := sessionService.CreateAutoGatewaySession(ctx, governance.AutoGatewaySessionRequest{
-						ActorSubject:       request.ActorSubject,
-						Classification:     request.Classification,
-						PromptSHA256:       request.PromptSHA256,
-						ModelAlias:         request.ModelAlias,
-						Client:             request.Client,
-						Endpoint:           request.Endpoint,
-						RawRequestBody:     request.RawRequestBody,
-						TrustedClientToken: request.TrustedClientToken,
-						UseCaseID:          request.UseCaseID,
-						WorkflowID:         request.WorkflowID,
-						WorkItemID:         request.WorkItemID,
-						WorkItemType:       request.WorkItemType,
-						RepoURL:            request.RepoURL,
-						Branch:             request.Branch,
-						CommitSHA:          request.CommitSHA,
-						Intent:             request.Intent,
-						ActorHint:          request.ActorHint,
-						SourceSystem:       request.SourceSystem,
-						EstimatedCostUSD:   request.EstimatedCostUSD,
+						ActorSubject:          request.ActorSubject,
+						Classification:        request.Classification,
+						PromptSHA256:          request.PromptSHA256,
+						ModelAlias:            request.ModelAlias,
+						Client:                request.Client,
+						Endpoint:              request.Endpoint,
+						RawRequestBody:        request.RawRequestBody,
+						TrustedClientToken:    request.TrustedClientToken,
+						UseCaseID:             request.UseCaseID,
+						WorkflowID:            request.WorkflowID,
+						WorkItemID:            request.WorkItemID,
+						WorkItemType:          request.WorkItemType,
+						RepoURL:               request.RepoURL,
+						Branch:                request.Branch,
+						CommitSHA:             request.CommitSHA,
+						Intent:                request.Intent,
+						ActorHint:             request.ActorHint,
+						SourceSystem:          request.SourceSystem,
+						EstimatedCostUSD:      request.EstimatedCostUSD,
+						ClientSessionID:       request.ClientSessionID,
+						ParentClientSessionID: request.ParentClientSessionID,
 					})
 					if err != nil {
 						return modelgateway.SessionInfo{}, err
@@ -517,6 +519,7 @@ func main() {
 						WorkspaceMode:      record.WorkspaceMode,
 						GatewayToken:       result.GatewayToken,
 						AutoCreated:        true,
+						ClientSessionID:    record.ClientSessionID,
 					}, nil
 				}
 			}

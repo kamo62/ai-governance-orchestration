@@ -107,6 +107,7 @@ Prefer headers and compact IDs:
 
 ```text
 X-AI-Orch-Session-ID
+X-AI-Orch-Client-Session-ID
 X-AI-Orch-Run-ID
 X-AI-Orch-Agent
 X-AI-Orch-Use-Case-ID
@@ -114,6 +115,9 @@ X-AI-Orch-Workflow-ID
 X-AI-Orch-Client
 X-AI-Orch-Trust-Level
 X-AI-Orch-Enforcement-Mode
+X-AI-Orch-Repo-URL
+X-AI-Orch-Branch
+X-AI-Orch-Commit-SHA
 ```
 
 The client headers are hints. The Shell must derive the final `trust_level` and `enforcement_mode`; unknown clients remain `self_reported/advisory` and external native evidence remains self-reported even if a caller claims a stronger label.
@@ -121,6 +125,22 @@ The client headers are hints. The Shell must derive the final `trust_level` and 
 The Shell should resolve use-case records, workflow rules, context manifests, policy, cost posture, cache eligibility and evidence expectations server-side.
 
 The prompt should carry only the task, bounded working context and references the runtime actually needs.
+
+## Git Context and Session Continuity
+
+Git context (remote URL, branch, commit) is captured client-side, where the runtime actually runs, not by a server-side resolver. A server resolver would only see the Governance Shell container filesystem, never the developer's checkout. Two client paths supply it:
+
+- The `ai-orch opencode` wrapper detects local git via `internal/contextresolver` and attaches `repo_url`/`branch`/`commit_sha` when it pre-creates the session.
+- For developers who run `opencode` directly, the shipped OpenCode plugin (`cmd/ai-orch/assets/opencode-ai-orch-context.ts`, installed by `ai-orch opencode refresh`) detects git in the checkout and sends the three git headers plus `X-AI-Orch-Client-Session-ID` on the `ai-orch` and `ai-orch-responses` providers. The plugin is headers-only and does not mutate the model transcript: OpenCode validates message part ids and synthetic parts, so editing the conversation from a plugin is fragile. Agent awareness of the repo is left to the agent itself (specialists can run `git`), not to prompt injection.
+
+Session continuity is owned by the gateway. When a request carries `X-AI-Orch-Client-Session-ID` (the runtime's own conversation id) and no `X-AI-Orch-Session-ID`, the gateway reuses one governed session per `(actor + client session id)` instead of minting a new session per model call. The git context is recorded once at that session's creation, and the session stays open across the conversation rather than being finished per request. Reuse is bounded to a recent window (12h) so a stale or abandoned conversation id cannot bind new traffic to old context; past the window a fresh session is created. The Shell strips any credentials from the remote URL before storing it, and the audit ledger records `repo_url`/`branch`/`commit_sha` on the `session.created`/`session.auto_created` event.
+
+OpenCode is configured with two governed providers, because Copilot serves different model families on different API surfaces:
+
+- `ai-orch` uses `@ai-sdk/openai-compatible` (`/v1/chat/completions`) for the chat-capable models (Claude, Gemini, gpt-5-mini).
+- `ai-orch-responses` uses `@ai-sdk/openai` (`/v1/responses`) for the Responses-API-only models (gpt-5.3-codex, gpt-5.4-mini, gpt-5.5).
+
+Generated model entries include OpenCode image attachment metadata (`attachment: true` and `modalities.input` containing `image`) so direct `opencode` sessions can paste screenshots into governed models instead of being blocked client-side. Developers should not need to run `ai-orch opencode` as a wrapper; after enrollment they can run `opencode` normally. Local Copilot stack restarts through `scripts/local-copilot-compose-up.sh` refresh existing global/project OpenCode configs automatically. Developers connecting to deployed QA/prod/shared gateways use `scripts/deployed-opencode-enroll.sh`, which installs a user-level refresh job for ongoing metadata updates.
 
 ## OpenCode E2E Current Posture
 

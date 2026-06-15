@@ -4,5 +4,5 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$ROOT"
 
-SCOPE="${AI_ORCH_OPENCODE_SCOPE:-global}"
-exec go run ./cmd/ai-orch opencode refresh --scope "$SCOPE" "$@"
+echo "scripts/install-opencode-ai-orch.sh is deprecated; use scripts/deployed-opencode-refresh.sh for deployed gateways." >&2
+exec scripts/deployed-opencode-refresh.sh "$@"

@@ -147,7 +147,7 @@ Runtime execution emits durable audit events for:
 
 EchoRuntime is available only for explicit beta smoke runs with `AI_ORCH_BETA_SMOKE=true`. Normal dispatch fails closed when neither OpenCode/ACP nor a direct/provider-backed runtime is available.
 
-Model gateway audit events include session context when available: agent, classification, run ID, permission mode, approval mode, workspace mode, work item, branch, commit SHA and actor hints. Raw prompts and raw responses remain hash-only unless a future policy explicitly enables raw storage.
+Model gateway audit events include session context when available: agent, classification, run ID, permission mode, approval mode, workspace mode, work item, repo URL, branch, commit SHA and actor hints. Raw prompts and raw responses remain hash-only unless a future policy explicitly enables raw storage.
 
 ## Patch envelope wire format
 

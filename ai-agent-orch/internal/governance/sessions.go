@@ -509,6 +509,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.resolveSessionContext(&request)
+	request.RepoURL = sanitizeRepoURL(request.RepoURL)
 	if err := s.enforceWorkItemContext(&request); err != nil {
 		if auditErr := s.appendDenied(r.Context(), err.Error(), nil, request.Classification); auditErr != nil {
 			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
@@ -590,6 +591,8 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		WorkspaceMode:      request.WorkspaceMode,
 		WorkItemID:         request.WorkItemID,
 		WorkItemType:       request.WorkItemType,
+		RepoURL:            request.RepoURL,
+		Branch:             request.Branch,
 		CommitSHA:          request.CommitSHA,
 		ActorHint:          request.ActorHint,
 		SourceSystem:       request.SourceSystem,

@@ -56,7 +56,7 @@ Open the Governance UI URL printed by the script, usually `http://127.0.0.1:1808
 
 ## Developer workflow
 
-For a central team beta, developers should not need to run the AI-Orch Docker stack. They enrol once against the central Governance URL and then use OpenCode normally through the AI-Orch model gateway. The setup installs only the `ai-orch` OpenCode provider block and preserves existing providers such as Moonshot, DeepSeek, OpenRouter and Copilot Zen.
+For a central team beta, developers should not need to run the AI-Orch Docker stack. They enrol once against the central Governance URL and then use OpenCode normally through the AI-Orch model gateway. The setup installs two governed OpenCode provider blocks (`ai-orch` for chat models, `ai-orch-responses` for Copilot's Responses-API-only GPT-5.x reasoning models) plus a headers-only git-context plugin, and preserves existing providers such as Moonshot, DeepSeek, OpenRouter and Copilot Zen. Git remote/branch/commit are captured client-side and a conversation reuses one governed session. Generated model metadata advertises image attachment support for governed models so developers can paste screenshots into direct `opencode` sessions; local operator restarts via `scripts/local-copilot-compose-up.sh` refresh existing OpenCode configs automatically.
 
 See [docs/deployment.md](ai-agent-orch/docs/deployment.md) for enrolment and refresh commands, and [docs/runtime-client-integration.md](ai-agent-orch/docs/runtime-client-integration.md) for OpenCode, Cline, Copilot, Claude Code, Codex and workbench-style client boundaries.
 
@@ -79,6 +79,7 @@ It should stay small, boring and strict at the boundary.
 - [API contract](ai-agent-orch/docs/api-contract-v1.md): frozen beta API surface for integrators.
 - [Runtime client integration](ai-agent-orch/docs/runtime-client-integration.md): client boundaries without centralising repo access.
 - [Model compatibility gateway](ai-agent-orch/docs/model-compatibility-gateway.md): OpenAI-compatible gateway contract and remaining provider work.
+- [Copilot integration](ai-agent-orch/docs/copilot.md): per-user GitHub Copilot routing, model aliases, chat vs Responses endpoints, and reasoning effort.
 - [State and reporting direction](ai-agent-orch/docs/local-state-lifecycle.md) / [governance insight](ai-agent-orch/docs/governance-insight-and-memory.md): what is durable today and what must harden next.
 - Component guides: [agents](ai-agent-orch/agents/README.md), [models](ai-agent-orch/models/README.md), [MCP](ai-agent-orch/mcp/README.md), [policies](ai-agent-orch/policies/README.md).
 - [Production backlog](ai-agent-orch/docs/production-backlog.md): known hardening work before V1/production.

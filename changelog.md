@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+Governed Copilot model routing, reasoning-effort control, per-conversation sessions, and client-side git context.
+
+- **Copilot model routing and endpoints**: added governed aliases `copilot-claude-opus-4.8`, `copilot-gpt-5.4-mini`, and `copilot-gemini-3.5-flash`. Endpoint support is verified live: `gpt-5.3-codex`, `gpt-5.4-mini`, and `gpt-5.5` are Responses-API only on Copilot, so OpenCode is configured with two governed providers, `ai-orch` (`@ai-sdk/openai-compatible`, `/v1/chat/completions`) and `ai-orch-responses` (`@ai-sdk/openai`, `/v1/responses`). The lead runs on `copilot-gpt-5.4-mini`, frontend on Opus 4.8, documentation on Gemini 3.5 Flash.
+- **Reasoning effort governance**: the gateway emits flat `reasoning_effort` for Copilot `/chat/completions` and nested `reasoning.effort` for `/responses`, across the full scale (none, minimal, low, medium, high, xhigh, max) clamped to each model's `max_effort`. Copilot models default to xhigh where supported (Gemini and gpt-5-mini cap at high); callers can request a lower effort. Both effort normalizers (gateway and router) were extended so high-tier defaults are no longer dropped.
+- **Gateway-owned session continuity**: a request carrying `X-AI-Orch-Client-Session-ID` (and no session id) reuses one governed session per `(actor + client session id)` instead of minting one per model call; the session stays open across the conversation.
+- **Client-side git context**: repo URL, branch, and commit are captured where the runtime runs, via the `ai-orch opencode` wrapper or a headers-only OpenCode plugin (installed by `ai-orch opencode refresh`). Embedded credentials are stripped from the remote URL server-side, and `repo_url`/`branch`/`commit_sha` are now recorded on the session and the audit ledger (`audit_events`).
+
 ## v0.21.2-beta - 2026-06-13 (Patch)
 
 Release impact: Patch because this hardens confirmation-gate and audit-attribution integrity without changing the normal high-confidence run path.

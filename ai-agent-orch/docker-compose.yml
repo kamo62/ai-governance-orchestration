@@ -157,6 +157,7 @@ services:
         condition: service_healthy
     volumes:
       - ./opencode/sandbox/opencode.json:/opencode/opencode.json:ro
+      - ./cmd/ai-orch/assets/opencode-ai-orch-context.ts:/opencode/ai-orch-context.ts:ro
       - opencode-sandbox-workspace:/workspace
 
   mcp-repo-classification:

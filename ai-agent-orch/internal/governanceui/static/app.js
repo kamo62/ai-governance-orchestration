@@ -435,62 +435,139 @@
   }
 
   function renderSessions(sessions) {
-  const list = Array.isArray(sessions) ? sessions : [];
-  state.lastSessions = list;
-  el.sessionCount.textContent = String(list.length);
-  el.sessionBadge.textContent = String(list.length);
+    const list = Array.isArray(sessions) ? sessions : [];
+    state.lastSessions = list;
+    el.sessionCount.textContent = String(list.length);
+    el.sessionBadge.textContent = String(list.length);
     el.sessionList.innerHTML = "";
     if (!list.length) {
       emptyList(el.sessionList, "No governed sessions");
       return;
     }
-  const table = document.createElement("table");
-  table.className = "ledger-table";
-  table.innerHTML = [
-    "<thead><tr>",
-    "<th>Time</th>",
-    "<th>Actor / Source</th>",
-    "<th>Work item</th>",
-    "<th>Agent</th>",
-    "<th>Model / Backend</th>",
-    "<th>Status</th>",
-    "<th>Tokens</th>",
-    "<th>Cost</th>",
-    "<th>Trust</th>",
-    "</tr></thead><tbody></tbody>",
-  ].join("");
-  const tbody = table.querySelector("tbody");
-  list.slice(0, 50).forEach((session) => {
-    const summary = session.usage_summary || {};
-    const row = document.createElement("tr");
-    row.className = session.session_id === state.selectedSessionID ? "selected" : "";
-    row.innerHTML = [
-      cell(formatShortDate(session.latest_event_at || session.created_at), session.latest_event_type || "created"),
-      cell(session.actor_subject || "-", session.source_system || session.actor_hint || "-"),
-      cell(session.work_item_id || "-", [session.repo_url, session.branch].filter(Boolean).join(" / ") || session.use_case_id || "-"),
-      cell(session.routed_agent || session.agent || "-", [session.parent_session_id ? "child of " + session.parent_session_id : "", formatModeLabels(session)].filter(Boolean).join(" / ") || "-"),
-      cell(summary.model_alias || "-", [summary.model_resolved, summary.gateway_backend].filter(Boolean).join(" / ") || "-"),
-      cell(session.status || "-", session.patch_state ? "patch " + session.patch_state : (session.tool_call_count ? session.tool_call_count + " tool calls" : "-")),
-      cell(String(summary.total_tokens || 0), (summary.prompt_tokens || 0) + " in / " + (summary.completion_tokens || 0) + " out"),
-      cell(formatCostValue(summary.estimated_cost_usd), costSourceLabel(summary.cost_source) || "unpriced"),
-      cell(session.trust_level || "-", session.enforcement_mode || "-"),
+    const grouped = groupSessions(list).slice(0, 50);
+    const table = document.createElement("table");
+    table.className = "ledger-table";
+    table.innerHTML = [
+      "<thead><tr>",
+      "<th>Time</th>",
+      "<th>Actor / Source</th>",
+      "<th>Work item</th>",
+      "<th>Agent</th>",
+      "<th>Model / Backend</th>",
+      "<th>Status</th>",
+      "<th>Tokens</th>",
+      "<th>Cost</th>",
+      "<th>Trust</th>",
+      "</tr></thead><tbody></tbody>",
     ].join("");
-    row.addEventListener("click", () => loadAuditTrail(session.session_id));
-    tbody.appendChild(row);
-  });
-  el.sessionList.appendChild(table);
+    const tbody = table.querySelector("tbody");
+    grouped.forEach((item) => {
+      const session = item.session;
+      const summary = session.usage_summary || {};
+      const row = document.createElement("tr");
+      row.dataset.sessionId = session.session_id || "";
+      row.dataset.depth = String(item.depth || 0);
+      row.tabIndex = 0;
+      row.setAttribute("role", "button");
+      row.setAttribute("aria-label", "Load audit trail for " + (session.session_id || "session"));
+      if (item.depth > 0) row.classList.add("ledger-row-child");
+      if (item.orphanChild) row.classList.add("ledger-row-orphan");
+      if (session.session_id === state.selectedSessionID) {
+        row.classList.add("selected");
+        row.setAttribute("aria-selected", "true");
+      } else {
+        row.setAttribute("aria-selected", "false");
       }
+      const childHint = item.childCount > 0 ? "<span class=\"ledger-child-count\">" + item.childCount + " delegated</span>" : "";
+      const delegatedHint = item.depth > 0 ? "<span class=\"ledger-status-delegated\">delegated</span>" : "";
+      const orphanHint = item.orphanChild ? "<span class=\"ledger-orphan\">parent not in view</span>" : "";
+      row.title = item.depth > 0 && session.parent_session_id ? "Child of " + session.parent_session_id : session.session_id || "";
+      const modeLabel = escapeHtml(formatModeLabels(session));
+      row.innerHTML = [
+        cell(formatShortDate(session.latest_event_at || session.created_at), session.latest_event_type || "created", "mono", item.depth),
+        cell(session.actor_subject || "-", session.source_system || session.actor_hint || "-"),
+        cell(session.work_item_id || session.branch || "-", [session.repo_url, session.branch].filter(Boolean).join(" / ") || session.use_case_id || "-"),
+        cell(session.routed_agent || session.agent || "-", [orphanHint, delegatedHint, childHint, modeLabel].filter(Boolean).join(" ") || "-", "", 0, true),
+        cell(summary.model_alias || "-", [summary.model_resolved, summary.gateway_backend].filter(Boolean).join(" / ") || "-"),
+        cell(humanLabel(session.status) || "-", session.patch_state ? "patch " + session.patch_state : (session.tool_call_count ? session.tool_call_count + " tool calls" : "-")),
+        cell(String(summary.total_tokens || 0), (summary.prompt_tokens || 0) + " in / " + (summary.completion_tokens || 0) + " out", "tokens"),
+        cell(formatCostValue(summary.estimated_cost_usd), costSourceLabel(summary.cost_source) || "unpriced", "cost"),
+        cell(session.trust_level || "-", session.enforcement_mode || "-"),
+      ].join("");
+      row.addEventListener("click", () => loadAuditTrail(session.session_id));
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          loadAuditTrail(session.session_id);
+        }
+      });
+      tbody.appendChild(row);
+    });
+    el.sessionList.appendChild(table);
+    markSelectedRow(state.selectedSessionID);
+  }
 
-      function cell(primary, secondary) {
-  return "<td><strong>" + escapeHtml(primary || "-") + "</strong><span>" + escapeHtml(secondary || "") + "</span></td>";
+  function groupSessions(sessions) {
+    const list = Array.isArray(sessions) ? sessions : [];
+    const byID = new Map();
+    list.forEach((session) => {
+      if (session && session.session_id) byID.set(session.session_id, session);
+    });
+    const childrenByParent = new Map();
+    const parents = [];
+    list.forEach((session) => {
+      const parentID = session && session.parent_session_id;
+      if (parentID && byID.has(parentID)) {
+        if (!childrenByParent.has(parentID)) childrenByParent.set(parentID, []);
+        childrenByParent.get(parentID).push(session);
+      } else {
+        parents.push(session);
       }
+    });
+    childrenByParent.forEach((children) => {
+      children.sort((a, b) => sessionTime(a) - sessionTime(b));
+    });
+    const rows = [];
+    parents.forEach((session) => {
+      const parentID = session && session.session_id;
+      const isOrphanChild = Boolean(session && session.parent_session_id && !byID.has(session.parent_session_id));
+      const children = parentID ? childrenByParent.get(parentID) || [] : [];
+      rows.push({ session, depth: 0, childCount: children.length, orphanChild: isOrphanChild });
+      children.forEach((child) => rows.push({ session: child, depth: 1, childCount: 0, orphanChild: false }));
+    });
+    return rows;
+  }
+
+  function sessionTime(session) {
+    const value = session && (session.latest_event_at || session.created_at);
+    const parsed = value ? new Date(value).getTime() : 0;
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+
+  function markSelectedRow(sessionID) {
+    const id = sessionID || "";
+    if (!el.sessionList) return;
+    el.sessionList.querySelectorAll("tbody tr[data-session-id]").forEach((row) => {
+      const selected = row.dataset.sessionId === id;
+      row.classList.toggle("selected", selected);
+      row.setAttribute("aria-selected", selected ? "true" : "false");
+    });
+  }
+
+  function cell(primary, secondary, className, depth, secondaryHTML) {
+    const primaryText = escapeHtml(primary || "-");
+    const prefix = depth > 0 ? "<span class=\"ledger-tree-glyph\" aria-hidden=\"true\">└</span>" : "";
+    const cls = className ? " class=\"" + escapeHtml(className) + "\"" : "";
+    const detail = secondaryHTML ? String(secondary || "") : escapeHtml(secondary || "");
+    return "<td" + cls + "><strong>" + prefix + primaryText + "</strong><span>" + detail + "</span></td>";
+  }
 
   function renderAuditTrail(audit) {
 	const sessionID = audit && audit.session_id ? audit.session_id : "";
 	const events = audit && Array.isArray(audit.events) ? audit.events : [];
 	const usage = audit && audit.usage_summary ? audit.usage_summary : null;
 	el.auditEventBadge.textContent = String(events.length);
-	el.auditSessionTitle.textContent = sessionID ? "Session Audit Trail" : "Session Audit Trail";
+	el.auditSessionTitle.textContent = sessionID ? "Audit · " + shortSessionID(sessionID) : "Session Audit Trail";
 	el.auditSummary.textContent = sessionID
 	  ? sessionID + " - " + events.length + " event" + (events.length === 1 ? "" : "s") + (usage ? " - " + formatTokenSummary(usage) + " - " + formatCostSummary(usage) : "")
 	  : "Select a session to inspect its governed events.";
@@ -528,7 +605,7 @@
       return;
     }
     state.selectedSessionID = sessionID;
-    renderSessions(state.lastSessions);
+    markSelectedRow(sessionID);
     const orgWide = hasAdminToken();
     const audit = orgWide
       ? await api("/v1/admin/audit/sessions/" + encodeURIComponent(sessionID), { headers: adminHeaders() })
@@ -549,6 +626,33 @@
 	const date = new Date(value);
 	if (Number.isNaN(date.getTime())) return String(value);
 	return date.toLocaleString([], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+      }
+
+      function shortSessionID(value) {
+	value = String(value || "");
+	if (value.length <= 18) return value;
+	return value.slice(0, 10) + "..." + value.slice(-6);
+      }
+
+      function defaultSelectedSessionID(sessions) {
+	const list = Array.isArray(sessions) ? sessions : [];
+	const parent = list.find((session) => session && !session.parent_session_id && session.session_id);
+	return (parent && parent.session_id) || (list[0] && list[0].session_id) || "";
+      }
+
+      function scrollSelectedSessionIntoView() {
+	if (!state.selectedSessionID || !el.sessionList) return;
+	const row = el.sessionList.querySelector("tr[data-session-id=\"" + cssEscape(state.selectedSessionID) + "\"]");
+	if (row && typeof row.scrollIntoView === "function") {
+	  row.scrollIntoView({ block: "nearest" });
+	}
+      }
+
+      function cssEscape(value) {
+	if (window.CSS && typeof window.CSS.escape === "function") {
+	  return window.CSS.escape(value);
+	}
+	return String(value || "").replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
       }
 
       function formatModeLabels(session) {
@@ -722,9 +826,10 @@
       const sessions = response.sessions || [];
       const selectedStillExists = sessions.some((session) => session.session_id === state.selectedSessionID);
       renderSessions(sessions);
-      const nextSessionID = selectedStillExists ? state.selectedSessionID : (sessions[0] && sessions[0].session_id) || "";
+      const nextSessionID = selectedStillExists ? state.selectedSessionID : defaultSelectedSessionID(sessions);
       if (nextSessionID) {
         await loadAuditTrail(nextSessionID);
+        scrollSelectedSessionIntoView();
       } else {
         state.selectedSessionID = "";
         renderAuditTrail({ session_id: "", events: [] });

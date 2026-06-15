@@ -1,9 +1,8 @@
 # Copilot-backed local profile.
 #
 # Usage:
-#   export AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY='<local secret>'
 #   scripts/copilot-verify.sh
-#   docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d governance-shell orchestrator
+#   scripts/copilot-compose-up.sh
 
 services:
   bifrost:

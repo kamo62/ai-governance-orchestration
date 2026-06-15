@@ -350,44 +350,114 @@ The model gateway uses `AI_ORCH_RUNTIME_TOKEN`, not `AI_ORCH_DEV_TOKEN`. Runtime
 
 ### GitHub Copilot User Backend
 
-The experimental Copilot backend is per-user and actor-bound. It is intended for internal beta use where developers already have Copilot seats. In the team shape, this runs on the central ai-orch server; developers do not run Docker locally just to use OpenCode or Cline.
+The experimental Copilot backend is per-user and actor-bound. It is intended for internal beta use where developers already have Copilot seats. Keep two flows separate:
 
-Operator setup on the central server:
+- **Local operator flow**: starts a local Docker Compose Governance Shell and model gateway on the developer/operator machine.
+- **Deployed gateway flow**: a QA/prod/shared Governance Shell is already running; developers only enroll their local OpenCode config against that deployed gateway.
+
+#### Local Operator Flow
+
+Use this only when you are running the local Copilot-backed stack yourself:
 
 ```sh
-export AI_ORCH_MODEL_BACKEND=copilot-user
-export AI_ORCH_COPILOT_TOKEN_DB=/app/var/audit/copilot-tokens.db
-export AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY='<server secret>'
-docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d orchestrator governance-shell
+cd ai-agent-orch
+scripts/copilot-verify.sh
+scripts/local-copilot-compose-up.sh
 ```
 
-Developer enrollment against that server:
+`scripts/local-copilot-compose-up.sh` starts the Copilot-backed Governance Shell with
+`AI_ORCH_MODEL_BACKEND=copilot-user`. It supplies the server-side Copilot
+token-store encryption key from `AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY` or the
+local key file created by `scripts/copilot-verify.sh`
+(`~/.ai-orch/copilot-token.key`). This value is not a GitHub Copilot OAuth token
+and should not be confused with a developer's per-user Copilot credential. Each
+developer still authenticates with their own GitHub/Copilot account through
+`ai-orch copilot login` or `ai-orch developer enroll --client opencode`, so
+Copilot usage remains actor-bound for audit and billing attribution. For shared
+or production-like deployments, store `AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY` in
+the deployment secret manager and keep it stable across restarts; rotating it
+without re-encrypting/re-enrolling makes the stored Copilot token database
+unreadable.
+
+The helper also supplies a generated `BIFROST_ENCRYPTION_KEY` when absent. The
+base Compose file validates that variable even when `docker-compose.copilot.yml`
+disables Bifrost, so this placeholder avoids accidental startup failures in a
+Copilot-only local stack. After the gateway is healthy, the helper refreshes any
+existing global or project OpenCode config so provider/model metadata changes
+(for example image attachment support or endpoint routing) reach developers who
+start `opencode` directly. Set `AI_ORCH_REFRESH_OPENCODE=false` to skip this
+automatic local refresh.
+
+`scripts/copilot-compose-up.sh` remains as a compatibility wrapper for the local
+operator flow, but new docs and automation should use `scripts/local-copilot-compose-up.sh`.
+
+#### Deployed Gateway Developer Flow
+
+Use this when QA/prod/shared AI-Orch is already running and you only need to
+configure a developer machine to run `opencode` directly through that gateway:
 
 ```sh
 cd ai-agent-orch
 AI_ORCH_GOVERNANCE_URL=https://ai-orch.example.com \
 AI_ORCH_MODEL_GATEWAY_URL=https://models.ai-orch.example.com \
 AI_ORCH_DEV_TOKEN=<developer-enrollment-token-or-id-token> \
-scripts/enroll-developer-copilot-opencode.sh
+scripts/deployed-opencode-enroll.sh
 ```
 
-The script starts or refreshes the developer's Copilot enrollment through the Governance Shell, verifies the actor can list Copilot models, asks the server for a 90-day revocable AI-Orch runtime credential, then installs or refreshes the `ai-orch` OpenCode provider config. During install, `ai-orch opencode install-config` calls the model gateway's `/v1/models` endpoint with the developer actor context and imports the live governed model list into OpenCode. That list is route-aware: a Copilot-only server exposes Copilot-routable aliases and the actor's live Copilot picker models, not OpenRouter-only aliases that the current backend cannot execute. The Copilot OAuth credential is stored encrypted in the server-side ai-orch token store for that actor. It is not copied into OpenCode, Cline, the Orchestrator, or project files. The installed refresh job updates only AI-Orch-routed OpenCode config and model aliases; it does not store OpenRouter, Foundry, Bedrock or Copilot provider keys on the developer machine.
+The deployed enrollment script starts or refreshes the developer's Copilot
+enrollment through the Governance Shell, verifies the actor can list Copilot
+models, asks the server for a 90-day revocable AI-Orch runtime credential, then
+installs or refreshes the `ai-orch` OpenCode provider config. During install,
+`ai-orch opencode install-config` calls the model gateway's `/v1/models` endpoint
+with the developer actor context and imports the live governed model list into
+OpenCode. That list is route-aware: a Copilot-only server exposes
+Copilot-routable aliases and the actor's live Copilot picker models, not
+OpenRouter-only aliases that the current backend cannot execute. The generated
+model entries also advertise OpenCode image attachment support (`attachment: true`
+and `modalities.input: ["text", "image"]`) so multimodal Copilot/GPT-5-class
+routes can accept pasted screenshots. The Copilot OAuth credential is stored
+encrypted in the server-side ai-orch token store for that actor. It is not copied
+into OpenCode, Cline, the Orchestrator, or project files. The installed refresh
+job updates only AI-Orch-routed OpenCode config and model aliases; it does not
+store OpenRouter, Foundry, Bedrock or Copilot provider keys on the developer
+machine.
 
 
-Developer refresh commands:
+Developer refresh commands for a deployed gateway:
 
 ```sh
-ai-orch developer enroll --client opencode --scope global
-ai-orch opencode refresh --scope global
+# One-time or when a developer's local credential/config needs repair.
+scripts/deployed-opencode-enroll.sh
+
+# Manual refresh if needed. Enrollment installs an automatic refresh job by default.
+scripts/deployed-opencode-refresh.sh
+
+# Optional model route smoke.
 ai-orch bench run --workflow smoke --models all-enabled
 ```
 
+Developers run `opencode` directly after enrollment. They should not have to remember
+whether a gateway change affected model metadata, image attachments, or the
+chat/Responses provider split. In local Copilot-backed deployments,
+`scripts/local-copilot-compose-up.sh` refreshes existing OpenCode configs after the
+Gateway is healthy. In deployed QA/prod/shared deployments, enrollment installs
+the user-level refresh job by default so local config metadata stays current
+without developers copying provider keys or rerunning setup manually.
+
 Provider readiness is available to operators through `/v1/admin/providers/status`. It reports configured/missing status for OpenRouter, Azure AI Foundry, Bedrock, OpenAI, Anthropic, DeepSeek and Copilot enrolments without returning secret values.
+
+Validate the generated OpenCode agent/model matrix after backend or routing changes:
+
+```sh
+AI_ORCH_ACTOR_SUBJECT=<developer-actor> scripts/opencode-agent-matrix-smoke.sh
+```
+
+This smoke reads `ai-orch opencode generate-config`, then calls each configured agent model through the correct gateway surface. It catches endpoint mismatches between logical capability routes (for example `coding-gpt55`) and transport-specific provider surfaces (`/v1/chat/completions` vs `/v1/responses`). Passing this matrix proves the configured agents can at least reach their governed model route; full patch/tool behavior still needs OpenCode E2E or client-level tests.
 
 
 OpenCode and Cline still point only at ai-orch. Do not configure developer tools to call `github-copilot`, OpenRouter, Bifrost, OpenAI, Anthropic, or provider APIs directly in governed mode.
 
-Generic OpenAI-compatible clients often call `/v1/chat/completions`. ai-orch follows the same Copilot endpoint rule used by OpenCode's native Copilot provider: GPT-5-class non-mini Copilot models use upstream `/responses`, while `gpt-5-mini`, Anthropic/Claude and GPT-4-class Copilot models use chat completions. For Custom/OpenAI-compatible clients that still call chat for `gpt-5.5` or `gpt-5.3-codex`, the gateway converts the chat request, including function tools and tool-result turns, to Responses and translates Responses text, usage and function-call SSE back into chat-completion chunks for the client.
+Generic OpenAI-compatible clients often call `/v1/chat/completions`. ai-orch follows the same Copilot endpoint rule used by OpenCode's native Copilot provider: GPT-5.3+/5.4/5.5 Copilot models are served only on upstream `/responses`, while `gpt-5-mini`, Anthropic/Claude and Gemini Copilot models use chat completions. The generated OpenCode config is explicit about this: those Responses-only aliases are placed under the `ai-orch-responses` provider (`@ai-sdk/openai` -> `/v1/responses`), so OpenCode does not call chat for them. The chat-to-Responses bridge is compatibility/fallback behavior for other custom OpenAI-compatible clients that only support `/v1/chat/completions` and still send `gpt-5.5` or `gpt-5.3-codex`: the gateway converts the chat request, including function tools and tool-result turns, to Responses and translates Responses text, usage and function-call SSE back into chat-completion chunks for the client.
 
 ### Backend Control From The UI
 

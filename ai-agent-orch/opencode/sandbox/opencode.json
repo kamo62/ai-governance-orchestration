@@ -1,154 +1,266 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "enabled_providers": ["ai-orch"],
-  "model": "ai-orch/coding-gpt55",
-  "small_model": "ai-orch/coding-fast",
   "agent": {
-    "governance-lead": {
-      "description": "Clarifies intent, classifies risk, attaches context, and chooses the next ai-orch specialist.",
-      "mode": "primary",
-      "model": "ai-orch/coding-gpt55",
-      "reasoningEffort": "low",
-      "temperature": 0.1,
-      "steps": 6,
+    "architecture-review": {
+      "description": "Reviews service boundaries, data flow, runtime shape, and tradeoffs.",
+      "mode": "subagent",
       "permission": {
-        "read": "allow",
-        "list": "allow",
-        "grep": "allow",
-        "glob": "allow",
-        "edit": "deny",
         "bash": "deny",
-        "task": [
-          "code-review",
-          "unit-tests",
-          "backend-development",
-          "frontend-development",
-          "security-review",
-          "architecture-review",
-          "documentation",
-          "refactor",
-          "security-scan",
-          "terraform-review"
-        ]
+        "edit": "deny",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "read": "allow"
       },
-      "prompt": "You are the ai-orch governance lead. Clarify intent, classify risk, attach work-item context, and choose a specialist subagent. Do not edit files or run shell commands."
-    },
-    "code-review": {
-      "description": "Reviews code and diffs for bugs, regressions, and missing tests.",
-      "mode": "subagent",
-      "reasoningEffort": "medium",
-      "permission": {"read": "allow", "list": "allow", "grep": "allow", "glob": "allow", "edit": "deny", "bash": "deny"},
-      "prompt": "Review code with severity-ordered findings. Do not edit files."
-    },
-    "unit-tests": {
-      "description": "Adds or updates focused tests using existing project patterns.",
-      "mode": "subagent",
-      "reasoningEffort": "medium",
-      "permission": {"read": "allow", "list": "allow", "grep": "allow", "glob": "allow", "edit": "ask", "bash": "ask"},
-      "prompt": "Add focused tests for the requested behavior. Follow existing test patterns and avoid unrelated refactors."
+      "prompt": "Assess architecture, boundaries, risks, and tradeoffs without editing files.",
+      "reasoningEffort": "medium"
     },
     "backend-development": {
       "description": "Implements backend code, APIs, data access, and server-side tests.",
       "mode": "subagent",
-      "reasoningEffort": "medium",
-      "permission": {"read": "allow", "list": "allow", "grep": "allow", "glob": "allow", "edit": "ask", "bash": "ask"},
-      "prompt": "Implement backend changes narrowly, with tests and existing project conventions."
+      "model": "ai-orch/coding-gpt55",
+      "permission": {
+        "bash": "ask",
+        "edit": "ask",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "read": "allow"
+      },
+      "prompt": "Implement backend changes narrowly, with tests and existing project conventions. Use OpenCode edit operations for file changes; never run apply_patch or shell patch heredocs.",
+      "reasoningEffort": "medium"
     },
-    "frontend-development": {
-      "description": "Implements frontend UI, client behavior, and browser-facing tests.",
+    "code-review": {
+      "description": "Reviews code and diffs for bugs, regressions, and missing tests.",
       "mode": "subagent",
-      "reasoningEffort": "medium",
-      "permission": {"read": "allow", "list": "allow", "grep": "allow", "glob": "allow", "edit": "ask", "bash": "ask"},
-      "prompt": "Implement frontend changes narrowly, preserving accessibility and existing design patterns."
-    },
-    "security-review": {
-      "description": "Reviews security-sensitive code, dependencies, containers, and data exposure risks.",
-      "mode": "subagent",
-      "reasoningEffort": "high",
-      "permission": {"read": "allow", "list": "allow", "grep": "allow", "glob": "allow", "edit": "deny", "bash": "deny"},
-      "prompt": "Perform a security review with concrete findings. Do not print raw secrets."
-    },
-    "architecture-review": {
-      "description": "Reviews service boundaries, data flow, runtime shape, and tradeoffs.",
-      "mode": "subagent",
-      "reasoningEffort": "medium",
-      "permission": {"read": "allow", "list": "allow", "grep": "allow", "glob": "allow", "edit": "deny", "bash": "deny"},
-      "prompt": "Assess architecture, boundaries, risks, and tradeoffs without editing files."
+      "model": "ai-orch/coding-gpt55",
+      "permission": {
+        "bash": "deny",
+        "edit": "deny",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "read": "allow"
+      },
+      "prompt": "Review code with severity-ordered findings. Do not edit files.",
+      "reasoningEffort": "medium"
     },
     "documentation": {
       "description": "Improves developer-facing documentation.",
       "mode": "subagent",
-      "reasoningEffort": "medium",
-      "permission": {"read": "allow", "list": "allow", "grep": "allow", "glob": "allow", "edit": "ask", "bash": "ask"},
-      "prompt": "Update documentation to reflect implemented behavior. Remove stale instructions."
+      "model": "ai-orch/copilot-gemini-3.5-flash",
+      "permission": {
+        "bash": "ask",
+        "edit": "ask",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "read": "allow"
+      },
+      "prompt": "Update documentation to reflect implemented behavior. Remove stale instructions. Use OpenCode edit operations for file changes; never run apply_patch or shell patch heredocs.",
+      "reasoningEffort": "medium"
+    },
+    "frontend-development": {
+      "description": "Implements frontend UI, client behavior, and browser-facing tests.",
+      "mode": "subagent",
+      "model": "ai-orch/copilot-claude-opus-4.8",
+      "permission": {
+        "bash": "ask",
+        "edit": "ask",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "read": "allow"
+      },
+      "prompt": "Implement frontend changes narrowly, preserving accessibility and existing design patterns. Use OpenCode edit operations for file changes; never run apply_patch or shell patch heredocs.",
+      "reasoningEffort": "medium"
+    },
+    "governance-lead": {
+      "description": "Clarifies intent, classifies risk, attaches context, and chooses the next ai-orch specialist.",
+      "mode": "primary",
+      "model": "ai-orch-responses/copilot-gpt-5.4-mini",
+      "permission": {
+        "bash": "deny",
+        "edit": "deny",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "read": "allow",
+        "task": {
+          "architecture-review": "ask",
+          "backend-development": "ask",
+          "code-review": "ask",
+          "documentation": "ask",
+          "frontend-development": "ask",
+          "refactor": "ask",
+          "security-review": "ask",
+          "security-scan": "ask",
+          "terraform-review": "ask",
+          "unit-tests": "ask"
+        }
+      },
+      "prompt": "You are the ai-orch governance lead. Clarify intent, classify risk, attach work-item context, and choose a specialist subagent. For requests to add or improve tests, recommend the unit-tests subagent and ask before launching it with the Task tool. Do not edit files or run shell commands.",
+      "reasoningEffort": "low",
+      "steps": 6,
+      "temperature": 0.1
     },
     "refactor": {
       "description": "Performs scoped behavior-preserving cleanup.",
       "mode": "subagent",
-      "reasoningEffort": "medium",
-      "permission": {"read": "allow", "list": "allow", "grep": "allow", "glob": "allow", "edit": "ask", "bash": "ask"},
-      "prompt": "Refactor narrowly without changing public behavior."
+      "model": "ai-orch/coding-gpt55",
+      "permission": {
+        "bash": "ask",
+        "edit": "ask",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "read": "allow"
+      },
+      "prompt": "Refactor narrowly without changing public behavior. Use OpenCode edit operations for file changes; never run apply_patch or shell patch heredocs.",
+      "reasoningEffort": "medium"
+    },
+    "security-review": {
+      "description": "Reviews security-sensitive code, dependencies, containers, and data exposure risks.",
+      "mode": "subagent",
+      "permission": {
+        "bash": "deny",
+        "edit": "deny",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "read": "allow"
+      },
+      "prompt": "Perform a security review with concrete findings. Do not print raw secrets.",
+      "reasoningEffort": "high"
     },
     "security-scan": {
       "description": "Scans for likely secret exposure and auth or data handling issues.",
       "mode": "subagent",
-      "reasoningEffort": "high",
-      "permission": {"read": "allow", "list": "allow", "grep": "allow", "glob": "allow", "edit": "deny", "bash": "deny"},
-      "prompt": "Scan for security risks and summarize findings without exposing raw secrets."
+      "permission": {
+        "bash": "deny",
+        "edit": "deny",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "read": "allow"
+      },
+      "prompt": "Scan for security risks and summarize findings without exposing raw secrets.",
+      "reasoningEffort": "high"
     },
     "terraform-review": {
       "description": "Reviews Terraform and infrastructure definitions for security, cost, and reliability.",
       "mode": "subagent",
-      "reasoningEffort": "medium",
-      "permission": {"read": "allow", "list": "allow", "grep": "allow", "glob": "allow", "edit": "deny", "bash": "deny"},
-      "prompt": "Review infrastructure code for security, cost, reliability, and state-management risks."
+      "permission": {
+        "bash": "deny",
+        "edit": "deny",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "read": "allow"
+      },
+      "prompt": "Review infrastructure code for security, cost, reliability, and state-management risks.",
+      "reasoningEffort": "medium"
+    },
+    "unit-tests": {
+      "description": "Adds or updates focused tests using existing project patterns.",
+      "mode": "subagent",
+      "model": "ai-orch/copilot-gpt-5-mini",
+      "permission": {
+        "bash": "ask",
+        "edit": "ask",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "read": "allow"
+      },
+      "prompt": "Add focused tests for the requested behavior. Follow existing test patterns and avoid unrelated refactors. Use OpenCode edit operations for file changes; never run apply_patch or shell patch heredocs.",
+      "reasoningEffort": "medium"
     }
   },
+  "enabled_providers": [
+    "ai-orch",
+    "ai-orch-responses"
+  ],
+  "model": "ai-orch/coding-gpt55",
+  "plugin": [
+    "/opencode/ai-orch-context.ts"
+  ],
   "provider": {
     "ai-orch": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "AI Orch Governed Router",
-      "options": {
-        "baseURL": "http://governance-shell:18082/v1",
-        "apiKey": "{env:AI_ORCH_RUNTIME_TOKEN}",
-        "headers": {
-          "X-AI-Orch-Session-ID": "{env:AI_ORCH_SESSION_ID}",
-          "X-AI-Orch-Session-Token": "{env:AI_ORCH_SESSION_TOKEN}",
-          "X-AI-Orch-Actor-Subject": "{env:AI_ORCH_ACTOR_SUBJECT}",
-          "X-AI-Orch-Intent": "{env:AI_ORCH_INTENT}",
-          "X-AI-Orch-Client": "opencode",
-          "X-AI-Orch-Classification": "internal"
-        }
-      },
       "models": {
-        "coding-gpt55": {
-          "name": "Governed GPT-5.5 Capability Route"
-        },
-        "openrouter-openai-gpt55": {
-          "name": "Governed OpenRouter OpenAI GPT-5.5"
-        },
-        "copilot-gpt-5-mini": {
-          "name": "Governed Copilot GPT-5 Mini"
-        },
-        "copilot-gpt-5.3-codex": {
-          "name": "Governed Copilot GPT-5.3 Codex"
-        },
-        "copilot-gpt-5.5": {
-          "name": "Governed Copilot GPT-5.5"
-        },
-        "coding-primary": {
-          "name": "Governed Coding Primary"
-        },
         "coding-balanced": {
           "name": "Governed Coding Balanced"
+        },
+        "coding-economy": {
+          "name": "Governed Coding Economy"
         },
         "coding-fast": {
           "name": "Governed Coding Fast"
         },
-        "coding-economy": {
-          "name": "Governed Coding Economy"
+        "coding-gpt55": {
+          "name": "Governed GPT-5.5 Capability Route"
+        },
+        "coding-primary": {
+          "name": "Governed Coding Primary"
+        },
+        "copilot-claude-opus-4.8": {
+          "name": "Governed Copilot Claude Opus 4.8"
+        },
+        "copilot-gemini-3.5-flash": {
+          "name": "Governed Copilot Gemini 3.5 Flash"
+        },
+        "copilot-gpt-5-mini": {
+          "name": "Governed Copilot GPT-5 Mini"
+        },
+        "copilot-gpt-5.4-mini": {
+          "name": "Governed Copilot GPT-5.4 Mini"
+        },
+        "openrouter-openai-gpt55": {
+          "name": "Governed OpenRouter OpenAI GPT-5.5"
+        }
+      },
+      "name": "AI Orch Governed Router",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "{env:AI_ORCH_RUNTIME_TOKEN}",
+        "baseURL": "http://governance-shell:18082/v1",
+        "headers": {
+          "X-AI-Orch-Actor-Subject": "{env:AI_ORCH_ACTOR_SUBJECT}",
+          "X-AI-Orch-Classification": "internal",
+          "X-AI-Orch-Client": "opencode",
+          "X-AI-Orch-Intent": "{env:AI_ORCH_INTENT}",
+          "X-AI-Orch-Session-ID": "{env:AI_ORCH_SESSION_ID}",
+          "X-AI-Orch-Session-Token": "{env:AI_ORCH_SESSION_TOKEN}"
+        }
+      }
+    },
+    "ai-orch-responses": {
+      "models": {
+        "copilot-gpt-5.3-codex": {
+          "name": "Governed Copilot GPT-5.3 Codex"
+        },
+        "copilot-gpt-5.4-mini": {
+          "name": "Governed Copilot GPT-5.4 Mini"
+        },
+        "copilot-gpt-5.5": {
+          "name": "Governed Copilot GPT-5.5"
+        }
+      },
+      "name": "AI Orch Governed Router (Responses)",
+      "npm": "@ai-sdk/openai",
+      "options": {
+        "apiKey": "{env:AI_ORCH_RUNTIME_TOKEN}",
+        "baseURL": "http://governance-shell:18082/v1",
+        "headers": {
+          "X-AI-Orch-Actor-Subject": "{env:AI_ORCH_ACTOR_SUBJECT}",
+          "X-AI-Orch-Classification": "internal",
+          "X-AI-Orch-Client": "opencode",
+          "X-AI-Orch-Intent": "{env:AI_ORCH_INTENT}",
+          "X-AI-Orch-Session-ID": "{env:AI_ORCH_SESSION_ID}",
+          "X-AI-Orch-Session-Token": "{env:AI_ORCH_SESSION_TOKEN}"
         }
       }
     }
-  }
+  },
+  "small_model": "ai-orch/coding-fast"
 }

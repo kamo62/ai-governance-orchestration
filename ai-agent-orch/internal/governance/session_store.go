@@ -50,6 +50,11 @@ type SessionRecord struct {
 	Intent       string
 	ActorHint    string
 	SourceSystem string
+	// ClientSessionID correlates an auto-created gateway session with the
+	// caller's own conversation id (for example an OpenCode session id), so a
+	// single conversation reuses one governed session instead of minting one
+	// per model call. Empty for wrapper-created and control-plane sessions.
+	ClientSessionID string
 	// Cost/value sizing.
 	StoryPoints         int
 	EstimatedDevDays    float64
@@ -153,11 +158,17 @@ func (s *SQLiteSessionStore) migrate() error {
 		"routed_agent":                 "TEXT NOT NULL DEFAULT ''",
 		"routing_confidence":           "TEXT NOT NULL DEFAULT ''",
 		"human_confirmation_required":  "INTEGER NOT NULL DEFAULT 0",
+		"client_session_id":            "TEXT NOT NULL DEFAULT ''",
 	}
 	for col, def := range cols {
 		if err := s.ensureSessionColumn(col, def); err != nil {
 			return err
 		}
+	}
+	// Index supports auto-session reuse lookups keyed by the caller's
+	// conversation id within an actor.
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_actor_client ON sessions(actor_subject, client_session_id)`); err != nil {
+		return fmt.Errorf("create sessions actor/client index: %w", err)
 	}
 	return nil
 }
@@ -204,20 +215,20 @@ func (s *SQLiteSessionStore) Create(ctx context.Context, rec SessionRecord) erro
 			use_case_id, workflow_id, work_item_id, work_item_type, repo_url, branch, commit_sha, intent, actor_hint, source_system,
 			story_points, estimated_dev_days, blended_day_rate_usd, baseline_cost_usd,
 			model_cost_usd, tool_cost_usd, platform_cost_usd, review_cost_usd,
-			verification_cost_usd, retry_count, gateway_token_sha256, runtime_gateway_token_sha256
+			verification_cost_usd, retry_count, gateway_token_sha256, runtime_gateway_token_sha256, client_session_id
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?, ?)
+			?, ?, ?, ?, ?)
 	`,
 		rec.SessionID, rec.ParentSessionID, rec.ActorSubject, rec.Agent, rec.RoutedAgent, rec.RoutingConfidence, boolToInt(rec.HumanConfirmationRequired), rec.Classification, rec.PromptSHA256, rec.Status, rec.CreatedAt.Format(time.RFC3339Nano),
 		rec.RunID, rec.PermissionMode, rec.ApprovalMode, rec.WorkspaceMode,
 		rec.UseCaseID, rec.WorkflowID, rec.WorkItemID, rec.WorkItemType, rec.RepoURL, rec.Branch, rec.CommitSHA, rec.Intent, rec.ActorHint, rec.SourceSystem,
 		rec.StoryPoints, rec.EstimatedDevDays, rec.BlendedDayRateUSD, rec.BaselineCostUSD,
 		rec.ModelCostUSD, rec.ToolCostUSD, rec.PlatformCostUSD, rec.ReviewCostUSD,
-		rec.VerificationCostUSD, rec.RetryCount, rec.GatewayTokenSHA256, rec.RuntimeGatewayTokenSHA256,
+		rec.VerificationCostUSD, rec.RetryCount, rec.GatewayTokenSHA256, rec.RuntimeGatewayTokenSHA256, rec.ClientSessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("insert session: %w", err)
@@ -238,7 +249,7 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, sessionID string) (Session
 				COALESCE(story_points, 0), COALESCE(estimated_dev_days, 0), COALESCE(blended_day_rate_usd, 0),
 				COALESCE(baseline_cost_usd, 0), COALESCE(model_cost_usd, 0), COALESCE(tool_cost_usd, 0),
 				COALESCE(platform_cost_usd, 0), COALESCE(review_cost_usd, 0),
-				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, '')
+				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, ''), COALESCE(client_session_id, '')
 			FROM sessions WHERE session_id = ?
 	`, sessionID).Scan(
 		&rec.SessionID, &rec.ParentSessionID, &rec.ActorSubject, &rec.Agent, &rec.RoutedAgent, &rec.RoutingConfidence, &humanConfirmationRequired, &rec.Classification, &rec.PromptSHA256, &rec.Status, &createdAtStr,
@@ -246,7 +257,7 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, sessionID string) (Session
 		&rec.UseCaseID, &rec.WorkflowID, &rec.WorkItemID, &rec.WorkItemType, &rec.RepoURL, &rec.Branch, &rec.CommitSHA, &rec.Intent, &rec.ActorHint, &rec.SourceSystem,
 		&rec.StoryPoints, &rec.EstimatedDevDays, &rec.BlendedDayRateUSD, &rec.BaselineCostUSD,
 		&rec.ModelCostUSD, &rec.ToolCostUSD, &rec.PlatformCostUSD, &rec.ReviewCostUSD,
-		&rec.VerificationCostUSD, &rec.RetryCount, &rec.GatewayTokenSHA256, &rec.RuntimeGatewayTokenSHA256,
+		&rec.VerificationCostUSD, &rec.RetryCount, &rec.GatewayTokenSHA256, &rec.RuntimeGatewayTokenSHA256, &rec.ClientSessionID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SessionRecord{}, fmt.Errorf("session not found")
@@ -257,6 +268,48 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, sessionID string) (Session
 	rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAtStr)
 	rec.HumanConfirmationRequired = humanConfirmationRequired != 0
 	return rec, nil
+}
+
+// clientSessionReuseWindow bounds how long a client conversation id keeps
+// reusing the same governed session. Past it, a new session is created so stale
+// or abandoned conversation ids cannot bind new traffic to old context.
+const clientSessionReuseWindow = 12 * time.Hour
+
+// FindActiveByActorClientSession returns the most recent non-terminal session
+// for the given actor and caller conversation id, created within the reuse
+// window. It powers auto-session reuse so one client conversation maps to one
+// governed session instead of one per model call. Returns ok=false when no
+// active, recent match exists.
+func (s *SQLiteSessionStore) FindActiveByActorClientSession(ctx context.Context, actorSubject, clientSessionID string) (SessionRecord, bool, error) {
+	actorSubject = strings.TrimSpace(actorSubject)
+	clientSessionID = strings.TrimSpace(clientSessionID)
+	if actorSubject == "" || clientSessionID == "" {
+		return SessionRecord{}, false, nil
+	}
+	// Bound reuse to a recent window so a stale or abandoned client conversation
+	// id cannot bind new traffic to an old governed session indefinitely. Past
+	// the window, a fresh session is created for the same client id.
+	cutoff := time.Now().UTC().Add(-clientSessionReuseWindow).Format(time.RFC3339Nano)
+	var sessionID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT session_id FROM sessions
+		WHERE actor_subject = ? AND client_session_id = ?
+			AND status NOT IN ('done', 'failed', 'confirm_failed', 'aborted')
+			AND created_at > ?
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, actorSubject, clientSessionID, cutoff).Scan(&sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SessionRecord{}, false, nil
+	}
+	if err != nil {
+		return SessionRecord{}, false, fmt.Errorf("find session by client id: %w", err)
+	}
+	rec, err := s.Get(ctx, sessionID)
+	if err != nil {
+		return SessionRecord{}, false, err
+	}
+	return rec, true, nil
 }
 
 func (s *SQLiteSessionStore) ListRecent(ctx context.Context, actorSubject string, limit int) ([]SessionRecord, error) {

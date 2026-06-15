@@ -559,15 +559,15 @@ func TestGatewayChatCompletionsClampsLeadReasoningEffort(t *testing.T) {
 func TestGatewayChatCompletionsStripsReasoningForUnsupportedRoute(t *testing.T) {
 	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
 	backend := &rawFakeBackend{
-		chat: []byte(`{"id":"chatcmpl-test","model":"gpt-5.5","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`),
+		chat: []byte(`{"id":"chatcmpl-test","model":"gpt-5-mini","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`),
 	}
 	g := NewGateway(GatewayConfig{
 		RuntimeToken: "runtime-test-token",
 		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
 			{
-				Alias:                  "copilot-gpt-5.5",
+				Alias:                  "copilot-gpt-5-mini",
 				Provider:               "copilot-user",
-				ModelID:                "gpt-5.5",
+				ModelID:                "gpt-5-mini",
 				AllowedClassifications: []string{"public", "internal"},
 				Reasoning: catalog.ReasoningMetadata{
 					DefaultEffort:  "low",
@@ -583,7 +583,7 @@ func TestGatewayChatCompletionsStripsReasoningForUnsupportedRoute(t *testing.T) 
 			return SessionInfo{Classification: "internal", ActorSubject: "dev@example.test", Agent: "governance-lead", Status: "running"}, nil
 		},
 	})
-	body := []byte(`{"model":"copilot-gpt-5.5","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"high"}`)
+	body := []byte(`{"model":"copilot-gpt-5-mini","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"high"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer runtime-test-token")
 	req.Header.Set("X-AI-Orch-Session-ID", "sess_unsupported_reasoning")
@@ -603,6 +603,60 @@ func TestGatewayChatCompletionsStripsReasoningForUnsupportedRoute(t *testing.T) 
 		t.Fatalf("expected one audit event, got %d", len(events))
 	}
 	if events[0].ReasoningEffortRequested != "high" || events[0].ReasoningEffortApplied != "" || events[0].ReasoningSource != "provider_default" {
+		t.Fatalf("unexpected reasoning audit fields: %#v", events[0])
+	}
+}
+
+func TestGatewayChatCompletionsEmitsFlatReasoningEffortForCopilot(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	backend := &rawFakeBackend{
+		chat: []byte(`{"id":"chatcmpl-test","model":"claude-opus-4.8","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`),
+	}
+	g := NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+			{
+				Alias:                  "copilot-claude-opus-4.8",
+				Provider:               "copilot-user",
+				ModelID:                "claude-opus-4.8",
+				AllowedClassifications: []string{"public", "internal"},
+				Reasoning: catalog.ReasoningMetadata{
+					DefaultEffort:  "low",
+					MaxEffort:      "xhigh",
+					SupportsEffort: boolPtr(true),
+				},
+			},
+		}}, nil),
+		Backend: backend,
+		Audit:   auditStore,
+		NewID:   func(prefix string) string { return prefix + "_test" },
+		LookupSession: func(context.Context, string) (SessionInfo, error) {
+			return SessionInfo{Classification: "internal", ActorSubject: "dev@example.test", Agent: "frontend-development", Status: "running"}, nil
+		},
+	})
+	body := []byte(`{"model":"copilot-claude-opus-4.8","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"xhigh"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-test-token")
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_copilot_reasoning")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(backend.lastRaw.Body, []byte(`"reasoning_effort":"xhigh"`)) {
+		t.Fatalf("expected flat reasoning_effort for copilot route, got %s", string(backend.lastRaw.Body))
+	}
+	if bytes.Contains(backend.lastRaw.Body, []byte(`"reasoning":{`)) {
+		t.Fatalf("expected no nested reasoning object for copilot route, got %s", string(backend.lastRaw.Body))
+	}
+	events, err := auditStore.EventsBySession(context.Background(), "sess_copilot_reasoning")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one audit event, got %d", len(events))
+	}
+	if events[0].ReasoningEffortApplied != "xhigh" || events[0].ReasoningSource != "client" {
 		t.Fatalf("unexpected reasoning audit fields: %#v", events[0])
 	}
 }
@@ -685,6 +739,93 @@ func TestGatewayChatCompletionsAutoCreatesSession(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].EventType != "model.gateway_call" || events[0].Actor != "dev@example.test" {
 		t.Fatalf("unexpected audit events: %#v", events)
+	}
+}
+
+func TestGatewayChatCompletionsAutoCreatesSessionWithUnresolvedEnvPlaceholders(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	backend := &fakeChatClient{
+		resp: openrouter.ChatCompletionResponse{
+			ID: "chatcmpl-auto-placeholder",
+			Choices: []struct {
+				Message openrouter.Message `json:"message"`
+			}{
+				{Message: openrouter.Message{Role: "assistant", Content: "Hello"}},
+			},
+			Usage: openrouter.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+		},
+	}
+	body := []byte(`{"model":"coding-primary","messages":[{"role":"user","content":"hello"}]}`)
+	autoSessionCalled := false
+	g := NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+			{Alias: "coding-primary", Provider: "openrouter", ModelID: "anthropic/claude-opus-4.7", AllowedClassifications: []string{"public", "internal"}},
+		}}, nil),
+		Backend: backend,
+		Audit:   auditStore,
+		NewID:   func(prefix string) string { return prefix + "_test" },
+		AutoSession: func(_ context.Context, req AutoSessionRequest) (SessionInfo, error) {
+			autoSessionCalled = true
+			if req.ActorSubject != "dev@example.test" || req.ModelAlias != "coding-primary" {
+				t.Fatalf("unexpected auto session request: %#v", req)
+			}
+			return SessionInfo{SessionID: "sess_auto_placeholder", ActorSubject: req.ActorSubject, Classification: req.Classification, Status: "running", GatewayToken: "sgt_auto"}, nil
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-test-token")
+	req.Header.Set("X-AI-Orch-Session-ID", "{env:AI_ORCH_SESSION_ID}")
+	req.Header.Set("X-AI-Orch-Session-Token", "{env:AI_ORCH_SESSION_TOKEN}")
+	req.Header.Set("X-AI-Orch-Actor-Subject", "dev@example.test")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !autoSessionCalled {
+		t.Fatal("expected unresolved session placeholders to use auto-session path")
+	}
+	if rec.Header().Get("X-AI-Orch-Session-ID") != "sess_auto_placeholder" {
+		t.Fatalf("expected auto-session header, got %q", rec.Header().Get("X-AI-Orch-Session-ID"))
+	}
+}
+
+// Regression: a successful non-streaming RAW chat call must finish the
+// auto-created session as completed, not leave the deferred "failed" default.
+func TestGatewayChatCompletionsAutoSessionRawBackendCompletes(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	backend := &rawFakeBackend{
+		chat: []byte(`{"id":"chatcmpl-raw","model":"claude-opus-4.8","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`),
+	}
+	body := []byte(`{"model":"copilot-claude-opus-4.8","messages":[{"role":"user","content":"hello"}]}`)
+	finishedStatus := ""
+	g := NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+			{Alias: "copilot-claude-opus-4.8", Provider: "copilot-user", ModelID: "claude-opus-4.8", AllowedClassifications: []string{"public", "internal"}},
+		}}, nil),
+		Backend: backend,
+		Audit:   auditStore,
+		NewID:   func(prefix string) string { return prefix + "_test" },
+		FinishAutoSession: func(_ context.Context, _ string, status string) error {
+			finishedStatus = status
+			return nil
+		},
+		AutoSession: func(_ context.Context, req AutoSessionRequest) (SessionInfo, error) {
+			return SessionInfo{SessionID: "sess_auto_raw", ActorSubject: req.ActorSubject, Classification: req.Classification, Status: "running"}, nil
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-test-token")
+	req.Header.Set("X-AI-Orch-Actor-Subject", "dev@example.test")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if finishedStatus != "completed" {
+		t.Fatalf("expected raw auto-session to finish completed, got %q", finishedStatus)
 	}
 }
 
@@ -1257,6 +1398,51 @@ func TestGatewayChatStreamUsesResponsesDirectlyForCopilotGPT5ClassModel(t *testi
 	}
 }
 
+func TestGatewayChatNonStreamUsesResponsesForCopilotGPT5ClassModel(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	backend := &responsesFallbackBackend{
+		responsesRaw: []byte(`{"id":"resp-test","model":"gpt-5.5","output":[{"type":"reasoning","content":[]},{"type":"message","content":[{"type":"output_text","text":"capability-ok"}]}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}`),
+	}
+	g := NewGateway(GatewayConfig{
+		RuntimeToken: "runtime-test-token",
+		Router: router.NewWithRouteAvailability(catalog.ModelRegistry{Models: []catalog.ModelDefinition{
+			{Alias: "coding-gpt55", Provider: modelbackend.BackendCopilotUser, ModelID: "gpt-5.5", AllowedClassifications: []string{"public", "internal"}},
+		}}, nil),
+		Backend: backend,
+		Audit:   auditStore,
+		NewID:   func(prefix string) string { return prefix + "_test" },
+	})
+
+	body := []byte(`{"model":"coding-gpt55","messages":[{"role":"user","content":"Reply exactly: capability-ok"}],"max_tokens":32}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer runtime-test-token")
+	req.Header.Set("X-AI-Orch-Session-ID", "sess_copilot_nonstream_responses")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected direct responses non-stream to return 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if backend.chatCalls != 0 {
+		t.Fatalf("expected Copilot GPT-5-class non-stream request to skip chat completions, got %d chat calls", backend.chatCalls)
+	}
+	if backend.responsesCalls != 1 {
+		t.Fatalf("expected one responses raw call, got %d", backend.responsesCalls)
+	}
+	if !strings.Contains(rec.Body.String(), `"object":"chat.completion"`) || !strings.Contains(rec.Body.String(), `"content":"capability-ok"`) || !strings.Contains(rec.Body.String(), `"model":"coding-gpt55"`) {
+		t.Fatalf("expected Responses body translated into chat completion, got: %s", rec.Body.String())
+	}
+	events, err := auditStore.EventsBySession(context.Background(), "sess_copilot_nonstream_responses")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 || events[0].EventType != "model.gateway_call" {
+		t.Fatalf("expected completed gateway call audit, got %#v", events)
+	}
+	if got := numericAuditValue(events[0].TokenUsage["total_tokens"]); got != 7 {
+		t.Fatalf("expected translated Responses usage in audit, got %#v", events[0].TokenUsage)
+	}
+}
+
 func TestGatewayChatStreamKeepsCopilotAnthropicModelsOnChatCompletions(t *testing.T) {
 	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
 	backend := &responsesFallbackBackend{
@@ -1394,6 +1580,7 @@ func (s *streamFakeClient) ChatCompletionStream(_ context.Context, req openroute
 type responsesFallbackBackend struct {
 	chatErr         error
 	chatStream      string
+	responsesRaw    []byte
 	responsesStream string
 	chatCalls       int
 	responsesCalls  int
@@ -1434,7 +1621,10 @@ func (b *responsesFallbackBackend) ChatCompletionStreamRaw(_ context.Context, re
 func (b *responsesFallbackBackend) ResponsesRaw(_ context.Context, req modelbackend.RawRequest) ([]byte, error) {
 	b.responsesCalls++
 	b.lastResponses = req
-	return nil, nil
+	if len(b.responsesRaw) > 0 {
+		return b.responsesRaw, nil
+	}
+	return []byte(`{"id":"resp-test","model":"` + req.Model + `","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`), nil
 }
 
 func (b *responsesFallbackBackend) ResponsesStreamRaw(_ context.Context, req modelbackend.RawRequest) (io.ReadCloser, error) {

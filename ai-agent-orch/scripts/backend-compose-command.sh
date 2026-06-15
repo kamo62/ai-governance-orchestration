@@ -12,7 +12,7 @@ case "$backend" in
     echo "AI_ORCH_MODEL_BACKEND=bifrost docker compose -f docker-compose.yml up -d bifrost governance-shell orchestrator"
     ;;
   copilot-user)
-    echo "AI_ORCH_MODEL_BACKEND=copilot-user docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d governance-shell orchestrator"
+    echo "scripts/local-copilot-compose-up.sh"
     ;;
   *)
     echo "unknown backend: $backend" >&2

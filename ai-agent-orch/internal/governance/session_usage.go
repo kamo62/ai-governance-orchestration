@@ -138,14 +138,11 @@ func pricingLookupCandidates(event audit.Event) []usagePricingLookup {
 }
 
 func copilotEquivalentPricingModelID(modelID string) string {
-	modelID = strings.TrimSpace(strings.TrimPrefix(modelID, "copilot-"))
-	if strings.EqualFold(modelID, "gpt-5.5") {
-		return "openai/gpt-5.5"
-	}
-	if strings.HasPrefix(strings.ToLower(modelID), "gpt-") {
-		return "openai/" + modelID
-	}
-	return ""
+	// Map a Copilot upstream model id to its vendor-prefixed OpenRouter id so the
+	// price book (keyed "<vendor>/<model>") can price Copilot routes. List price
+	// is the same model regardless of being served via Copilot. Covers Claude,
+	// Gemini, and OpenAI/GPT families.
+	return openRouterVendorModel(strings.TrimPrefix(strings.TrimSpace(modelID), "copilot-"))
 }
 
 func addTokenUsage(summary *SessionUsageSummary, usage map[string]any) {

@@ -4,8 +4,8 @@ phase: experimental
 owner: core
 runtime: opencode
 model:
-  primary: coding-gpt55
-  fallback: coding-balanced
+  primary: copilot-gpt-5.4-mini
+  fallback: copilot-gpt-5-mini
 mcp_servers:
   - catalog-introspection
   - repo-classification

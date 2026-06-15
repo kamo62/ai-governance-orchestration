@@ -80,7 +80,7 @@ POST /v1/responses
 
 ### `GET /v1/models`
 
-Return governed aliases, not raw provider inventory. When the active backend can list actor-bound Copilot models and the request includes actor context, the gateway also includes the enrolled actor's current Copilot picker chat models as governed `copilot-...` aliases. Hidden Copilot entries and non-chat models are filtered out.
+Return governed aliases, not raw provider inventory. When the active backend can list actor-bound Copilot models and the request includes actor context, the gateway also appends the enrolled actor's current Copilot picker chat models as governed `copilot-...` aliases. These dynamic picker additions are chat-only (hidden Copilot entries and non-chat models are filtered out). Static governed aliases that are Responses-API only, such as `copilot-gpt-5.3-codex`/`copilot-gpt-5.4-mini`/`copilot-gpt-5.5`, are still exposed for use, but through the `ai-orch-responses` OpenCode provider rather than this chat-picker list.
 
 Example:
 
@@ -171,7 +171,12 @@ Audit should not store raw prompts, raw provider responses or provider credentia
 
 ## OpenCode Configuration Shape
 
-The OpenCode provider configuration should point at the compatibility gateway. Prefer `ai-orch opencode install-config` for real developers because it imports the current actor-bound `/v1/models` list into the provider config:
+The OpenCode provider configuration should point at the compatibility gateway. Prefer `ai-orch opencode install-config` (or `refresh`, which the setup scripts run) for real developers: it imports the current actor-bound `/v1/models` list, installs two governed providers, and writes the git-context plugin. The two providers exist because Copilot serves different model families on different API surfaces:
+
+- `ai-orch` (`@ai-sdk/openai-compatible`, `/v1/chat/completions`) for chat-capable models (Claude, Gemini, gpt-5-mini).
+- `ai-orch-responses` (`@ai-sdk/openai`, `/v1/responses`) for the Responses-API-only reasoning models (gpt-5.3-codex, gpt-5.4-mini, gpt-5.5).
+
+Install also writes a top-level `plugin` entry pointing at the embedded `ai-orch-context.ts`, which detects local git and sends `X-AI-Orch-Client-Session-ID` plus the git headers on the ai-orch providers. The simplified single-provider example below shows the base shape:
 
 ```json
 {
@@ -214,11 +219,11 @@ The OpenCode provider configuration should point at the compatibility gateway. P
         "edit": "deny",
         "bash": "deny",
         "task": {
-          "code-review": "allow",
-          "unit-tests": "allow",
-          "backend-development": "allow",
-          "frontend-development": "allow",
-          "security-review": "allow"
+          "code-review": "ask",
+          "unit-tests": "ask",
+          "backend-development": "ask",
+          "frontend-development": "ask",
+          "security-review": "ask"
         }
       }
     }
@@ -341,7 +346,7 @@ The runtime should not be able to change:
 Every model call should emit a model decision envelope:
 
 ```yaml
-event_type: model.gateway.call
+event_type: model.gateway_call
 session_id: sess_123
 actor: developer
 requested_model: coding-balanced
@@ -386,6 +391,19 @@ The compatibility gateway contract is now real enough for AI-Orch-routed OpenCod
 - model gateway audit records sanitized model/tool-call metadata, provider/model
   attribution, token usage, cost source, work context, and delegated child-session
   lineage for OpenCode-style `task` calls;
+- reasoning effort is governed per route and endpoint: the gateway emits flat
+  `reasoning_effort` for Copilot `/chat/completions` and nested `reasoning.effort`
+  for `/responses`, across the full effort scale (none, minimal, low, medium, high,
+  xhigh, max), clamped to each model's `max_effort`; Copilot models default to xhigh
+  where supported and callers can request a lower effort;
+- conversation continuity is gateway-owned: a request carrying
+  `X-AI-Orch-Client-Session-ID` (and no session id) reuses one governed session per
+  `(actor + client session id)` instead of minting one per call, and that session
+  stays open across the conversation;
+- git context (repo URL, branch, commit) is captured client-side (the `ai-orch
+  opencode` wrapper or the headers-only OpenCode plugin), credentials are stripped
+  from the remote URL server-side, and `repo_url`/`branch`/`commit_sha` are recorded
+  on the session and the audit ledger;
 - AI-Orch-routed OpenCode has been proven as the strongest current client lane for
   model route, stream, cost, session lifecycle, and patch/diff evidence.
 

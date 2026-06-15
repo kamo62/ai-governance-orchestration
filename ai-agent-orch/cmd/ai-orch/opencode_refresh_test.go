@@ -16,11 +16,15 @@ func TestMergeOpenCodeConfigRefreshesOnlyAiOrchProvider(t *testing.T) {
 		},
 	}
 	merged, changed, err := mergeOpenCodeConfigWithOptions(existing, OpenCodeConfigOptions{
-		GatewayURL:       "https://models.example.test",
-		RuntimeToken:     "air_newtoken",
-		ActorSubject:     "dev@example.test",
-		Classification:   "internal",
-		DiscoveredModels: []OpenCodeProviderModel{{ID: "copilot-gpt-5.5", Name: "Governed Copilot GPT-5.5"}},
+		GatewayURL:          "https://models.example.test",
+		RuntimeToken:        "air_newtoken",
+		ActorSubject:        "dev@example.test",
+		Classification:      "internal",
+		DiscoveredModels: []OpenCodeProviderModel{
+			{ID: "copilot-gpt-5-mini", Name: "Governed Copilot GPT-5 Mini"},
+			{ID: "copilot-gpt-5.5", Name: "Governed Copilot GPT-5.5"},
+		},
+		UseDiscoveredModels: true,
 	}, true)
 	if err != nil {
 		t.Fatalf("merge refresh config: %v", err)
@@ -38,8 +42,17 @@ func TestMergeOpenCodeConfigRefreshesOnlyAiOrchProvider(t *testing.T) {
 		t.Fatalf("expected refreshed runtime token, got %#v", options["apiKey"])
 	}
 	models := aiOrch["models"].(map[string]any)
-	if _, ok := models["copilot-gpt-5.5"]; !ok {
-		t.Fatalf("expected refreshed discovered model, got %#v", models)
+	if _, ok := models["copilot-gpt-5-mini"]; !ok {
+		t.Fatalf("expected refreshed discovered chat model, got %#v", models)
+	}
+	// Responses-only models must not leak into the chat provider.
+	if _, ok := models["copilot-gpt-5.5"]; ok {
+		t.Fatalf("responses-only model leaked into chat provider: %#v", models)
+	}
+	responses := providers["ai-orch-responses"].(map[string]any)
+	respModels := responses["models"].(map[string]any)
+	if _, ok := respModels["copilot-gpt-5.5"]; !ok {
+		t.Fatalf("expected responses-only model in responses provider, got %#v", respModels)
 	}
 }
 
