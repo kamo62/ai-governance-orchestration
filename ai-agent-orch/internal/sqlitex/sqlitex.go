@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -31,9 +32,15 @@ func Open(path string, label string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s db: %w", label, err)
 	}
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
-	db.SetConnMaxLifetime(30 * time.Minute)
+	if path == ":memory:" || strings.Contains(path, "mode=memory") {
+		// Each pooled connection to an in-memory DSN opens its own private
+		// database, so the schema would exist on only one of them.
+		db.SetMaxOpenConns(1)
+	} else {
+		db.SetMaxOpenConns(8)
+		db.SetMaxIdleConns(4)
+		db.SetConnMaxLifetime(30 * time.Minute)
+	}
 	if _, err := db.Exec(`
 		PRAGMA journal_mode = WAL;
 		PRAGMA busy_timeout = 10000;
@@ -43,4 +50,32 @@ func Open(path string, label string) (*sql.DB, error) {
 		return nil, fmt.Errorf("configure %s db: %w", label, err)
 	}
 	return db, nil
+}
+
+// TableColumns materializes column names and closes the PRAGMA rows before
+// callers execute schema-changing statements on the same connection.
+func TableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return nil, err
+	}
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return columns, nil
 }

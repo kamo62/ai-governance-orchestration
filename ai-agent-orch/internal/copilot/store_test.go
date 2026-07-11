@@ -4,7 +4,31 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/sqlitex"
 )
+
+func TestStoreLegacyMigrationDoesNotHoldSchemaRowsDuringDDL(t *testing.T) {
+	dsn := "file:copilot_legacy_migration?mode=memory&cache=shared"
+	db, err := sqlitex.Open(dsn, "copilot migration test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE copilot_user_tokens (actor_subject TEXT PRIMARY KEY);`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- (&Store{db: db, key: normalizeKey("test")}).migrate() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("migration timed out; possible open PRAGMA rows during DDL")
+	}
+}
 
 func TestStoreSaveLoadDelete(t *testing.T) {
 	store, err := OpenStore(t.TempDir()+"/tokens.db", "test-encryption-key")

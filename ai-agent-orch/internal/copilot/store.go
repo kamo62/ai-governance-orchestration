@@ -117,27 +117,12 @@ func (s *Store) migrate() error {
 }
 
 func (s *Store) ensureColumn(column string, definition string) error {
-	rows, err := s.db.Query(`PRAGMA table_info(copilot_user_tokens)`)
+	columns, err := sqlitex.TableColumns(s.db, "copilot_user_tokens")
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name string
-		var columnType string
-		var notNull int
-		var defaultValue sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
-			return err
-		}
-		if name == column {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
+	if columns[column] {
+		return nil
 	}
 	if _, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE copilot_user_tokens ADD COLUMN %s %s`, column, definition)); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {

@@ -140,28 +140,12 @@ func (s *SQLiteStore) migrate() error {
 }
 
 func (s *SQLiteStore) ensureAuditColumn(column string, definition string) error {
-	rows, err := s.db.Query(`PRAGMA table_info(audit_events)`)
+	columns, err := sqlitex.TableColumns(s.db, "audit_events")
 	if err != nil {
 		return fmt.Errorf("inspect audit schema: %w", err)
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var cid int
-		var name string
-		var columnType string
-		var notNull int
-		var defaultValue sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
-			return fmt.Errorf("scan audit schema: %w", err)
-		}
-		if name == column {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate audit schema: %w", err)
+	if columns[column] {
+		return nil
 	}
 
 	if _, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE audit_events ADD COLUMN %s %s`, column, definition)); err != nil {
