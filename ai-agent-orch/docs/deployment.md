@@ -459,6 +459,71 @@ OpenCode and Cline still point only at ai-orch. Do not configure developer tools
 
 Generic OpenAI-compatible clients often call `/v1/chat/completions`. ai-orch follows the same Copilot endpoint rule used by OpenCode's native Copilot provider: GPT-5.3+/5.4/5.5 Copilot models are served only on upstream `/responses`, while `gpt-5-mini`, Anthropic/Claude and Gemini Copilot models use chat completions. The generated OpenCode config is explicit about this: those Responses-only aliases are placed under the `ai-orch-responses` provider (`@ai-sdk/openai` -> `/v1/responses`), so OpenCode does not call chat for them. The chat-to-Responses bridge is compatibility/fallback behavior for other custom OpenAI-compatible clients that only support `/v1/chat/completions` and still send `gpt-5.5` or `gpt-5.3-codex`: the gateway converts the chat request, including function tools and tool-result turns, to Responses and translates Responses text, usage and function-call SSE back into chat-completion chunks for the client.
 
+#### Deployed Gateway Claude Code Enrolment
+
+Use this when a QA/prod/shared Governance Shell is already running and a developer
+wants Claude Code routed through the gateway:
+
+```sh
+cd ai-agent-orch
+AI_ORCH_GOVERNANCE_URL=https://ai-orch.example.com \
+AI_ORCH_MODEL_GATEWAY_URL=https://models.ai-orch.example.com \
+AI_ORCH_DEV_TOKEN=<developer-enrollment-token-or-id-token> \
+scripts/deployed-claude-code-enroll.sh
+```
+
+The script mirrors `scripts/deployed-opencode-enroll.sh`, swapping the final step to
+`ai-orch developer enroll --client claude-code`. That command:
+
+1. Asks the server for a 90-day revocable AI-Orch runtime credential through the
+   existing `/v1/developer/runtime-credential` path.
+2. Generates the project Claude Code config (`CLAUDE.md`, `.mcp.json`, and the
+   `.claude/settings.json` lifecycle hooks) in the working directory.
+3. Backs up the developer's Claude `settings.json` (default `~/.claude/settings.json`,
+   or a `--path` override) to a timestamped copy **before** any mutation, and aborts
+   the whole enrolment if the backup fails, so the original file is never left in a
+   half-written state.
+4. Merges into that `settings.json` the gateway routing and governance wiring while
+   preserving unrelated keys:
+   - `env.ANTHROPIC_BASE_URL` → the model gateway URL (`AI_ORCH_MODEL_GATEWAY_URL`),
+   - `env.ANTHROPIC_AUTH_TOKEN` → the runtime credential,
+   - the `ai-orch-gateway` MCP server block,
+   - the `UserPromptSubmit` / `PostToolUse` / `Stop` lifecycle hooks that invoke
+     `ai-orch hook prompt-submit|post-tool|stop`.
+
+Only the runtime token is ever written to the developer machine — no provider keys
+(`ANTHROPIC_API_KEY`, OpenRouter, Copilot, AWS) are placed in Claude Code config. After
+enrolment Claude Code routes model traffic through `/v1/messages`, so its calls are
+`gateway_enforced` with real usage and cost, and its hooks self-report lifecycle
+evidence. The command prints the actor subject, the credential expiry, and the path of
+the settings backup.
+
+#### Kiro Governance-Only Onboarding
+
+Kiro has no custom model-endpoint override, so it is enrolled for the governance lanes
+only — MCP tools plus the hook→REST evidence lane, with **no model proxy lane**:
+
+```sh
+cd ai-agent-orch
+AI_ORCH_GOVERNANCE_URL=https://ai-orch.example.com \
+AI_ORCH_DEV_TOKEN=<developer-enrollment-token-or-id-token> \
+go run ./cmd/ai-orch developer enroll --client kiro
+```
+
+`ai-orch developer enroll --client kiro`:
+
+1. Requests a 90-day runtime credential through the same
+   `/v1/developer/runtime-credential` path.
+2. Generates the Kiro config (`.kiro/settings/mcp.json`, the `ai-orch.md` steering file,
+   and the three `.kiro/hooks/*.kiro.hook.json` lifecycle hooks).
+3. Wires the runtime credential into the generated Kiro MCP `env` block as
+   `AI_ORCH_DEV_TOKEN`, alongside the existing `AI_ORCH_GOVERNANCE_URL`.
+
+There is no `ANTHROPIC_BASE_URL` and no model endpoint override: Kiro's own model
+traffic stays `self_reported`, while its MCP tool calls are `gateway_enforced` and its
+lifecycle hooks self-report evidence via `ai-orch hook prompt-submit|post-tool|stop`.
+The command prints the actor subject and the credential expiry.
+
 ### Backend Control From The UI
 
 The Governance UI can start and stop model sidecars when backend control is explicitly enabled. This requires Docker access inside the Governance Shell container. The default image does not ship the docker CLI; the backend-control override builds it in via the `INSTALL_DOCKER_CLI` build arg.
@@ -699,6 +764,7 @@ ai-orch mcp install --client codex
 ai-orch mcp install --client claude-code
 ai-orch mcp install --client vscode
 ai-orch mcp install --client cline
+ai-orch mcp install --client kiro
 ```
 
 The install command refuses to overwrite existing files by default. Use `--force` only when you have reviewed what will be replaced.
@@ -861,6 +927,66 @@ ai-orch-models.example.com {
 ```
 
 The equivalent nginx locations need `proxy_buffering off;` and `proxy_read_timeout 0;` on the gateway host so streaming responses are not cut. Keep the container ports bound to loopback (the Compose defaults already do this) so the proxy is the only ingress.
+
+## Failure Modes
+
+Real failure paths that exist in this codebase today, in symptom / check / cause-and-fix form.
+
+### Hooklane evidence POST failing and spooling
+
+**Symptom:** a Kiro lifecycle hook still exits `0`, but stderr prints `evidence queued for retry: the governance shell was unreachable or returned a server error`.
+
+**Check:** the spool directory at `<workspace>/.kiro/.ai-orch-spool/`. Each `0600` JSON file is one fully-rendered evidence POST body (client_event_id included); the directory is `0700`, and a sorted listing is the retry order.
+
+**Cause and fix:** a network error or a `5xx` from the Governance Shell (a `4xx` is a permanent rejection and is never spooled). Each event is written through a same-directory temporary file and atomic rename, then the spool auto-flushes oldest first the next time any hook runs. Successful and `4xx` files are deleted; network/`5xx` failures stop the flush, and corrupt files are deleted with a stderr note. The queue caps at 500 files and drops the oldest once full. On startup, a legacy `.ai-orch-spool.jsonl` is imported and removed.
+
+### Managed-client duplicate receipts
+
+**Symptom:** `POST /v1/managed-client/evidence` returns `202` with `duplicate > 0` in the response body.
+
+**Check:** the `duplicate` count reflects how many events in the batch reused an `event_id` already recorded for that session, via the `managed_client_receipts` table keyed on `(session_id, client_event_id)`.
+
+**Cause and fix:** not an error condition; it means the client retried a batch it had already delivered, and the retry was safely deduped instead of creating a second audit record. Investigate only if `duplicate` is unexpectedly high on a batch that should be all-new events, which usually means the client is not generating a fresh `event_id` per event.
+
+### Pricing refresh failures and backoff
+
+**Symptom:** governance-shell logs repeat `model pricing refresh attempt N/6 failed: ...`, followed by `model pricing refresh exhausted retries, waiting for next tick`; session cost reporting shows `cost_source: unavailable` or an unpriced total.
+
+**Check:** the two log lines above, and whether the process can reach the OpenRouter pricing endpoint (`OPENROUTER_BASE_URL` if overridden).
+
+**Cause and fix:** each refresh cycle retries up to 6 times with jittered exponential backoff (30s base, doubling, capped at 15 minutes) before giving up until the next regular tick (`AI_ORCH_MODEL_PRICING_REFRESH_INTERVAL`, default 24h). Previously-fetched prices stay in the table meanwhile, so this degrades new cost estimates rather than erasing old ones; only a cold start with no prior successful refresh leaves pricing empty. Fix outbound access to OpenRouter, or wait for the next tick; no restart is required.
+
+### SQLite busy/locked under concurrent access
+
+**Symptom:** `database is locked` or `SQLITE_BUSY` errors in governance-shell logs, or writes that stall for several seconds.
+
+**Check:** how many governance-shell processes point at the same `AI_ORCH_AUDIT_PATH`, and whether that path is on a network filesystem.
+
+**Cause and fix:** every store opens with WAL journaling and a 10-second busy timeout (`internal/sqlitex/sqlitex.go`), so a writer waits instead of failing immediately under brief contention, but SQLite still allows exactly one writer at a time. This store is single-process by design; do not point two governance-shell instances at the same `audit.db`. If a single process still locks up, check the volume is a real local filesystem, not NFS or similar, since WAL locking is unreliable there.
+
+### Admin endpoints returning 401/403
+
+**Symptom:** `/v1/admin/*` calls return `401` or `403`.
+
+**Check:** whether an `Authorization: Bearer <token>` header was sent at all, and whether that token matches the server's `AI_ORCH_ADMIN_TOKEN`.
+
+**Cause and fix:** `401` means no bearer token was presented; `403 admin not configured` means the server has no `AI_ORCH_ADMIN_TOKEN` set; `403 admin access required` means a token was presented but does not match. Set `AI_ORCH_ADMIN_TOKEN` on the server and use the exact same value in the client or the Governance UI's admin token field.
+
+### governance-insights returning empty
+
+**Symptom:** `/v1/reporting/governance-insights` (or the admin variant) returns `items: []` and `total: 0` even though sessions exist.
+
+**Check:** the `window` query parameter (default 7 days, rejected above 30 days) and which token generated the request.
+
+**Cause and fix:** sessions older than the window are excluded; widen it with `?window=30d`. The non-admin endpoint is actor-scoped to the caller's own sessions (the dev token plus any `X-AI-Orch-Local-Identity` header), so an operator looking for another actor's activity there will always see an empty queue; use the admin token against `/v1/admin/reporting/governance-insights` for org-wide visibility.
+
+### Kill-switch blocking sessions
+
+**Symptom:** session creation or dispatch fails with a reason like `kill switch enabled`, `kill switch enabled for agent <name>`, or `kill switch enabled for client <name>`.
+
+**Check:** `GET /v1/admin/killswitch` (admin token) for active `global`/`all`, `global`/`sessions`, `agent`/`<name>`, and `client`/`<name>` entries, plus the `AI_ORCH_KILL_SWITCH` environment variable, which blocks everything at the process level and is not visible or clearable through the API.
+
+**Cause and fix:** clear a stored entry with `DELETE /v1/admin/killswitch/{scope}/{id}`, or use the Unblock button on the Governance UI's Risk Controls page. If `AI_ORCH_KILL_SWITCH=true`, unset it and restart the process; that switch is a deploy-time override, not runtime state.
 
 ## Backups And Retention
 

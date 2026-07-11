@@ -104,6 +104,10 @@ MCP tool `start_governed_run` mirrors `POST /v1/runs` for MCP-native clients.
 | `GET` | `/v1/audit/sessions/{id}` | Session audit events (hashes only; no raw prompts) + `usage_summary`; delegation events may include `parent_session_id` |
 | `GET` | `/v1/use-cases` | List registered use cases (Bridge/POC seed defaults) |
 | `GET` | `/v1/workflows` | List registered workflows |
+| `POST` | `/v1/evidence` | Record session-owned evidence. The body accepts the existing evidence fields plus optional `subject_key`, `confidence` (`0..1`), `evidence_strength`, and `client_event_id`; provenance authority and initial status are derived server-side. |
+| `GET` | `/v1/evidence` | List evidence for the current actor's sessions; numeric confidence includes a computed `confidence_band`. |
+| `POST` | `/v1/admin/evidence/{id}/confirm` | Confirm proposed, candidate, or legacy evidence with a required `reason`; records an immutable human decision. |
+| `POST` | `/v1/admin/evidence/{id}/reject` | Reject any non-rejected evidence with a required `reason`; records an immutable human decision. |
 | `GET` | `/v1/mcp/catalog` | MCP tool catalog for session (requires `X-AI-Orch-Session-ID`) |
 | `POST` | `/v1/mcp/{server}/tools/{tool}` | Governed MCP tool proxy (dev token + session header) |
 | `GET` | `/metrics` | Local metrics snapshot |
@@ -132,6 +136,10 @@ MCP tool `start_governed_run` mirrors `POST /v1/runs` for MCP-native clients.
 ```
 
 `cost_source` is `provider_reported` when the provider/backend supplied cost, `pricing_table` when ai-orch estimated from stored model prices and token counts, `mixed` when a session has both, and `unavailable` when token usage exists but pricing is not available yet.
+
+Evidence provenance lanes are server-derived: gateway-enforced evidence starts `candidate` with authority `1` and a maximum strength of `strong`; managed-client evidence starts `candidate` with authority `3` and a maximum strength of `medium`; self-reported evidence starts `proposed` with authority `4` and fixed `weak` strength. Requests that supply `status` or `source_authority`, or exceed the lane's strength cap, return `400`. Confidence bands are `high` (`>=0.9`), `medium` (`>=0.7`), `low` (`>=0.4`), and `insufficient_evidence`.
+
+`POST /v1/evidence` is safe to retry: an optional `client_event_id` on the request body is a client-chosen idempotency key scoped to the session. Replaying the same `(session_id, client_event_id)` pair returns the original `201` response shape with `"duplicate": true` added, instead of creating a second record or returning an error. Requests without `client_event_id` are never deduplicated. This mirrors the duplicate semantics of `POST /v1/managed-client/evidence`, which reports per-event `accepted`/`duplicate` counts for the same reason.
 
 Durable audit events are stored as full JSON payloads and indexed for common reporting fields, including `trust_level`, `enforcement_mode`, `provider`, `model_alias`, `model_resolved`, `requested_model_alias`, `credential_source`, `reasoning_effort_requested`, `reasoning_effort_applied`, `reasoning_source`, `gateway_backend`, `run_id`, `work_item_id`, `patch_id` and token usage.
 

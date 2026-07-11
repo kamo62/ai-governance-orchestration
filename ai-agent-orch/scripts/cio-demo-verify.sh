@@ -66,6 +66,9 @@ echo "==> Running governed beta smoke"
 echo "==> Checking protected system status"
 curl -fsS -H "Authorization: Bearer ${DEV_TOKEN}" "${BASE_URL}/v1/system/status" >/dev/null
 
+echo "==> Seeding self-review evidence"
+AI_ORCH_CIO_BASE_URL="${BASE_URL}" AI_ORCH_DEV_TOKEN="${DEV_TOKEN}" "${ROOT}/scripts/cio-demo-seed-self-review.sh"
+
 echo "==> Checking metrics and UI"
 curl -fsS "${BASE_URL}/metrics" >/dev/null
 curl -fsS "${UI_URL}" | grep -q "CIO Demo Readiness"

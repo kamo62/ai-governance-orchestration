@@ -1,0 +1,17 @@
+# Self-Review Evidence
+
+This AI-Orch instance's own development sessions run through AI-Orch governance: the sessions, evidence, and audit trail behind this codebase are recorded in the same Governance Shell described in the rest of this repository. The CIO demo seeds one evidence record for this (`scripts/cio-demo-seed-self-review.sh`), posted through the normal `POST /v1/evidence` path with `evidence_type: self_review` and `subject_key: ai-orch/self`, so it goes through the same lane-derivation logic as any other evidence.
+
+That seeded record lands with `status: proposed`. This is not a bug or a shortcut: self-reported evidence (no gateway enforcement, no trusted-client proof) always starts `proposed` and needs a human confirmation before it counts as `candidate` or higher, exactly as it would for any other developer's self-reported evidence. AI-Orch reviewing itself does not get a higher trust lane than anyone else's self-reports.
+
+The table below is a plain assessment of AI-Orch against its own control ideas, based on what is actually implemented in this codebase today, not what is planned.
+
+| Control idea | Status | Notes |
+| --- | --- | --- |
+| Policy gating | Implemented | Governed sessions are evaluated against a policy engine (`internal/policyengine`) covering classification routing, command allowlists, cost caps, and tool-loop limits, with every decision recorded to a durable policy decision store (`internal/governance/policy_decision_store.go`). |
+| Evidence provenance | Implemented, with per-lane caps | `POST /v1/evidence` derives `status`, `source_authority`, and a maximum `evidence_strength` from the caller's trust level: gateway-enforced evidence starts `candidate` at `strong` cap, managed-client evidence starts `candidate` at `medium` cap, self-reported evidence starts `proposed` at a fixed `weak` strength. Callers cannot set `status` or `source_authority` themselves; the server rejects the request if they try. |
+| Audit chain | Tamper-evident, not tamper-proof | Each session's audit events are hash-chained (`internal/audit/hashchain.go`), so a break in the chain is detectable. This is a store-level guarantee: it does not defend against someone with direct database access rewriting history and recomputing the chain. Backups and restore verification are the operator's responsibility (see `docs/deployment.md`, "Backups And Retention"). |
+| Multi-writer state | Not yet | The durable store is SQLite in WAL mode with a 10-second busy timeout and a bounded connection pool (`internal/sqlitex/sqlitex.go`) -- correct for one Governance Shell process, not for multiple writers behind a load balancer. Some state is still process-local only: prompt cache, patch buffer, SSE history, cancellation map, and composition state (see `docs/deployment.md`, "Local State"). A Postgres-backed, horizontally-scaled control plane is a direction, not a shipped feature. |
+| OIDC operator auth | Not yet | OIDC exists today for human client identity on developer-facing endpoints (`internal/httpauth/oidc.go`, optional `OIDC_ISSUER_URL`/`OIDC_CLIENT_ID`). Admin/operator access is a single shared bearer secret (`AI_ORCH_ADMIN_TOKEN`), checked with a constant-time comparison -- there is no per-operator identity, and no role-based access control behind it yet. |
+
+Read this alongside `docs/api-contract-v1.md` (evidence provenance lanes and confidence bands) and `docs/deployment.md` (backups, local state lifecycle, and the multi-instance caveats called out throughout).

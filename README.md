@@ -12,7 +12,7 @@ The agent catalogue exists, but the agent plane is not the product. The product 
 
 ## Current status
 
-Current version: v0.21.2-beta.
+Current version: v0.22.0-beta.
 
 This is a working local/team beta, not a production deployment. The strongest current client path is AI-Orch-routed OpenCode: OpenCode keeps local repo access, while model traffic, routing, token use, cost and session lifecycle cross AI-Orch.
 
@@ -58,7 +58,7 @@ Open the Governance UI URL printed by the script, usually `http://127.0.0.1:1808
 
 For a central team beta, developers should not need to run the AI-Orch Docker stack. They enrol once against the central Governance URL and then use OpenCode normally through the AI-Orch model gateway. The setup installs two governed OpenCode provider blocks (`ai-orch` for chat models, `ai-orch-responses` for Copilot's Responses-API-only GPT-5.x reasoning models) plus a headers-only git-context plugin, and preserves existing providers such as Moonshot, DeepSeek, OpenRouter and Copilot Zen. Git remote/branch/commit are captured client-side and a conversation reuses one governed session. Generated model metadata advertises image attachment support for governed models so developers can paste screenshots into direct `opencode` sessions; local operator restarts via `scripts/local-copilot-compose-up.sh` refresh existing OpenCode configs automatically.
 
-See [docs/deployment.md](ai-agent-orch/docs/deployment.md) for enrolment and refresh commands, and [docs/runtime-client-integration.md](ai-agent-orch/docs/runtime-client-integration.md) for OpenCode, Cline, Copilot, Claude Code, Codex and workbench-style client boundaries.
+MCP/tool integration is installed per client with `ai-orch mcp install --client <vscode|cline|claude-code|codex|kiro>`. See [docs/deployment.md](ai-agent-orch/docs/deployment.md) for enrolment and refresh commands, and [docs/runtime-client-integration.md](ai-agent-orch/docs/runtime-client-integration.md) for OpenCode, Cline, Copilot, Claude Code, Codex, Kiro and workbench-style client boundaries.
 
 ## What this is not
 

@@ -1,13 +1,34 @@
 # Changelog
 
-## Unreleased
+## v0.23.0-beta - 2026-07-03 (Minor)
+
+Release impact: Minor because this adds backward-compatible managed-client evidence fields and operator-selectable Claude provider routing without breaking existing client aliases or gateway APIs.
 
 Governed Copilot model routing, reasoning-effort control, per-conversation sessions, and client-side git context.
 
+- **Added managed-client permission decisions**: `permission_decision` v0 evidence events record tool/command approval decisions with the decider and optional reason, preserving managed-client advisory provenance.
+- **Added Claude backend selection plumbing**: `AI_ORCH_CLAUDE_BACKEND` / `--claude-backend` can pin existing Claude coding aliases to Anthropic, Bedrock, or Foundry routes through the server-side model registry. Foundry Claude routes fail closed until a Foundry Anthropic-compatible adapter exists.
 - **Copilot model routing and endpoints**: added governed aliases `copilot-claude-opus-4.8`, `copilot-gpt-5.4-mini`, and `copilot-gemini-3.5-flash`. Endpoint support is verified live: `gpt-5.3-codex`, `gpt-5.4-mini`, and `gpt-5.5` are Responses-API only on Copilot, so OpenCode is configured with two governed providers, `ai-orch` (`@ai-sdk/openai-compatible`, `/v1/chat/completions`) and `ai-orch-responses` (`@ai-sdk/openai`, `/v1/responses`). The lead runs on `copilot-gpt-5.4-mini`, frontend on Opus 4.8, documentation on Gemini 3.5 Flash.
 - **Reasoning effort governance**: the gateway emits flat `reasoning_effort` for Copilot `/chat/completions` and nested `reasoning.effort` for `/responses`, across the full scale (none, minimal, low, medium, high, xhigh, max) clamped to each model's `max_effort`. Copilot models default to xhigh where supported (Gemini and gpt-5-mini cap at high); callers can request a lower effort. Both effort normalizers (gateway and router) were extended so high-tier defaults are no longer dropped.
 - **Gateway-owned session continuity**: a request carrying `X-AI-Orch-Client-Session-ID` (and no session id) reuses one governed session per `(actor + client session id)` instead of minting one per model call; the session stays open across the conversation.
 - **Client-side git context**: repo URL, branch, and commit are captured where the runtime runs, via the `ai-orch opencode` wrapper or a headers-only OpenCode plugin (installed by `ai-orch opencode refresh`). Embedded credentials are stripped from the remote URL server-side, and `repo_url`/`branch`/`commit_sha` are now recorded on the session and the audit ledger (`audit_events`).
+- **Added durable policy decision records**: a `policy_decisions` side table persists allow and deny outcomes with reason and findings for session create, gateway auto-create, delegation, and executed MCP tool calls. Denial audit events now carry the decision id, with a correlation id when no session exists yet. Catalog preflight checks are not persisted. The audit ledger schema is unchanged.
+- **Hardened managed-client ingest idempotency**: a `managed_client_receipts` table keyed by `(session_id, client_event_id)` replaces the per-request audit scan, audit event ids are now server-generated, duplicate detection verifies the recorded audit event so a failed append can always be retried, and batches mixing client session ids are rejected with 400.
+- **Added evidence provenance**: evidence records carry a subject key, optional numeric confidence with read-time bands (`internal/confidence`), and server-derived source authority, strength, and status per trust lane. Requests claiming confirmed status or stronger provenance than their lane are rejected. Manual confirmation and rejection are separate admin endpoints recording immutable `evidence_confirmations` rows with an enforced transition matrix.
+- **Added the governance insight projection**: read-only `GET /v1/reporting/governance-insights` (actor-scoped, global kill switches only) and an org-wide admin variant fold sessions, audit events, evidence, policy decisions, and active kill switches into a deduplicated severity-ranked attention queue with summary counts, windowed to 7 days by default and 30 days maximum. The Governance UI gains an Attention view.
+- **Added explicit maturity snapshots**: `POST /v1/admin/reporting/maturity-export/run` materializes per-session maturity rows (policy decision, cost cap, patch decision, evidence completeness, cost fields) idempotently per day, serialized against concurrent runs. Insight GETs perform no writes.
+- **Made evidence delivery at-least-once**: `ai-orch hook` spools evidence that fails with network or 5xx errors to a per-event spool directory (`.ai-orch-spool/`, atomic per-file writes, 500-file bound, legacy JSONL import) and replays it on the next invocation; `POST /v1/evidence` dedupes on an optional `client_event_id`; the model pricing refresh now retries with bounded jittered backoff; evidence POST bodies are capped at 1 MiB.
+- **Hardened SQLite plumbing**: in-memory DSNs use a single pooled connection, and all store migrations materialize `PRAGMA table_info` results before executing DDL (governance, audit, and Copilot stores), removing a latent lock hazard.
+- **UI and demo honesty**: the Activity Ledger shows stalled badges and last-event age for active sessions and stops re-fetching finished ones; the CIO demo seeds an idempotent self-review evidence record through the public API; `docs/deployment.md` gains a failure-modes runbook and `docs/self-review-evidence.md` a truthful self-assessment.
+
+## v0.22.0-beta - 2026-07-02 (Minor)
+
+Release impact: Minor because this adds a backward-compatible managed-client evidence ingestion API and new client-reported audit event types without breaking existing gateway or session APIs.
+
+- **Added managed-client evidence ingestion**: `/v1/managed-client/evidence` accepts idempotent v0 transcript evidence batches from actor-bound developer runtime credentials, creates or attaches governed sessions by client conversation id, stores prompt/response/diff hashes by default, and tags all lane evidence as `managed_client` provenance with advisory enforcement.
+- **Included client-reported token usage in rollups**: `managed_client.token_usage` events now contribute to existing session usage summaries while remaining marked as `client_reported` instead of gateway-priced provider usage.
+- **Documented the v0 managed-client contract**: `docs/managed-client-evidence-v0.md` freezes the receiving-side schema for the T3 Code fork.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.22.0-beta.
 
 ## v0.21.2-beta - 2026-06-13 (Patch)
 
