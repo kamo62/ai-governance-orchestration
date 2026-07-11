@@ -266,3 +266,69 @@ func TestRegistryStore_RegisterWorkflowValidation(t *testing.T) {
 		t.Fatal("expected validation error for missing name")
 	}
 }
+
+// TestRegistryStore_AppendEvidenceDedupesClientEventID verifies the in-memory
+// store mirrors the durable store's idempotency: a second append with the
+// same (session_id, client_event_id) is reported as a duplicate of the
+// original record instead of creating a second one, while a different
+// session may reuse the same client_event_id without colliding.
+func TestRegistryStore_AppendEvidenceDedupesClientEventID(t *testing.T) {
+	store := NewRegistryStore()
+
+	first, duplicate, err := store.AppendEvidence(EvidenceRecord{
+		ID:            "ev_1",
+		SessionID:     "sess_1",
+		EvidenceType:  "test_result",
+		Description:   "first attempt",
+		ClientEventID: "cev_abc",
+	})
+	if err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	if duplicate {
+		t.Fatal("expected the first append to not be a duplicate")
+	}
+
+	retry, duplicate, err := store.AppendEvidence(EvidenceRecord{
+		ID:            "ev_2",
+		SessionID:     "sess_1",
+		EvidenceType:  "test_result",
+		Description:   "retried attempt",
+		ClientEventID: "cev_abc",
+	})
+	if err != nil {
+		t.Fatalf("append retry: %v", err)
+	}
+	if !duplicate {
+		t.Fatal("expected the retried append to be reported as a duplicate")
+	}
+	if retry.ID != first.ID {
+		t.Fatalf("expected the duplicate to return the original record %q, got %q", first.ID, retry.ID)
+	}
+
+	// A different session may reuse the same client_event_id.
+	other, duplicate, err := store.AppendEvidence(EvidenceRecord{
+		ID:            "ev_3",
+		SessionID:     "sess_2",
+		EvidenceType:  "test_result",
+		Description:   "different session",
+		ClientEventID: "cev_abc",
+	})
+	if err != nil {
+		t.Fatalf("append other session: %v", err)
+	}
+	if duplicate {
+		t.Fatal("expected a different session to not collide on the same client_event_id")
+	}
+	if other.ID != "ev_3" {
+		t.Fatalf("unexpected id for other session's record: %s", other.ID)
+	}
+
+	all, err := store.Evidence()
+	if err != nil {
+		t.Fatalf("list evidence: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected exactly 2 stored records (no duplicate persisted), got %d", len(all))
+	}
+}
