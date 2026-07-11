@@ -5,6 +5,7 @@ plan.md
 implementation.md
 *.pdf
 reference/
+hackathon projects.zip
 
 # Local secrets and machine-specific environment
 .env
