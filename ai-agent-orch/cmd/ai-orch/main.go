@@ -130,6 +130,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "unknown mcp subcommand: %s\n", os.Args[2])
 			os.Exit(1)
 		}
+	case "hook":
+		handleHook(ctx, cfg, os.Args[2:])
 	case "copilot":
 		handleCopilot(ctx, cfg, os.Args[2:])
 	case "developer":
@@ -167,6 +169,7 @@ Usage:
   ai-orch mcp start [--transport http|stdio] [--host 127.0.0.1] [--port 18081]
   ai-orch mcp install --client <vscode|cline|claude-code|codex> [--force]
   ai-orch mcp doctor
+  ai-orch hook prompt-submit|post-tool|stop  (reads lifecycle event JSON on stdin)
   ai-orch developer enroll --client opencode [--scope global|project]
   ai-orch copilot login|status|models|logout|refresh [--local]
   ai-orch copilot smoke --local [--model <id>] [--prompt <text>]

@@ -17,6 +17,7 @@ const (
 	ClientCLine      ClientType = "cline"
 	ClientClaudeCode ClientType = "claude-code"
 	ClientCodex      ClientType = "codex"
+	ClientKiro       ClientType = "kiro"
 )
 
 // InstallResult describes what was generated.
@@ -41,6 +42,8 @@ func InstallWithOptions(client ClientType, dir string, gatewayURL string, opts I
 		return installClaudeCode(dir, gatewayURL, opts)
 	case ClientCodex:
 		return installCodex(dir, gatewayURL, opts)
+	case ClientKiro:
+		return installKiro(dir, gatewayURL, opts)
 	default:
 		return nil, fmt.Errorf("unsupported client: %s", client)
 	}
@@ -147,6 +150,29 @@ func installClaudeCode(dir, gatewayURL string, opts InstallOptions) (*InstallRes
 	}
 	result.FilesWritten = append(result.FilesWritten, mcpPath)
 
+	// Write .claude/settings.json lifecycle hooks mapping Claude Code events to
+	// ai-orch hook subcommands. Mirrors the declarative Kiro hook construction.
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		return nil, fmt.Errorf("mkdir .claude: %w", err)
+	}
+
+	claudeHooks := map[string][]map[string]any{
+		"UserPromptSubmit": {{"hooks": []map[string]any{{"type": "command", "command": "ai-orch hook prompt-submit"}}}},
+		"PostToolUse":      {{"hooks": []map[string]any{{"type": "command", "command": "ai-orch hook post-tool"}}}},
+		"Stop":             {{"hooks": []map[string]any{{"type": "command", "command": "ai-orch hook stop"}}}},
+	}
+	settingsConfig, err := marshalConfig(map[string]any{"hooks": claudeHooks})
+	if err != nil {
+		return nil, fmt.Errorf("encode .claude/settings.json: %w", err)
+	}
+
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := writeConfigFile(settingsPath, settingsConfig, opts); err != nil {
+		return nil, fmt.Errorf("write .claude/settings.json: %w", err)
+	}
+	result.FilesWritten = append(result.FilesWritten, settingsPath)
+
 	result.Instructions = `Claude Code configuration installed.
 
 Next steps:
@@ -156,7 +182,7 @@ Next steps:
 4. Use start_governed_session before agentic work.
 5. Delegate substantial work through delegate_governed_work.
 
-CLAUDE.md provides governance context. .mcp.json registers the stdio gateway.`
+CLAUDE.md provides governance context, .mcp.json registers the stdio gateway, and .claude/settings.json wires the prompt-submit, post-tool, and stop lifecycle events to the ai-orch hook lane.`
 
 	return result, nil
 }
@@ -179,6 +205,126 @@ Next steps:
 2. Codex will read AGENTS.md for governance instructions.
 3. Use the MCP gateway tools for session creation and delegation.
 4. Record patch decisions and audit lookups through the gateway.`
+
+	return result, nil
+}
+
+// kiroHookConfig describes a single Kiro lifecycle hook file.
+type kiroHookConfig struct {
+	fileName  string
+	name      string
+	whenType  string
+	toolTypes []string
+	command   string
+}
+
+func installKiro(dir, gatewayURL string, opts InstallOptions) (*InstallResult, error) {
+	result := &InstallResult{}
+
+	settingsDir := filepath.Join(dir, ".kiro", "settings")
+	steeringDir := filepath.Join(dir, ".kiro", "steering")
+	hooksDir := filepath.Join(dir, ".kiro", "hooks")
+
+	// .kiro/settings/mcp.json (same mcpServers shape Claude Code uses).
+	mcpConfig, err := marshalConfig(map[string]any{
+		"mcpServers": map[string]any{
+			"ai-orch-gateway": map[string]any{
+				"command": "ai-orch",
+				"args":    []string{"mcp", "start", "--transport", "stdio"},
+				"env": map[string]string{
+					"AI_ORCH_GOVERNANCE_URL": gatewayURL,
+				},
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode mcp.json: %w", err)
+	}
+
+	hooks := []kiroHookConfig{
+		{
+			fileName: "ai-orch-prompt-submit.kiro.hook.json",
+			name:     "ai-orch-prompt-submit",
+			whenType: "promptSubmit",
+			command:  "ai-orch hook prompt-submit",
+		},
+		{
+			fileName:  "ai-orch-post-tool.kiro.hook.json",
+			name:      "ai-orch-post-tool",
+			whenType:  "postToolUse",
+			toolTypes: []string{"write", "edit"},
+			command:   "ai-orch hook post-tool",
+		},
+		{
+			fileName: "ai-orch-stop.kiro.hook.json",
+			name:     "ai-orch-stop",
+			whenType: "agentStop",
+			command:  "ai-orch hook stop",
+		},
+	}
+
+	// Build every target file (path + content + dir) before touching disk so that,
+	// when a conflict is found without --force, no target file is written.
+	type targetFile struct {
+		path    string
+		dir     string
+		content []byte
+	}
+	targets := []targetFile{
+		{path: filepath.Join(settingsDir, "mcp.json"), dir: settingsDir, content: mcpConfig},
+		{path: filepath.Join(steeringDir, "ai-orch.md"), dir: steeringDir, content: []byte(generateAGENTSMarkdown(gatewayURL))},
+	}
+	for _, h := range hooks {
+		when := map[string]any{"type": h.whenType}
+		if len(h.toolTypes) > 0 {
+			when["toolTypes"] = h.toolTypes
+		}
+		hookConfig, err := marshalConfig(map[string]any{
+			"name":    h.name,
+			"version": "1",
+			"when":    when,
+			"then": map[string]any{
+				"type":    "runCommand",
+				"command": h.command,
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("encode %s: %w", h.fileName, err)
+		}
+		targets = append(targets, targetFile{path: filepath.Join(hooksDir, h.fileName), dir: hooksDir, content: hookConfig})
+	}
+
+	// Fail closed before writing anything when a target already exists and force is unset.
+	if !opts.Force {
+		for _, t := range targets {
+			if _, err := os.Stat(t.path); err == nil {
+				return nil, fmt.Errorf("%s already exists; rerun with --force to overwrite", filepath.Base(t.path))
+			} else if !os.IsNotExist(err) {
+				return nil, err
+			}
+		}
+	}
+
+	for _, t := range targets {
+		if err := os.MkdirAll(t.dir, 0755); err != nil {
+			return nil, fmt.Errorf("mkdir %s: %w", t.dir, err)
+		}
+		if err := writeConfigFile(t.path, t.content, opts); err != nil {
+			return nil, fmt.Errorf("write %s: %w", filepath.Base(t.path), err)
+		}
+		result.FilesWritten = append(result.FilesWritten, t.path)
+	}
+
+	result.Instructions = `Kiro configuration installed.
+
+Next steps:
+1. Make sure AI_ORCH_DEV_TOKEN is exported in the environment that launches Kiro.
+2. Restart Kiro to pick up the MCP server and lifecycle hooks.
+3. Verify "ai-orch-gateway" appears in the MCP panel.
+4. Use start_governed_session before agentic work.
+5. Delegate substantial work through delegate_governed_work.
+
+.kiro/settings/mcp.json registers the stdio gateway, .kiro/steering/ai-orch.md provides governance context, and .kiro/hooks/*.kiro.hook.json wire the prompt-submit, post-tool, and stop lifecycle events to the ai-orch hook lane.`
 
 	return result, nil
 }
@@ -275,6 +421,16 @@ func Doctor(dir string, gatewayURL string) []string {
 		issues = append(issues, ".mcp.json not found. Run: ai-orch mcp install --client claude-code")
 	}
 
+	// Check for .kiro/settings/mcp.json
+	if _, err := os.Stat(filepath.Join(dir, ".kiro", "settings", "mcp.json")); os.IsNotExist(err) {
+		issues = append(issues, ".kiro/settings/mcp.json not found. Run: ai-orch mcp install --client kiro")
+	}
+
+	// Check for Kiro hook configuration under .kiro/hooks
+	if hookEntries, err := os.ReadDir(filepath.Join(dir, ".kiro", "hooks")); err != nil || len(hookEntries) == 0 {
+		issues = append(issues, ".kiro/hooks hook configuration not found. Run: ai-orch mcp install --client kiro")
+	}
+
 	if len(issues) == 0 {
 		return []string{"All client configurations present."}
 	}
@@ -292,6 +448,8 @@ func ParseClientType(s string) (ClientType, error) {
 		return ClientClaudeCode, nil
 	case "codex":
 		return ClientCodex, nil
+	case "kiro":
+		return ClientKiro, nil
 	default:
 		return "", fmt.Errorf("unknown client type: %s", s)
 	}

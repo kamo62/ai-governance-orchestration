@@ -1,6 +1,7 @@
 package skillsfactory
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,6 +66,72 @@ func TestInstallClaudeCode(t *testing.T) {
 
 	if !strings.Contains(result.Instructions, "Claude Code") {
 		t.Fatalf("expected instructions to mention Claude Code")
+	}
+}
+
+// TestInstallClaudeCodeWritesSettingsHooks asserts installClaudeCode writes
+// CLAUDE.md, .mcp.json, AND .claude/settings.json (all recorded in
+// FilesWritten), and that the settings hooks map each Claude Code event to the
+// correct `ai-orch hook` subcommand.
+func TestInstallClaudeCodeWritesSettingsHooks(t *testing.T) {
+	dir := t.TempDir()
+	result, err := InstallWithOptions(ClientClaudeCode, dir, "http://127.0.0.1:18081", InstallOptions{})
+	if err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	claudePath := filepath.Join(dir, "CLAUDE.md")
+	mcpPath := filepath.Join(dir, ".mcp.json")
+	settingsPath := filepath.Join(dir, ".claude", "settings.json")
+	for _, p := range []string{claudePath, mcpPath, settingsPath} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("expected %s to exist: %v", p, err)
+		}
+		found := false
+		for _, w := range result.FilesWritten {
+			if w == p {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected %s recorded in FilesWritten, got %v", p, result.FilesWritten)
+		}
+	}
+
+	content, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Type    string `json:"type"`
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(content, &parsed); err != nil {
+		t.Fatalf("parse settings.json: %v", err)
+	}
+
+	wantCommands := map[string]string{
+		"UserPromptSubmit": "ai-orch hook prompt-submit",
+		"PostToolUse":      "ai-orch hook post-tool",
+		"Stop":             "ai-orch hook stop",
+	}
+	for event, wantCmd := range wantCommands {
+		groups, ok := parsed.Hooks[event]
+		if !ok || len(groups) == 0 || len(groups[0].Hooks) == 0 {
+			t.Fatalf("expected hook entry for %s, got %#v", event, parsed.Hooks)
+		}
+		h := groups[0].Hooks[0]
+		if h.Type != "command" {
+			t.Fatalf("%s: expected type \"command\", got %q", event, h.Type)
+		}
+		if h.Command != wantCmd {
+			t.Fatalf("%s: expected command %q, got %q", event, wantCmd, h.Command)
+		}
 	}
 }
 
@@ -162,6 +229,10 @@ func TestDoctorAllPresent(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, ".clinerules"), []byte("rules"), 0644)
 	os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("claude"), 0644)
 	os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte("{}"), 0644)
+	os.MkdirAll(filepath.Join(dir, ".kiro", "settings"), 0755)
+	os.WriteFile(filepath.Join(dir, ".kiro", "settings", "mcp.json"), []byte("{}"), 0644)
+	os.MkdirAll(filepath.Join(dir, ".kiro", "hooks"), 0755)
+	os.WriteFile(filepath.Join(dir, ".kiro", "hooks", "ai-orch-stop.kiro.hook.json"), []byte("{}"), 0644)
 
 	issues := Doctor(dir, "http://127.0.0.1:18081")
 	if len(issues) != 1 || !strings.Contains(issues[0], "All client configurations present") {

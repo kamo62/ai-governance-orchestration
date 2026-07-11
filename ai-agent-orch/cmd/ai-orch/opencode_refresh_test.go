@@ -16,10 +16,10 @@ func TestMergeOpenCodeConfigRefreshesOnlyAiOrchProvider(t *testing.T) {
 		},
 	}
 	merged, changed, err := mergeOpenCodeConfigWithOptions(existing, OpenCodeConfigOptions{
-		GatewayURL:          "https://models.example.test",
-		RuntimeToken:        "air_newtoken",
-		ActorSubject:        "dev@example.test",
-		Classification:      "internal",
+		GatewayURL:     "https://models.example.test",
+		RuntimeToken:   "air_newtoken",
+		ActorSubject:   "dev@example.test",
+		Classification: "internal",
 		DiscoveredModels: []OpenCodeProviderModel{
 			{ID: "copilot-gpt-5-mini", Name: "Governed Copilot GPT-5 Mini"},
 			{ID: "copilot-gpt-5.5", Name: "Governed Copilot GPT-5.5"},

@@ -1,6 +1,6 @@
 # MCP Gateway
 
-The `ai-orch-mcp` gateway exposes the Governance Shell through the Model Context Protocol (MCP). This lets any MCP-capable client (VS Code, CLine, Claude Code, Codex, Cursor) create governed sessions, delegate work, and record audit evidence without giving those clients direct access to provider API keys.
+The `ai-orch-mcp` gateway exposes the Governance Shell through the Model Context Protocol (MCP). This lets any MCP-capable client (VS Code, CLine, Claude Code, Codex, Cursor, Kiro) create governed sessions, delegate work, and record audit evidence without giving those clients direct access to provider API keys.
 
 MCP is the tool and evidence lane. Model governance is handled by the ai-orch model compatibility gateway where the client supports a custom provider endpoint. A client can be configured for both: model calls go to ai-orch `/v1`, and tool/evidence calls go to `ai-orch-mcp`.
 
@@ -34,6 +34,9 @@ ai-orch mcp install --client claude-code
 
 # Codex
 ai-orch mcp install --client codex
+
+# Kiro
+ai-orch mcp install --client kiro
 ```
 
 ## Doctor Check

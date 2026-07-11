@@ -33,6 +33,34 @@ cross ACP hooks, the MCP gateway, or a deliberate sanitized client-event forward
 Cline and other OpenAI-compatible clients remain plausible routes, but they are less
 proven than OpenCode in the current beta.
 
+Two further lanes are now implemented and broaden client coverage beyond OpenCode:
+
+- **Claude Code model traffic is `gateway_enforced`.** The Anthropic-compatible adapter
+  (`POST /v1/messages`) is built, so Claude Code pointed at `ANTHROPIC_BASE_URL` routes
+  model calls through ai-orch with real usage and cost, the same as the chat lane.
+- **Kiro and Claude Code have a generated hook→REST evidence lane.** `ai-orch mcp
+  install --client kiro` generates lifecycle hooks that post to the Governance Shell
+  REST API as `self_reported`/advisory evidence via `ai-orch hook
+  prompt-submit|post-tool|stop`. This captures git context and lifecycle outcomes for
+  clients whose model traffic does not cross the gateway.
+
+Single-command developer onboarding wires these lanes per client:
+
+- **`ai-orch developer enroll --client claude-code`** requests a runtime credential,
+  generates the project Claude Code config (`CLAUDE.md`, `.mcp.json`,
+  `.claude/settings.json` hooks), then backs up and merges the developer's Claude
+  `settings.json` — setting `ANTHROPIC_BASE_URL` to the model gateway,
+  `ANTHROPIC_AUTH_TOKEN` to the runtime credential, plus the MCP server block and
+  lifecycle hooks. The adapter also onboards Claude Code's agentic tool use: it does
+  full bidirectional tool-call translation (Anthropic `tool_use`/`tool_result` ↔ OpenAI
+  `tool_calls`) on both the non-streaming and streaming `/v1/messages` paths, so tool
+  turns route through the gateway end to end.
+- **`ai-orch developer enroll --client kiro`** is governance-only: it requests a runtime
+  credential, generates the Kiro MCP/steering/hooks config, and wires the credential
+  into the Kiro MCP `env` as `AI_ORCH_DEV_TOKEN`. It sets no `ANTHROPIC_BASE_URL` and no
+  model endpoint override, because Kiro has no governed model proxy lane — only the MCP
+  tool lane and the hook→REST evidence lane.
+
 ## Source Check
 
 Checked on 2026-06-04:
@@ -48,6 +76,11 @@ Checked on 2026-06-04:
 - Codex supports MCP server configuration through the Codex CLI / config path, including `codex mcp add`: https://platform.openai.com/docs/docs-mcp
 - T3 Code is a minimal workbench for coding agents, currently centred on existing Codex and Claude CLI flows rather than being a governance plane itself: https://github.com/pingdotgg/t3code
 - Bifrost is open-source provider plumbing with OpenAI-compatible multi-provider routing across OpenAI, Anthropic, Bedrock, Vertex, OpenRouter and others: https://github.com/maximhq/bifrost
+
+Checked on 2026-06-25:
+
+- Claude Code exposes deterministic lifecycle hooks (SessionStart, UserPromptSubmit/PromptSubmit, PreToolUse, PostToolUse, PreCompact, Stop) configured in `.claude/settings.json`. Hooks run as shell commands that the model does not decide to invoke, receive a JSON event object on stdin (tool name and arguments for PreToolUse, tool response for PostToolUse), and are passed a stable `session_id` plus a `transcript_path`. Source: https://hidekazu-konishi.com/entry/claude_code_hooks_complete_guide.html and https://vineetagarwal-code-claude-code.mintlify.app/guides/hooks (content rephrased for compliance with licensing restrictions).
+- Kiro exposes a comparable IDE hook system (`.kiro/hooks`) and MCP config at `.kiro/settings/mcp.json` using the `mcpServers` shape; it has no documented custom model-endpoint override.
 
 ## Boundary
 
@@ -81,9 +114,185 @@ This means the model router remains mandatory for governed work. The correction 
 | Cline | Strong fit through OpenAI-compatible provider base URL. | Strong fit through Cline MCP server config. | Good second E2E target once OpenCode proves the gateway shape. |
 | VS Code / Copilot | MCP fit through `.vscode/mcp.json` or user-scope `mcp.json`. Model endpoint control depends on Copilot/enterprise policy surface. | Strong MCP fit in VS Code. | Primary managed-client adoption lane where settings can be pushed centrally. |
 | GitHub Copilot repository agents | MCP fit through repository MCP configuration. | Strong for delivery-time tools and evidence. | Better for issue/PR/check evidence than local IDE supervision. |
-| Claude Code | Anthropic-compatible proxy path through `ANTHROPIC_BASE_URL`; not the same as OpenAI-compatible. | Strong MCP fit. | Needs an Anthropic-compatible ai-orch endpoint or adapter for model routing; MCP can start earlier. |
+| Kiro | No documented custom model-endpoint override, so Kiro's own model traffic stays `self_reported` and cannot be `gateway_enforced`. | Strong MCP fit through `.kiro/settings/mcp.json` (same `mcpServers` shape as Claude Code), plus a generated hook-based REST lane. | IDE client, now supported by `ai-orch mcp install --client kiro`, which generates the MCP config, an `ai-orch.md` steering file, and three `.kiro/hooks/*.kiro.hook.json` lifecycle hooks. The hooks post to the Governance Shell REST API as `self_reported` evidence via `ai-orch hook prompt-submit\|post-tool\|stop`; see Hook-Based Client Integration below. |
+| Claude Code | Anthropic-compatible path through `ANTHROPIC_BASE_URL`; the ai-orch `/v1/messages` adapter is implemented, so Claude Code model traffic is now `gateway_enforced` with real usage and cost. | Strong MCP fit, plus native deterministic lifecycle hooks. | `ai-orch mcp install --client claude-code` generates the MCP config; model routing goes through the Anthropic adapter; hooks receive a stable `session_id`, so session correlation is free. |
 | Codex | MCP and instruction-file lane first. | MCP fit through Codex MCP config. | Model-endpoint routing depends on the Codex surface being used; do not over-claim until tested. |
 | T3-style workbench | Depends on the underlying agent runtime. | Can call ai-orch APIs and MCP gateway directly if adapted. | Useful workbench reference, not the governance authority. |
+
+## Hook-Based Client Integration (Kiro and Claude Code)
+
+Some IDE clients cannot repoint their model traffic at the ai-orch `/v1` gateway but
+do expose a deterministic lifecycle-hook system. Kiro (`.kiro/hooks`) and Claude Code
+(`.claude/settings.json` hooks) both fire shell commands at fixed points in the
+agent loop, independent of model discretion. This makes a hook-based evidence lane
+viable without MCP.
+
+This lane is implemented. `ai-orch mcp install --client kiro` generates the three
+Kiro hook configs (`.kiro/hooks/ai-orch-prompt-submit.kiro.hook.json`,
+`ai-orch-post-tool.kiro.hook.json`, `ai-orch-stop.kiro.hook.json`) alongside the MCP
+config and steering file. Each hook invokes an `ai-orch hook prompt-submit|post-tool|stop`
+subcommand that reads the lifecycle event JSON on stdin, gathers git context, and posts
+directly to the Governance Shell REST API as `self_reported`/advisory evidence.
+
+### The finding: hooks should hit the REST API directly, not MCP
+
+The governed MCP tools (`start_governed_session`, `delegate_governed_work`,
+`record_patch_decision`, `lookup_audit`, `record_external_tool_call`, ...) are thin
+wrappers over the Governance Shell REST API. For example, `record_external_tool_call`
+only reshapes its arguments and `POST`s to `/v1/evidence` with
+`trust_level: self_reported`. A hook that calls the same REST endpoint directly is
+byte-for-byte equivalent, minus the MCP process and the JSON-RPC `initialize`
+handshake.
+
+Therefore:
+
+- **Do not route hooks through MCP.** `hook -> MCP -> REST` is strictly more layers
+  than `hook -> REST` for identical effect and identical trust level. It is technically
+  possible (the HTTP transport at `/mcp/v1/messages` returns a direct JSON-RPC response
+  for non-SSE callers), but it adds no governance value because the tools just forward
+  to REST.
+- **Pick one owner of the governed session.** Mixing agent-driven MCP session creation
+  with hook-driven evidence reintroduces a correlation gap: hooks run as separate
+  one-shot processes and cannot see the `session_id` an MCP tool returned to the agent.
+  Choose either:
+  - *Hooks own the session* (recommended for deterministic capture): the
+    prompt-submit hook creates/persists the governed session id and later hooks reuse
+    it. On Kiro this means persisting the id (e.g. `.kiro/.ai-orch-session`) because
+    Kiro hooks are stateless one-shot commands. On Claude Code the hook payload already
+    carries a stable `session_id`, so no persistence is needed.
+  - *Agent owns the session*: the agent calls `start_governed_session` over MCP and
+    threads `session_id` through subsequent tool calls. One governed session works
+    cleanly here because `session_id` is an explicit, required argument on every
+    governed tool — the gateway process holds no implicit "current session".
+
+### Implemented lifecycle mapping
+
+| Hook event | Governance Shell call | Purpose |
+| --- | --- | --- |
+| prompt submit (`ai-orch hook prompt-submit`) | `POST /v1/sessions` | open or continue one governed session; attach git context headers |
+| post-tool write/edit (`ai-orch hook post-tool`) | `POST /v1/evidence` or `POST /v1/sessions/{id}/patch-decision` | record that edits occurred |
+| agent stop (`ai-orch hook stop`) | `POST /v1/evidence` + `GET /v1/audit/sessions/{id}` | self-report outcome and verify the trail |
+
+Auth is the standard `Authorization: Bearer $AI_ORCH_DEV_TOKEN`. This whole lane is the
+"deliberate sanitized client-event forwarding path" referenced elsewhere in these docs;
+it lands as `self_reported`/advisory, not `gateway_enforced`, because the model call
+never crosses ai-orch.
+
+### What hooks can and cannot capture
+
+- **Git context: easy.** Hooks run shell commands in the workspace, so they can read
+  `git rev-parse --abbrev-ref HEAD`, `git config --get remote.origin.url` and
+  `git rev-parse HEAD` and send them as `X-AI-Orch-Branch` / `X-AI-Orch-Repo-URL` /
+  `X-AI-Orch-Commit-SHA`. This mirrors the OpenCode client-side context resolver.
+- **Token usage: not capturable from hooks alone.** Token and cost accounting is a
+  model-gateway property emitted by `/v1/chat/completions`; it exists only because the
+  call crossed ai-orch. A client whose model traffic stays local has no usage data for a
+  hook to forward, and a fabricated estimate is worse than nothing. For such clients,
+  accurate usage requires routing model calls through the gateway.
+
+### Kiro vs Claude Code
+
+Both fit the hook-based REST lane, but Claude Code is the stronger candidate:
+
+- **Session correlation.** Claude Code passes a stable `session_id` (and a
+  `transcript_path`) to every hook, so events stitch into one governed session for free.
+  Kiro hooks are stateless and must persist their own id between fires.
+- **Model routing / token usage.** Claude Code supports `ANTHROPIC_BASE_URL`, and the
+  Anthropic-compatible ai-orch adapter (`POST /v1/messages`) is now implemented, so its
+  model traffic is `gateway_enforced` with real usage and cost — closing the exact gap
+  that a hooks-only client cannot. The adapter also translates tool calls in both
+  directions on the non-streaming and streaming paths, so Claude Code's agentic tool
+  loops are onboarded through the gateway too. Kiro has no documented model-endpoint
+  override, so its own model traffic stays `self_reported`/`managed_client` regardless of
+  hooks vs MCP, and `ai-orch developer enroll --client kiro` deliberately configures no
+  model proxy lane.
+- **MCP parity.** Both register the stdio gateway the same way (`mcpServers` block
+  launching `ai-orch mcp start --transport stdio`); `ai-orch mcp install --client
+  claude-code` and `ai-orch mcp install --client kiro` both generate this.
+
+## Client Flow Diagrams
+
+Each diagram shows the three governance lanes and the trust level each one carries: the
+model gateway lane (`gateway_enforced`), the MCP/tool lane (`gateway_enforced` tools),
+and the hook→REST lane (`self_reported`/advisory). The presence or absence of a lane is
+what differs between clients.
+
+### Copilot → Kiro
+
+Kiro governs through the MCP lane and the hook→REST lane. It has no model-endpoint
+override, so its own model traffic does not cross the ai-orch model gateway and stays
+`self_reported`. The governed model lane (model gateway → `copilot-user` backend) still
+exists, but for other clients, not for Kiro's own calls.
+
+```mermaid
+flowchart LR
+    subgraph Kiro["Kiro IDE"]
+        KModel["Kiro model calls"]
+        KMCP["MCP client"]
+        KHooks["Lifecycle hooks"]
+    end
+
+    KModel -. "no endpoint override<br/>self_reported" .-> Provider["Provider (direct, ungoverned)"]
+    KMCP -- "MCP lane<br/>gateway_enforced tools" --> MCPGW["ai-orch MCP gateway"]
+    KHooks -- "ai-orch hook ...<br/>hook→REST lane<br/>self_reported / advisory" --> REST["Governance Shell REST API"]
+
+    MCPGW --> Shell["Governance Shell"]
+    REST --> Shell
+
+    ModelGW["ai-orch model gateway /v1<br/>(governed model lane for other clients)"] -- "gateway_enforced" --> Copilot["copilot-user backend"]
+    Copilot --> Shell
+```
+
+### Copilot → OpenCode
+
+OpenCode repoints its model calls at the ai-orch `/v1` gateway, so the model lane is
+`gateway_enforced` end to end through the `copilot-user` backend. MCP is an optional
+governed tool lane. The hook lane is not applicable.
+
+```mermaid
+flowchart LR
+    subgraph OpenCode["OpenCode"]
+        OModel["Model calls"]
+        OMCP["MCP client (optional)"]
+    end
+
+    OModel -- "/v1/chat/completions<br/>gateway_enforced" --> ModelGW["ai-orch model gateway /v1"]
+    OMCP -- "MCP lane<br/>gateway_enforced tools" --> MCPGW["ai-orch MCP gateway"]
+
+    ModelGW --> Shell["Governance Shell"]
+    MCPGW --> Shell
+    Shell --> Copilot["copilot-user backend"]
+    Copilot --> Provider["Approved provider"]
+```
+
+### Claude Code
+
+Claude Code uses all three lanes. Its model traffic routes through the Anthropic adapter
+(`/v1/messages`), so it is `gateway_enforced` with real usage and cost; MCP carries
+governed tools; and lifecycle hooks self-report evidence. The stable payload
+`session_id` correlates events across all three lanes into one governed session.
+
+```mermaid
+flowchart LR
+    subgraph Claude["Claude Code"]
+        CModel["Model calls (ANTHROPIC_BASE_URL)"]
+        CMCP["MCP client"]
+        CHooks["Lifecycle hooks (session_id)"]
+    end
+
+    CModel -- "/v1/messages (Anthropic adapter)<br/>gateway_enforced" --> ModelGW["ai-orch model gateway /v1"]
+    CMCP -- "MCP lane<br/>gateway_enforced tools" --> MCPGW["ai-orch MCP gateway"]
+    CHooks -- "ai-orch hook ...<br/>hook→REST lane<br/>self_reported / advisory" --> REST["Governance Shell REST API"]
+
+    ModelGW --> Shell["Governance Shell"]
+    MCPGW --> Shell
+    REST --> Shell
+    Shell --> Copilot["copilot-user backend"]
+    Copilot --> Provider["Approved provider"]
+```
+
+The `session_id` Claude Code passes to every hook (and threads through the model and MCP
+lanes) is what stitches the three lanes into a single governed session in audit.
 
 ## Enforcement Levels
 

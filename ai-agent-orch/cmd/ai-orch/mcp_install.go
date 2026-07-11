@@ -15,12 +15,12 @@ import (
 
 func handleMCPInstall(cfg Config, args []string) {
 	fs := flag.NewFlagSet("mcp install", flag.ExitOnError)
-	clientFlag := fs.String("client", "", "Client to install for (vscode, cline, claude-code, codex)")
+	clientFlag := fs.String("client", "", "Client to install for (vscode, cline, claude-code, codex, kiro)")
 	force := fs.Bool("force", false, "Overwrite existing client configuration files")
 	_ = fs.Parse(args)
 
 	if *clientFlag == "" {
-		fmt.Fprintln(os.Stderr, "usage: ai-orch mcp install --client <vscode|cline|claude-code|codex> [--force]")
+		fmt.Fprintln(os.Stderr, "usage: ai-orch mcp install --client <vscode|cline|claude-code|codex|kiro> [--force]")
 		os.Exit(1)
 	}
 
