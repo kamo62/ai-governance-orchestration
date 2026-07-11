@@ -52,6 +52,11 @@ func SummarizeSessionUsageWithPricing(ctx context.Context, events []audit.Event,
 			} else if event.TokenUsage != nil && summary.CostSource == "" {
 				summary.CostSource = "unavailable"
 			}
+		case "managed_client.token_usage":
+			summary.ModelProxyCalls++
+			rememberModelAttribution(&summary, event)
+			addTokenUsage(&summary, event.TokenUsage)
+			summary.CostSource = mergeCostSource(summary.CostSource, "client_reported")
 		case "mcp.proxy_call":
 			if event.Reason == "forwarded" {
 				summary.MCPProxyCalls++

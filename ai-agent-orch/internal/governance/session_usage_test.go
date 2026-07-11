@@ -137,6 +137,34 @@ func TestSummarizeSessionUsageIncludesResponsesGatewayEvents(t *testing.T) {
 	}
 }
 
+func TestSummarizeSessionUsageIncludesManagedClientReportedUsage(t *testing.T) {
+	events := []audit.Event{
+		{
+			EventType:     "managed_client.token_usage",
+			Provider:      "client_reported",
+			ModelAlias:    "gpt-5.5",
+			ModelResolved: "gpt-5.5",
+			TokenUsage: map[string]any{
+				"input_tokens":  float64(30),
+				"output_tokens": float64(12),
+				"source":        "client_reported",
+			},
+		},
+	}
+
+	summary := SummarizeSessionUsageWithPricing(context.Background(), events, nil)
+
+	if summary.ModelProxyCalls != 1 || summary.TotalTokens != 42 || summary.PromptTokens != 30 || summary.CompletionTokens != 12 {
+		t.Fatalf("expected client-reported token usage in rollup, got %#v", summary)
+	}
+	if summary.CostSource != "client_reported" {
+		t.Fatalf("expected client_reported cost source marker, got %q", summary.CostSource)
+	}
+	if summary.Provider != "client_reported" || summary.ModelAlias != "gpt-5.5" {
+		t.Fatalf("expected client-reported model attribution, got %#v", summary)
+	}
+}
+
 func TestSummarizeSessionUsageEstimatesCopilotGPT55FromOpenRouterEquivalentPricing(t *testing.T) {
 	events := []audit.Event{
 		{
