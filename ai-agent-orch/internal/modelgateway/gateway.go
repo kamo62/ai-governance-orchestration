@@ -171,6 +171,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/models", g.handleModels)
 	mux.HandleFunc("/v1/chat/completions", g.handleChatCompletions)
 	mux.HandleFunc("/v1/responses", g.handleResponses)
+	mux.HandleFunc("/v1/messages", g.handleAnthropicMessages)
 	return mux
 }
 

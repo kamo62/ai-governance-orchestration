@@ -200,6 +200,18 @@ func TestBifrostBackendRawResponsesUsesResponsesPath(t *testing.T) {
 	}
 }
 
+func TestBifrostBackendRejectsFoundryClaudeUntilTranslationExists(t *testing.T) {
+	backend := NewBifrostBackend(BifrostConfig{BaseURL: "http://bifrost.test"})
+
+	_, err := backend.ChatCompletionRaw(context.Background(), RawRequest{Provider: "foundry", Model: "claude-sonnet-4.5", Body: []byte(`{"model":"coding-balanced","messages":[{"role":"user","content":"hi"}]}`)})
+	if err == nil {
+		t.Fatal("expected Foundry Claude translation error")
+	}
+	if !strings.Contains(err.Error(), "Foundry Claude backend is configured but Anthropic-compatible translation is unavailable") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestNewBackendRejectsUnknownBackend(t *testing.T) {
 	_, err := New(BackendConfig{Name: "nope"})
 	if err == nil {

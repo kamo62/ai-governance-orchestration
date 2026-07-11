@@ -87,6 +87,10 @@ export AI_ORCH_MODEL_BACKEND=bifrost
 export AI_ORCH_BIFROST_BASE_URL=http://bifrost:8080
 # Use AI_ORCH_MODEL_BACKEND=copilot-user only after per-user Copilot enrollment.
 
+# Optional: keep Claude aliases stable while selecting their server-side route.
+export AI_ORCH_CLAUDE_BACKEND=anthropic # anthropic, bedrock, or foundry
+# Foundry Claude is config-only until the Foundry Anthropic adapter is added.
+
 # Request reasoning effort through the runtime request or OpenCode agent config.
 # ai-orch normalizes reasoningEffort/reasoning_effort/reasoning.effort and
 # forwards Bifrost-compatible reasoning.effort when the selected route supports it.

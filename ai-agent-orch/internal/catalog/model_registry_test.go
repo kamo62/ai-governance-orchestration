@@ -3,6 +3,7 @@ package catalog
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -60,6 +61,50 @@ models:
 	}
 	if model.ModelID != "anthropic.claude-3-5-sonnet-20240620-v1:0" {
 		t.Fatalf("unexpected model ID %q", model.ModelID)
+	}
+}
+
+func TestSelectClaudeBackendKeepsAliasesAndSelectsConfiguredRoute(t *testing.T) {
+	registry := ModelRegistry{Models: []ModelDefinition{
+		{
+			Alias:                  "coding-balanced",
+			Provider:               "openrouter",
+			ModelID:                "anthropic/claude-sonnet-4.5",
+			AllowedClassifications: []string{"public", "internal"},
+			Routes: []ModelRoute{
+				{Provider: "anthropic", ModelID: "claude-sonnet-4.5"},
+				{Provider: "bedrock", ModelID: "anthropic.claude-sonnet-4-5-v1:0"},
+			},
+		},
+		{Alias: "coding-fast", Provider: "openrouter", ModelID: "x-ai/grok-build-0.1"},
+	}}
+
+	got, err := SelectClaudeBackend(registry, "bedrock")
+	if err != nil {
+		t.Fatalf("SelectClaudeBackend returned error: %v", err)
+	}
+	if got.Models[0].Alias != "coding-balanced" || got.Models[0].Provider != "bedrock" || got.Models[0].ModelID != "anthropic.claude-sonnet-4-5-v1:0" {
+		t.Fatalf("Claude alias was not pinned to bedrock route: %#v", got.Models[0])
+	}
+	if got.Models[1].Provider != "openrouter" {
+		t.Fatalf("non-Claude alias changed: %#v", got.Models[1])
+	}
+}
+
+func TestSelectClaudeBackendRejectsMissingRoute(t *testing.T) {
+	registry := ModelRegistry{Models: []ModelDefinition{{
+		Alias:    "coding-balanced",
+		Provider: "openrouter",
+		ModelID:  "anthropic/claude-sonnet-4.5",
+		Routes:   []ModelRoute{{Provider: "anthropic", ModelID: "claude-sonnet-4.5"}},
+	}}}
+
+	_, err := SelectClaudeBackend(registry, "bedrock")
+	if err == nil {
+		t.Fatal("expected missing route error")
+	}
+	if !strings.Contains(err.Error(), "coding-balanced") || !strings.Contains(err.Error(), "bedrock") {
+		t.Fatalf("expected alias and backend in error, got %v", err)
 	}
 }
 

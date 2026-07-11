@@ -98,6 +98,56 @@ func LoadModelRegistry(root string) (ModelRegistry, error) {
 	return registry, nil
 }
 
+func SelectClaudeBackend(registry ModelRegistry, backend string) (ModelRegistry, error) {
+	backend = normalizeClaudeBackend(backend)
+	if backend == "" {
+		return registry, nil
+	}
+	for i, model := range registry.Models {
+		if !isClaudeAliasLane(model) {
+			continue
+		}
+		route, ok := modelRouteForProvider(model.EffectiveRoutes(), backend)
+		if !ok {
+			return ModelRegistry{}, fmt.Errorf("claude backend %q has no route for alias %q", backend, model.Alias)
+		}
+		model.Provider = route.Provider
+		model.ModelID = route.ModelID
+		model.Routes = []ModelRoute{route}
+		registry.Models[i] = model
+	}
+	return registry, nil
+}
+
+func normalizeClaudeBackend(backend string) string {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "anthropic":
+		return "anthropic"
+	case "bedrock", "aws-bedrock", "amazon-bedrock":
+		return "bedrock"
+	case "foundry", "azure", "azure-ai-foundry", "azure-openai":
+		return "foundry"
+	default:
+		return ""
+	}
+}
+
+func isClaudeAliasLane(model ModelDefinition) bool {
+	if strings.HasPrefix(strings.TrimSpace(model.ModelID), "anthropic/claude") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(model.Provider), "anthropic") && strings.HasPrefix(strings.TrimSpace(model.ModelID), "claude")
+}
+
+func modelRouteForProvider(routes []ModelRoute, provider string) (ModelRoute, bool) {
+	for _, route := range routes {
+		if normalizeClaudeBackend(route.Provider) == provider {
+			return route, true
+		}
+	}
+	return ModelRoute{}, false
+}
+
 func ResolveOpenRouterModelID(root string, alias string) (string, error) {
 	model, err := ResolveModelDefinition(root, alias)
 	if err != nil {

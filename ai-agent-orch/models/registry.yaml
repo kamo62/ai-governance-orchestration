@@ -5,6 +5,19 @@ models:
     purpose: Highest-quality coding, architecture, security, and deep refactor work.
     allowed_classifications: [public, internal]
     fallback_alias: coding-balanced
+    routes:
+      - provider: openrouter
+        model_id: anthropic/claude-opus-4.7
+        credential_source: platform-openrouter
+      - provider: anthropic
+        model_id: claude-opus-4.7
+        credential_source: platform-anthropic
+      - provider: bedrock
+        model_id: anthropic.claude-opus-4-7-v1:0
+        credential_source: platform-bedrock
+      - provider: foundry
+        model_id: claude-opus-4.7
+        credential_source: platform-foundry
     cost:
       pricing_source: openrouter
       verified_on: 2026-05-23
@@ -15,6 +28,19 @@ models:
     purpose: Default coding and agent workflow model.
     allowed_classifications: [public, internal]
     fallback_alias: coding-fast
+    routes:
+      - provider: openrouter
+        model_id: anthropic/claude-sonnet-4.5
+        credential_source: platform-openrouter
+      - provider: anthropic
+        model_id: claude-sonnet-4.5
+        credential_source: platform-anthropic
+      - provider: bedrock
+        model_id: anthropic.claude-sonnet-4-5-v1:0
+        credential_source: platform-bedrock
+      - provider: foundry
+        model_id: claude-sonnet-4.5
+        credential_source: platform-foundry
     cost:
       pricing_source: openrouter
       verified_on: 2026-05-23
