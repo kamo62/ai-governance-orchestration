@@ -19,6 +19,7 @@
 
         <nav class="nav">
           <a href="#/sessions" data-page-link="sessions">Activity Ledger</a>
+          <a href="#/attention" data-page-link="attention">Attention</a>
           <a href="#/overview" data-page-link="overview">Overview</a>
           <a href="#/catalog" data-page-link="catalog">Evidence &amp; Reporting</a>
           <a href="#/gateways" data-page-link="gateways">Gateways</a>
@@ -100,6 +101,19 @@
               </section>
             </div>
 
+          </section>
+
+          <!-- Attention -->
+          <section class="page" data-page="attention">
+            <section class="panel" aria-label="Attention queue">
+              <div class="panel-head">
+                <h2>Attention Queue</h2>
+                <span id="attentionBadge" class="badge">0</span>
+              </div>
+              <p class="field-note">Read-only, deterministic queue over policy denials, cost caps, stalled sessions, missing evidence, unknown cost, and active kill switches in this window. Nothing here is written; it is folded from data already stored.</p>
+              <div id="attentionSummary" class="severity-summary"></div>
+              <div id="attentionList" class="ledger-table-wrap"></div>
+            </section>
           </section>
 
           <!-- Gateways -->

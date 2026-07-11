@@ -112,6 +112,48 @@ func TestSQLiteSessionStoreListRecentFiltersActorAndOrdersNewestFirst(t *testing
 	}
 }
 
+func TestSQLiteSessionStoreListRecentSinceFiltersActorAndWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := NewSQLiteSessionStore(path)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	base := time.Date(2026, 6, 8, 7, 0, 0, 0, time.UTC)
+	records := []SessionRecord{
+		{SessionID: "sess_too_old", ActorSubject: "local-dev", Agent: "unit-tests", Classification: "internal", PromptSHA256: "old", Status: "done", CreatedAt: base.Add(-1 * time.Hour)},
+		{SessionID: "sess_in_window", ActorSubject: "local-dev", Agent: "unit-tests", Classification: "internal", PromptSHA256: "in-window", Status: "done", CreatedAt: base.Add(1 * time.Minute)},
+		{SessionID: "sess_other_actor", ActorSubject: "other-dev", Agent: "unit-tests", Classification: "internal", PromptSHA256: "other", Status: "done", CreatedAt: base.Add(2 * time.Minute)},
+		{SessionID: "sess_newest", ActorSubject: "local-dev", Agent: "unit-tests", Classification: "internal", PromptSHA256: "newest", Status: "running", CreatedAt: base.Add(3 * time.Minute)},
+	}
+	for _, record := range records {
+		if err := store.Create(ctx, record); err != nil {
+			t.Fatalf("create %s: %v", record.SessionID, err)
+		}
+	}
+
+	got, err := store.ListRecentSince(ctx, "local-dev", base, 10)
+	if err != nil {
+		t.Fatalf("list recent since: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected two in-window local-dev sessions, got %d: %#v", len(got), got)
+	}
+	if got[0].SessionID != "sess_newest" || got[1].SessionID != "sess_in_window" {
+		t.Fatalf("expected newest-first in-window sessions, got %#v", got)
+	}
+
+	limited, err := store.ListRecentSince(ctx, "local-dev", base, 1)
+	if err != nil {
+		t.Fatalf("limited list recent since: %v", err)
+	}
+	if len(limited) != 1 || limited[0].SessionID != "sess_newest" {
+		t.Fatalf("expected newest session only, got %#v", limited)
+	}
+}
+
 func TestSQLiteSessionStoreNotFound(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/sessions.db"

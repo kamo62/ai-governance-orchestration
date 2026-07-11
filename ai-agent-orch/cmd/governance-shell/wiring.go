@@ -53,6 +53,23 @@ func registerRegistryHandlers(mux *http.ServeMux, registryHandler http.Handler) 
 	mux.Handle("/v1/evidence", registryHandler)
 }
 
+func registerAdminRegistryHandlers(mux *http.ServeMux, adminRegistryHandler http.Handler) {
+	mux.Handle("/v1/admin/evidence", adminRegistryHandler)
+	mux.Handle("/v1/admin/evidence/", adminRegistryHandler)
+	mux.Handle("/v1/admin/cache-outcomes", adminRegistryHandler)
+	mux.Handle("/v1/admin/reporting/maturity-governance", adminRegistryHandler)
+}
+
+// registerInsightHandlers wires the read-only governance insight projection
+// (actor-scoped and admin) alongside the existing reporting routes, plus the
+// explicit admin-triggered maturity snapshot that materializes the same
+// window into maturity_exports.
+func registerInsightHandlers(mux *http.ServeMux, insightHandler, adminInsightHandler, maturityExportRunHandler http.Handler) {
+	mux.Handle("/v1/reporting/governance-insights", insightHandler)
+	mux.Handle("/v1/admin/reporting/governance-insights", adminInsightHandler)
+	mux.Handle("/v1/admin/reporting/maturity-export/run", maturityExportRunHandler)
+}
+
 type contextResolverAdapter struct {
 	resolver *contextresolver.Resolver
 }
@@ -127,4 +144,9 @@ func newAuditStore(auditPath string) (audit.Store, error) {
 
 func hasSQLiteExt(path string) bool {
 	return audit.IsSQLitePath(path)
+}
+
+func managedClientReceiptStore(store governance.PolicyDecisionStore) governance.ManagedClientReceiptStore {
+	receipts, _ := store.(governance.ManagedClientReceiptStore)
+	return receipts
 }

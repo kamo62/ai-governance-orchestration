@@ -112,6 +112,8 @@ func main() {
 	var developerCredentialStore *governance.SQLiteDeveloperCredentialStore
 	var modelPricingStore governance.ModelPricingStore
 	var modelPricingCloser interface{ Close() error }
+	var policyDecisionStore governance.PolicyDecisionStore
+	var policyDecisionCloser interface{ Close() error }
 	if hasSQLiteExt(cfg.AuditPath) {
 		store, err := governance.NewSQLiteSessionStore(cfg.AuditPath)
 		if err != nil {
@@ -129,6 +131,16 @@ func main() {
 			logx.Fatalf("developer credential store init failed: %v", err)
 		}
 		developerCredentialStore = developerCredentials
+		decisions, err := governance.NewSQLitePolicyDecisionStore(cfg.AuditPath)
+		if err != nil {
+			logx.Fatalf("policy decision store init failed: %v", err)
+		}
+		policyDecisionStore = decisions
+		policyDecisionCloser = decisions
+	}
+	if policyDecisionStore == nil {
+		policyDecisionStore = governance.NewMemoryPolicyDecisionStore()
+		logx.Infof("policy decision store is in-memory; decision history resets on restart")
 	}
 
 	var sessionContextResolver governance.ContextResolver
@@ -150,6 +162,7 @@ func main() {
 		CostCapEnabled:     cfg.CostCapEnabled,
 		SessionCostCapUSD:  cfg.SessionCostCapUSD,
 		PolicyEngine:       policyEngine,
+		PolicyDecisions:    policyDecisionStore,
 		ToolLoopMax:        cfg.ToolLoopMax,
 		Metrics:            metricsHandler,
 		ContextResolver:    sessionContextResolver,
@@ -311,6 +324,12 @@ func main() {
 		ModelPricing: modelPricingStore,
 		Sessions:     sessionStore,
 	}))
+	handler.Handle("/v1/managed-client/evidence", governance.NewManagedClientEvidenceHandler(governance.ManagedClientEvidenceConfig{
+		Credentials: developerCredentialStore,
+		Audit:       auditStore,
+		Sessions:    sessionStore,
+		Receipts:    managedClientReceiptStore(policyDecisionStore),
+	}))
 	handler.Handle("/v1/admin/killswitch", governance.NewAdminHandler(killSwitchStore, sessionService))
 	handler.Handle("/v1/admin/killswitch/", governance.NewAdminHandler(killSwitchStore, sessionService))
 	handler.Handle("/v1/admin/audit/retention", governance.NewAdminAuditHandler(auditStore, sessionService))
@@ -322,9 +341,12 @@ func main() {
 		ModelPricing: modelPricingStore,
 	}))
 	adminRegistryHandler := governance.NewAdminRegistryHandler(registryStore, sessionService)
-	handler.Handle("/v1/admin/evidence", adminRegistryHandler)
-	handler.Handle("/v1/admin/cache-outcomes", adminRegistryHandler)
-	handler.Handle("/v1/admin/reporting/maturity-governance", adminRegistryHandler)
+	registerAdminRegistryHandlers(handler, adminRegistryHandler)
+	registerInsightHandlers(handler,
+		governance.NewInsightHandler(governance.InsightHandlerConfig{Service: sessionService, Registry: registryStore}),
+		governance.NewAdminInsightHandler(governance.InsightHandlerConfig{Service: sessionService, Registry: registryStore}),
+		governance.NewMaturityExportRunHandler(governance.MaturityExportRunConfig{Service: sessionService, Registry: registryStore}),
+	)
 	handler.Handle("/v1/compositions", governance.NewCompositionHandler(sessionService, compositionStore))
 	handler.Handle("/v1/compositions/", governance.NewCompositionHandler(sessionService, compositionStore))
 	registerRegistryHandlers(handler, governance.NewRegistryHandlerWithMetrics(registryStore, sessionService, metricsHandler))
@@ -340,6 +362,7 @@ func main() {
 		Registrations:     defaultMCPRegistrations(cfg.CatalogRoot, cfg.ClassificationMax),
 		UserTokens:        governance.NewOAuthTokenStoreAdapter(oauthTokenStore),
 		PolicyEngine:      policyEngine,
+		PolicyDecisions:   policyDecisionStore,
 		ClassificationMax: cfg.ClassificationMax,
 	})
 	handler.Handle("/v1/mcp/", mcpProxy)
@@ -354,7 +377,7 @@ func main() {
 
 	// Centralized auth middleware with explicit public allow-list.
 	// Internal proxy endpoints use service-token auth inside their own handlers.
-	publicPaths := []string{"/ui", "/mcp/healthz", "/readyz", "/healthz", "/metrics", "/internal/v1/model/", "/internal/v1/mcp/", "/v1/mcp/"}
+	publicPaths := []string{"/ui", "/mcp/healthz", "/readyz", "/healthz", "/metrics", "/internal/v1/model/", "/internal/v1/mcp/", "/v1/mcp/", "/v1/managed-client/evidence"}
 	authHandler := governance.AuthMiddleware(sessionService, publicPaths)(handler)
 
 	wrappedHandler := logRequestLatency(authHandler)
@@ -384,6 +407,12 @@ func main() {
 		if err != nil {
 			logx.Warnf("model registry load failed: %v", err)
 		} else {
+			if cfg.ClaudeBackend != "" {
+				modelRegistry, err = catalog.SelectClaudeBackend(modelRegistry, cfg.ClaudeBackend)
+				if err != nil {
+					logx.Fatalf("Claude backend configuration failed: %v", err)
+				}
+			}
 			govRouter := router.NewWithRouteAvailability(modelRegistry, func(ctx context.Context, route catalog.ModelRoute, req router.Request) bool {
 				provider := strings.TrimSpace(route.Provider)
 				if !modelbackend.BackendSupportsProvider(modelBackend, provider) {
@@ -572,6 +601,11 @@ func main() {
 	if modelPricingCloser != nil {
 		if err := modelPricingCloser.Close(); err != nil {
 			logx.Warnf("model pricing store close error: %v", err)
+		}
+	}
+	if policyDecisionCloser != nil {
+		if err := policyDecisionCloser.Close(); err != nil {
+			logx.Warnf("policy decision store close error: %v", err)
 		}
 	}
 	if developerCredentialStore != nil {

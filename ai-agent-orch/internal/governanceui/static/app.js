@@ -10,6 +10,11 @@
     lastAgents: [],
     lastSessions: [],
     selectedSessionID: "",
+    // Tracks which session/status the audit panel last fetched, so the 15s
+    // auto-refresh only re-fetches audit detail for active sessions instead
+    // of repeatedly re-fetching a done/failed/aborted session's unchanging trail.
+    lastAuditSessionID: "",
+    lastAuditStatus: "",
   };
 
   const el = {
@@ -56,6 +61,9 @@
     killSwitchGlobalOff: document.getElementById("killSwitchGlobalOff"),
     killSwitchAgentForm: document.getElementById("killSwitchAgentForm"),
     killSwitchList: document.getElementById("killSwitchList"),
+    attentionBadge: document.getElementById("attentionBadge"),
+    attentionSummary: document.getElementById("attentionSummary"),
+    attentionList: document.getElementById("attentionList"),
   };
 
   el.baseUrl.value = state.baseUrl;
@@ -207,6 +215,8 @@
     state.lastAgents = [];
     state.lastSessions = [];
     state.selectedSessionID = "";
+    state.lastAuditSessionID = "";
+    state.lastAuditStatus = "";
     el.modelBackend.textContent = "-";
     el.versionBadge.textContent = "-";
     el.agentCount.textContent = "-";
@@ -218,6 +228,7 @@
     renderAuditTrail({ session_id: "", events: [] });
     renderRecords(el.evidenceList, el.evidenceBadge, [], ["evidence_type", "description"]);
     renderRecords(el.maturityList, el.maturityBadge, [], ["workflow_id", "use_case_id", "session_id"]);
+    renderAttention(null);
     renderReadiness();
   }
 
@@ -402,6 +413,100 @@
     }
   }
 
+  // Attention: a read-only, deterministic queue folded from data already
+  // stored (policy decisions, audit events, evidence, sessions, kill
+  // switches). Mirrors the sessions view's admin-vs-dev endpoint choice.
+  const severityOrder = ["critical", "high", "medium", "low"];
+
+  async function loadAttention() {
+    if (!hasAnyAuth()) {
+      renderAttention(null);
+      return;
+    }
+    try {
+      const orgWide = hasAdminToken();
+      const data = orgWide
+        ? await api("/v1/admin/reporting/governance-insights", { headers: adminHeaders() })
+        : await api("/v1/reporting/governance-insights", { headers: devHeaders() });
+      renderAttention(data);
+    } catch (err) {
+      renderAttention(null);
+      log("attention queue failed: " + err.message);
+    }
+  }
+
+  function renderAttention(data) {
+    const items = Array.isArray(data && data.items) ? data.items : [];
+    const summary = (data && data.summary) || {};
+    if (el.attentionBadge) el.attentionBadge.textContent = String(summary.total || items.length || 0);
+
+    if (el.attentionSummary) {
+      el.attentionSummary.innerHTML = "";
+      severityOrder.forEach((severity) => {
+        const count = (summary.by_severity && summary.by_severity[severity]) || 0;
+        const tile = document.createElement("article");
+        tile.className = "metric-tile severity-" + severity;
+        tile.innerHTML = "<span>" + escapeHtml(humanLabel(severity)) + "</span><strong>" + count + "</strong>";
+        el.attentionSummary.appendChild(tile);
+      });
+    }
+
+    if (!el.attentionList) return;
+    el.attentionList.innerHTML = "";
+    if (!items.length) {
+      emptyList(el.attentionList, "No open attention items in this window");
+      return;
+    }
+
+    const sorted = items.slice().sort((a, b) => {
+      const rankDiff = severityOrder.indexOf(a.severity) - severityOrder.indexOf(b.severity);
+      if (rankDiff !== 0) return rankDiff;
+      return new Date(b.observed_at || 0) - new Date(a.observed_at || 0);
+    });
+
+    const table = document.createElement("table");
+    table.className = "ledger-table";
+    table.innerHTML = [
+      "<thead><tr>",
+      "<th>Severity</th>",
+      "<th>Category</th>",
+      "<th>Title</th>",
+      "<th>Reason</th>",
+      "<th>Observed</th>",
+      "<th>Session</th>",
+      "</tr></thead><tbody></tbody>",
+    ].join("");
+    const tbody = table.querySelector("tbody");
+    sorted.forEach((item) => {
+      const severity = item.severity || "low";
+      const row = document.createElement("tr");
+      row.className = "attention-row severity-" + severity;
+      const sessionCell = item.session_id
+        ? "<a href=\"#/sessions\" data-session-jump=\"" + escapeHtml(item.session_id) + "\">" + escapeHtml(shortSessionID(item.session_id)) + "</a>"
+        : "-";
+      row.innerHTML = [
+        "<td><span class=\"severity-pill severity-" + escapeHtml(severity) + "\">" + escapeHtml(humanLabel(severity)) + "</span></td>",
+        "<td>" + escapeHtml(humanLabel(item.category)) + "</td>",
+        "<td><strong>" + escapeHtml(item.title || "-") + "</strong></td>",
+        "<td>" + escapeHtml(item.reason || "-") + "</td>",
+        "<td>" + escapeHtml(formatShortDate(item.observed_at)) + "</td>",
+        "<td>" + sessionCell + "</td>",
+      ].join("");
+      tbody.appendChild(row);
+    });
+    el.attentionList.appendChild(table);
+
+    // Jump to the existing session audit view instead of duplicating it here.
+    el.attentionList.querySelectorAll("a[data-session-jump]").forEach((link) => {
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        const sessionID = link.dataset.sessionJump;
+        window.location.hash = "#/sessions";
+        loadAuditTrail(sessionID);
+      });
+    });
+  }
+
   function renderAgents(agents) {
     const list = Array.isArray(agents) ? agents : [];
     state.lastAgents = list;
@@ -432,6 +537,64 @@
     const rate = hits + misses === 0 ? "-" : Math.round((hits / (hits + misses)) * 100) + "%";
     el.cacheRate.textContent = rate;
     el.patchCount.textContent = String(applied + rejected);
+  }
+
+  // Session activity: statuses the runtime still owns (server-side kill
+  // switch, run dispatch and confirm handlers use these same literal status
+  // strings), and the client-side staleness window for the "stalled" badge.
+  // This 90s window is a UI freshness cue distinct from the server's own
+  // 30-minute "stalled_session" attention item -- it flags a quiet session
+  // long before it would show up in the Attention queue.
+  const ACTIVE_SESSION_STATUSES = ["running", "confirming", "awaiting_confirmation"];
+  const STALLABLE_SESSION_STATUSES = ["running", "confirming"];
+  const STALL_THRESHOLD_MS = 90 * 1000;
+
+  function isActiveStatus(status) {
+    return ACTIVE_SESSION_STATUSES.indexOf(status) !== -1;
+  }
+
+  function elapsedMs(value) {
+    if (!value) return NaN;
+    const then = new Date(value).getTime();
+    return Number.isNaN(then) ? NaN : Date.now() - then;
+  }
+
+  function isStalledSession(session) {
+    if (!session || STALLABLE_SESSION_STATUSES.indexOf(session.status) === -1) return false;
+    const age = elapsedMs(session.latest_event_at);
+    return !Number.isNaN(age) && age >= STALL_THRESHOLD_MS;
+  }
+
+  function elapsedLabel(value) {
+    const ms = elapsedMs(value);
+    if (Number.isNaN(ms)) return "";
+    const seconds = Math.max(0, Math.floor(ms / 1000));
+    if (seconds < 60) return seconds + "s ago";
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + "m ago";
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + "h ago";
+    return Math.floor(hours / 24) + "d ago";
+  }
+
+  // Status cell: real status plus a client-computed staleness cue. Kept
+  // separate from the generic cell() helper because it embeds the stalled
+  // pill as raw markup rather than escaped text.
+  function statusCell(session) {
+    const primaryText = escapeHtml(humanLabel(session.status) || "-");
+    const stalled = isStalledSession(session);
+    const stalledPill = stalled
+      ? "<span class=\"stalled-pill\" title=\"" + escapeHtml("no audit activity since " + formatDate(session.latest_event_at)) + "\">Stalled</span>"
+      : "";
+    const secondaryParts = [];
+    if (session.patch_state) secondaryParts.push("patch " + session.patch_state);
+    else if (session.tool_call_count) secondaryParts.push(session.tool_call_count + " tool calls");
+    if (session.status === "running") {
+      const elapsed = elapsedLabel(session.latest_event_at);
+      if (elapsed) secondaryParts.push("last event " + elapsed);
+    }
+    const secondary = secondaryParts.length ? escapeHtml(secondaryParts.join(" · ")) : "-";
+    return "<td><strong>" + primaryText + (stalledPill ? " " + stalledPill : "") + "</strong><span>" + secondary + "</span></td>";
   }
 
   function renderSessions(sessions) {
@@ -490,7 +653,7 @@
         cell(session.work_item_id || session.branch || "-", [session.repo_url, session.branch].filter(Boolean).join(" / ") || session.use_case_id || "-"),
         cell(session.routed_agent || session.agent || "-", [orphanHint, delegatedHint, childHint, rollupHint, modeLabel].filter(Boolean).join(" ") || "-", "", 0, true),
         cell(summary.model_alias || "-", [summary.model_resolved, summary.gateway_backend].filter(Boolean).join(" / ") || "-"),
-        cell(humanLabel(session.status) || "-", session.patch_state ? "patch " + session.patch_state : (session.tool_call_count ? session.tool_call_count + " tool calls" : "-")),
+        statusCell(session),
         cell(String(summary.total_tokens || 0), (summary.prompt_tokens || 0) + " in / " + (summary.completion_tokens || 0) + " out", "tokens"),
         cell(formatCostValue(summary), costSourceLabel(summary.cost_source) || "unpriced", "cost"),
         cell(session.trust_level || "-", session.enforcement_mode || "-"),
@@ -638,6 +801,11 @@
       ? await api("/v1/admin/audit/sessions/" + encodeURIComponent(sessionID), { headers: adminHeaders() })
       : await api("/v1/audit/sessions/" + encodeURIComponent(sessionID), { headers: devHeaders() });
     renderAuditTrail(audit);
+    // Record what was fetched so the next auto-refresh tick can tell whether
+    // this session's detail is still worth re-fetching (see loadOrgSessions).
+    const matched = state.lastSessions.find((session) => session.session_id === sessionID);
+    state.lastAuditSessionID = sessionID;
+    state.lastAuditStatus = (matched && matched.status) || "";
     log("audit loaded: " + sessionID);
   }
 
@@ -858,10 +1026,24 @@
       renderSessions(sessions);
       const nextSessionID = selectedStillExists ? state.selectedSessionID : defaultSelectedSessionID(sessions);
       if (nextSessionID) {
-        await loadAuditTrail(nextSessionID);
-        scrollSelectedSessionIntoView();
+        const nextSession = sessions.find((session) => session.session_id === nextSessionID);
+        const nextStatus = (nextSession && nextSession.status) || "";
+        // The 15s auto-refresh tick lands here too. Re-fetching the audit
+        // trail on every tick is only useful while the session is still
+        // active; once it settles into done/failed/aborted, fetch once more
+        // to pick up its final events, then stop polling that session.
+        // loadAuditTrail() records what it fetched in state.lastAudit*, so
+        // this compares against the last *fetched* state, not this tick's.
+        const sessionChanged = nextSessionID !== state.lastAuditSessionID;
+        const statusChanged = nextStatus !== state.lastAuditStatus;
+        if (sessionChanged || statusChanged || isActiveStatus(nextStatus)) {
+          await loadAuditTrail(nextSessionID);
+          scrollSelectedSessionIntoView();
+        }
       } else {
         state.selectedSessionID = "";
+        state.lastAuditSessionID = "";
+        state.lastAuditStatus = "";
         renderAuditTrail({ session_id: "", events: [] });
       }
     } catch (err) {
@@ -983,6 +1165,7 @@
     await loadOrgSessions();
 
     loadKillSwitches();
+    loadAttention();
     renderReadiness();
   }
 
@@ -1041,6 +1224,7 @@
   const pageTitles = {
     overview: "Overview",
     sessions: "Activity Ledger",
+    attention: "Attention",
     gateways: "Gateways",
     governance: "Risk Controls",
     catalog: "Evidence & Reporting",

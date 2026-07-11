@@ -164,3 +164,24 @@ func TestRegisterRegistryHandlersIncludesEvidenceAndCacheRoutes(t *testing.T) {
 		})
 	}
 }
+
+func TestRegisterAdminRegistryHandlersIncludesEvidenceDecisionRoutes(t *testing.T) {
+	mux := http.NewServeMux()
+	registerAdminRegistryHandlers(mux, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for _, path := range []string{
+		"/v1/admin/evidence",
+		"/v1/admin/evidence/ev_1/confirm",
+		"/v1/admin/evidence/ev_1/reject",
+		"/v1/admin/cache-outcomes",
+		"/v1/admin/reporting/maturity-governance",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("route %s was not registered: got %d", path, rec.Code)
+		}
+	}
+}

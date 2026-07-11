@@ -174,27 +174,12 @@ func (s *SQLiteSessionStore) migrate() error {
 }
 
 func (s *SQLiteSessionStore) ensureSessionColumn(column string, definition string) error {
-	rows, err := s.db.Query(`PRAGMA table_info(sessions)`)
+	columns, err := sqlitex.TableColumns(s.db, "sessions")
 	if err != nil {
 		return fmt.Errorf("inspect sessions schema: %w", err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name string
-		var columnType string
-		var notNull int
-		var defaultValue sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
-			return fmt.Errorf("scan sessions schema: %w", err)
-		}
-		if name == column {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate sessions schema: %w", err)
+	if columns[column] {
+		return nil
 	}
 	if _, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE sessions ADD COLUMN %s %s`, column, definition)); err != nil {
 		// Another process may win the PRAGMA table_info -> ALTER TABLE race.
@@ -358,6 +343,57 @@ func (s *SQLiteSessionStore) ListRecent(ctx context.Context, actorSubject string
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate recent sessions: %w", err)
+	}
+	return sessions, nil
+}
+
+// ListRecentSince returns an actor's sessions created at or after since,
+// newest first, capped at limit. It powers actor-scoped, time-windowed
+// reporting (the governance insight projection) where ListRecent's smaller
+// pagination cap is too tight for a multi-day window.
+func (s *SQLiteSessionStore) ListRecentSince(ctx context.Context, actorSubject string, since time.Time, limit int) ([]SessionRecord, error) {
+	if limit <= 0 || limit > insightSessionCap {
+		limit = insightSessionCap
+	}
+	rows, err := s.db.QueryContext(ctx, `
+			SELECT
+				session_id, COALESCE(parent_session_id, ''), actor_subject, agent, COALESCE(routed_agent, ''), classification, prompt_sha256, status, created_at,
+				COALESCE(run_id, ''), COALESCE(permission_mode, 'reviewed'), COALESCE(approval_mode, 'manual'), COALESCE(workspace_mode, ''),
+				COALESCE(use_case_id, ''), COALESCE(workflow_id, ''), COALESCE(work_item_id, ''), COALESCE(work_item_type, ''),
+				COALESCE(repo_url, ''), COALESCE(branch, ''), COALESCE(commit_sha, ''), COALESCE(intent, ''), COALESCE(actor_hint, ''), COALESCE(source_system, ''),
+				COALESCE(story_points, 0), COALESCE(estimated_dev_days, 0), COALESCE(blended_day_rate_usd, 0),
+				COALESCE(baseline_cost_usd, 0), COALESCE(model_cost_usd, 0), COALESCE(tool_cost_usd, 0),
+				COALESCE(platform_cost_usd, 0), COALESCE(review_cost_usd, 0),
+				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, '')
+			FROM sessions
+			WHERE actor_subject = ? AND created_at >= ?
+			ORDER BY created_at DESC
+			LIMIT ?
+	`, actorSubject, since.UTC().Format(time.RFC3339Nano), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recent sessions since: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []SessionRecord
+	for rows.Next() {
+		var rec SessionRecord
+		var createdAtStr string
+		if err := rows.Scan(
+			&rec.SessionID, &rec.ParentSessionID, &rec.ActorSubject, &rec.Agent, &rec.RoutedAgent, &rec.Classification, &rec.PromptSHA256, &rec.Status, &createdAtStr,
+			&rec.RunID, &rec.PermissionMode, &rec.ApprovalMode, &rec.WorkspaceMode,
+			&rec.UseCaseID, &rec.WorkflowID, &rec.WorkItemID, &rec.WorkItemType, &rec.RepoURL, &rec.Branch, &rec.CommitSHA, &rec.Intent, &rec.ActorHint, &rec.SourceSystem,
+			&rec.StoryPoints, &rec.EstimatedDevDays, &rec.BlendedDayRateUSD, &rec.BaselineCostUSD,
+			&rec.ModelCostUSD, &rec.ToolCostUSD, &rec.PlatformCostUSD, &rec.ReviewCostUSD,
+			&rec.VerificationCostUSD, &rec.RetryCount, &rec.GatewayTokenSHA256, &rec.RuntimeGatewayTokenSHA256,
+		); err != nil {
+			return nil, fmt.Errorf("scan recent session since: %w", err)
+		}
+		rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAtStr)
+		sessions = append(sessions, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recent sessions since: %w", err)
 	}
 	return sessions, nil
 }
