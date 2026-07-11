@@ -40,6 +40,7 @@ type SessionConfig struct {
 	CostCapEnabled    bool
 	SessionCostCapUSD float64
 	PolicyEngine      policyengine.Engine
+	PolicyDecisions   PolicyDecisionStore
 	ToolLoopMax       int
 	PatchBuffer       *PatchBuffer
 	Metrics           *MetricsHandler
@@ -93,6 +94,7 @@ type SessionService struct {
 	costCapEnabled     bool
 	sessionCostCapUSD  float64
 	policyEngine       policyengine.Engine
+	policyDecisions    PolicyDecisionStore
 	toolLoopMax        int
 	patchBuffer        *PatchBuffer
 	metrics            *MetricsHandler
@@ -272,6 +274,10 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 	if engine == nil {
 		engine, _ = policyengine.New("native")
 	}
+	policyDecisions := cfg.PolicyDecisions
+	if policyDecisions == nil {
+		policyDecisions = NewMemoryPolicyDecisionStore()
+	}
 	patchBuffer := cfg.PatchBuffer
 	if patchBuffer == nil {
 		patchBuffer = NewPatchBuffer()
@@ -308,6 +314,7 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 		costCapEnabled:     cfg.CostCapEnabled,
 		sessionCostCapUSD:  cfg.SessionCostCapUSD,
 		policyEngine:       engine,
+		policyDecisions:    policyDecisions,
 		toolLoopMax:        toolLoopMax,
 		patchBuffer:        patchBuffer,
 		metrics:            cfg.Metrics,
@@ -549,6 +556,25 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "policy engine unavailable"})
 		return
 	}
+	policySessionID := ""
+	policyCorrelationID := ""
+	if decision.Allowed {
+		policySessionID = s.newID("sess")
+	} else {
+		policyCorrelationID = randomID("corr")
+	}
+	if err := s.recordPolicyDecision(r.Context(), policyengine.Request{
+		AgentName:         request.Agent,
+		ActionType:        "session.create",
+		Classification:    request.Classification,
+		ClassificationMax: s.classificationMax,
+		CostCapEnabled:    s.costCapEnabled,
+		SessionCostCapUSD: s.sessionCostCapUSD,
+		EstimatedCostUSD:  request.EstimatedCostUSD,
+	}, decision, policySessionID, policyCorrelationID); err != nil {
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "policy decision write failed"})
+		return
+	}
 	if !decision.Allowed {
 		reason := decision.Reason
 		if reason == "" {
@@ -556,7 +582,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		}
 		findings := decision.Findings
 		if reason == "cost cap exceeded" {
-			if err := s.appendDeniedWithCost(r.Context(), reason, request.Classification, request.EstimatedCostUSD, s.sessionCostCapUSD); err != nil {
+			if err := s.appendDeniedWithCost(r.Context(), reason, request.Classification, request.EstimatedCostUSD, s.sessionCostCapUSD, policyAuditLink{decisionID: decision.DecisionID, correlationID: policyCorrelationID}); err != nil {
 				httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 				return
 			}
@@ -564,7 +590,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteJSON(w, http.StatusPaymentRequired, map[string]any{"error": reason})
 			return
 		}
-		if err := s.appendDenied(r.Context(), reason, findings, request.Classification); err != nil {
+		if err := s.appendDenied(r.Context(), reason, findings, request.Classification, policyAuditLink{decisionID: decision.DecisionID, correlationID: policyCorrelationID}); err != nil {
 			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
@@ -573,7 +599,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID := s.newID("sess")
+	sessionID := policySessionID
 	eventID := s.newID("evt")
 	promptHash := sha256.Sum256([]byte(request.Prompt))
 
@@ -601,6 +627,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		PromptSHA256:       hex.EncodeToString(promptHash[:]),
 		EstimatedCostUSD:   request.EstimatedCostUSD,
 		CostCapUSD:         activeCostCap(s.costCapEnabled, s.sessionCostCapUSD),
+		PolicyDecisionID:   decision.DecisionID,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",

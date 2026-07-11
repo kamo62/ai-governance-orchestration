@@ -80,7 +80,7 @@ func (s *SessionService) CreateDelegatedTaskSession(ctx context.Context, req Del
 	sourceSystem := defaultString(strings.TrimSpace(req.SourceSystem), "opencode-task")
 	policyCtx := WithAuthInfo(ctx, AuthInfo{Subject: actor, Method: "gateway"})
 	if blocked, reason := s.blockedByKillSwitch(agent); blocked {
-		_ = s.appendDelegationDenied(policyCtx, parentSessionID, agent, classification, reason, promptHashHex, req)
+		_ = s.appendDelegationDenied(policyCtx, parentSessionID, agent, classification, reason, promptHashHex, req, "")
 		return DelegatedTaskSessionResult{}, errors.New(reason)
 	}
 	decision, err := s.evaluatePolicy(policyCtx, policyengine.Request{
@@ -101,7 +101,7 @@ func (s *SessionService) CreateDelegatedTaskSession(ctx context.Context, req Del
 		SessionCostCapUSD: s.sessionCostCapUSD,
 	})
 	if err != nil {
-		_ = s.appendDelegationDenied(policyCtx, parentSessionID, agent, classification, "policy engine unavailable", promptHashHex, req)
+		_ = s.appendDelegationDenied(policyCtx, parentSessionID, agent, classification, "policy engine unavailable", promptHashHex, req, "")
 		return DelegatedTaskSessionResult{}, errors.New("policy engine unavailable")
 	}
 	if !decision.Allowed {
@@ -109,12 +109,34 @@ func (s *SessionService) CreateDelegatedTaskSession(ctx context.Context, req Del
 		if reason == "" {
 			reason = "policy denied"
 		}
-		_ = s.appendDelegationDenied(policyCtx, parentSessionID, agent, classification, reason, promptHashHex, req)
+		if err := s.recordPolicyDecision(policyCtx, policyengine.Request{
+			SessionID:         parentSessionID,
+			AgentName:         agent,
+			ActionType:        "session.delegate",
+			Classification:    classification,
+			ClassificationMax: s.classificationMax,
+			CostCapEnabled:    s.costCapEnabled,
+			SessionCostCapUSD: s.sessionCostCapUSD,
+		}, decision, parentSessionID, ""); err != nil {
+			return DelegatedTaskSessionResult{}, errors.New("policy decision write failed")
+		}
+		_ = s.appendDelegationDenied(policyCtx, parentSessionID, agent, classification, reason, promptHashHex, req, decision.DecisionID)
 		s.recordPolicyDenial(reason)
 		return DelegatedTaskSessionResult{}, errors.New(reason)
 	}
 
 	sessionID := s.newID("sess_task")
+	if err := s.recordPolicyDecision(policyCtx, policyengine.Request{
+		SessionID:         sessionID,
+		AgentName:         agent,
+		ActionType:        "session.delegate",
+		Classification:    classification,
+		ClassificationMax: s.classificationMax,
+		CostCapEnabled:    s.costCapEnabled,
+		SessionCostCapUSD: s.sessionCostCapUSD,
+	}, decision, sessionID, ""); err != nil {
+		return DelegatedTaskSessionResult{}, errors.New("policy decision write failed")
+	}
 	eventID := s.newID("evt")
 	now := time.Now().UTC()
 	intent := description
@@ -148,6 +170,7 @@ func (s *SessionService) CreateDelegatedTaskSession(ctx context.Context, req Del
 		CorrelationSubject:  "opencode-task",
 		TrustLevel:          "gateway_enforced",
 		EnforcementMode:     "gateway",
+		PolicyDecisionID:    decision.DecisionID,
 		RecordedAt:          now,
 	})
 	if err != nil {
@@ -184,7 +207,7 @@ func (s *SessionService) CreateDelegatedTaskSession(ctx context.Context, req Del
 	return DelegatedTaskSessionResult{Record: record, AuditEvent: event}, nil
 }
 
-func (s *SessionService) appendDelegationDenied(ctx context.Context, parentSessionID, agent, classification, reason, promptHash string, req DelegatedTaskSessionRequest) error {
+func (s *SessionService) appendDelegationDenied(ctx context.Context, parentSessionID, agent, classification, reason, promptHash string, req DelegatedTaskSessionRequest, policyDecisionID string) error {
 	if s == nil || s.audit == nil {
 		return nil
 	}
@@ -197,6 +220,7 @@ func (s *SessionService) appendDelegationDenied(ctx context.Context, parentSessi
 		Agent:               agent,
 		Classification:      classification,
 		Reason:              reason,
+		PolicyDecisionID:    policyDecisionID,
 		PromptSHA256:        promptHash,
 		Provider:            strings.TrimSpace(req.Provider),
 		ModelAlias:          strings.TrimSpace(req.ModelAlias),

@@ -23,21 +23,37 @@ func (s *SessionService) recordPolicyDenial(reason string) {
 	}
 }
 
-func (s *SessionService) appendDeniedWithCost(ctx context.Context, reason string, classification string, estimatedCostUSD float64, costCapUSD float64) error {
+type policyAuditLink struct {
+	decisionID    string
+	sessionID     string
+	correlationID string
+}
+
+func (s *SessionService) appendDeniedWithCost(ctx context.Context, reason string, classification string, estimatedCostUSD float64, costCapUSD float64, links ...policyAuditLink) error {
 	if s == nil || s.audit == nil {
 		return nil
 	}
+	link := policyAuditLink{}
+	if len(links) > 0 {
+		link = links[0]
+	}
+	correlationSubject := "governance-shell"
+	if link.correlationID != "" {
+		correlationSubject = link.correlationID
+	}
 	_, err := s.audit.Append(ctx, audit.Event{
 		EventID:            s.newID("evt"),
+		SessionID:          link.sessionID,
 		EventType:          "session.denied",
 		Actor:              actorFromContext(ctx),
 		Classification:     classification,
 		Reason:             reason,
 		EstimatedCostUSD:   estimatedCostUSD,
 		CostCapUSD:         costCapUSD,
+		PolicyDecisionID:   link.decisionID,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
-		CorrelationSubject: "governance-shell",
+		CorrelationSubject: correlationSubject,
 	})
 	if err == nil {
 		s.recordSessionDenied()
@@ -45,20 +61,30 @@ func (s *SessionService) appendDeniedWithCost(ctx context.Context, reason string
 	return err
 }
 
-func (s *SessionService) appendDenied(ctx context.Context, reason string, findings []string, classification string) error {
+func (s *SessionService) appendDenied(ctx context.Context, reason string, findings []string, classification string, links ...policyAuditLink) error {
 	if s == nil || s.audit == nil {
 		return nil
 	}
+	link := policyAuditLink{}
+	if len(links) > 0 {
+		link = links[0]
+	}
+	correlationSubject := "governance-shell"
+	if link.correlationID != "" {
+		correlationSubject = link.correlationID
+	}
 	_, err := s.audit.Append(ctx, audit.Event{
 		EventID:            s.newID("evt"),
+		SessionID:          link.sessionID,
 		EventType:          "session.denied",
 		Actor:              actorFromContext(ctx),
 		Classification:     classification,
 		Reason:             reason,
 		Findings:           findings,
+		PolicyDecisionID:   link.decisionID,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
-		CorrelationSubject: "governance-shell",
+		CorrelationSubject: correlationSubject,
 	})
 	if err == nil {
 		s.recordSessionDenied()
@@ -73,7 +99,22 @@ func (s *SessionService) evaluatePolicy(ctx context.Context, req policyengine.Re
 	if req.UserID == "" {
 		req.UserID = actorFromContext(ctx)
 	}
-	return s.policyEngine.Evaluate(ctx, req)
+	decision, err := s.policyEngine.Evaluate(ctx, req)
+	if err == nil && decision.DecisionID == "" {
+		decision.DecisionID = s.newID("pol")
+	}
+	return decision, err
+}
+
+func (s *SessionService) recordPolicyDecision(ctx context.Context, request policyengine.Request, decision policyengine.Decision, sessionID, correlationID string) error {
+	if s == nil || s.policyDecisions == nil {
+		return nil
+	}
+	actor := request.UserID
+	if actor == "" {
+		actor = actorFromContext(ctx)
+	}
+	return s.policyDecisions.RecordPolicyDecision(ctx, policyDecisionRecordFromEvaluation(request, decision, actor, sessionID, correlationID))
 }
 
 func (s *SessionService) recordSessionCreated() {

@@ -159,16 +159,34 @@ func (s *SessionService) CreateAutoGatewaySession(ctx context.Context, req AutoG
 		_ = s.appendDenied(policyCtx, "policy engine unavailable", nil, classification)
 		return AutoGatewaySessionResult{}, errors.New("policy engine unavailable")
 	}
+	policySessionID := ""
+	policyCorrelationID := ""
+	if decision.Allowed {
+		policySessionID = s.newID("sess_auto")
+	} else {
+		policyCorrelationID = randomID("corr")
+	}
+	if err := s.recordPolicyDecision(policyCtx, policyengine.Request{
+		AgentName:         request.Agent,
+		ActionType:        "session.auto_create",
+		Classification:    request.Classification,
+		ClassificationMax: s.classificationMax,
+		CostCapEnabled:    s.costCapEnabled,
+		SessionCostCapUSD: s.sessionCostCapUSD,
+		EstimatedCostUSD:  request.EstimatedCostUSD,
+	}, decision, policySessionID, policyCorrelationID); err != nil {
+		return AutoGatewaySessionResult{}, errors.New("policy decision write failed")
+	}
 	if !decision.Allowed {
 		reason := decision.Reason
 		if reason == "" {
 			reason = "policy denied"
 		}
 		if reason == "cost cap exceeded" {
-			_ = s.appendDeniedWithCost(policyCtx, reason, classification, request.EstimatedCostUSD, s.sessionCostCapUSD)
+			_ = s.appendDeniedWithCost(policyCtx, reason, classification, request.EstimatedCostUSD, s.sessionCostCapUSD, policyAuditLink{decisionID: decision.DecisionID, correlationID: policyCorrelationID})
 			s.recordCostCapped()
 		} else {
-			_ = s.appendDenied(policyCtx, reason, decision.Findings, classification)
+			_ = s.appendDenied(policyCtx, reason, decision.Findings, classification, policyAuditLink{decisionID: decision.DecisionID, correlationID: policyCorrelationID})
 			s.recordPolicyDenial(reason)
 		}
 		return AutoGatewaySessionResult{}, errors.New(reason)
@@ -176,7 +194,7 @@ func (s *SessionService) CreateAutoGatewaySession(ctx context.Context, req AutoG
 	promptHash := strings.TrimSpace(req.PromptSHA256)
 	modelAlias := strings.TrimSpace(req.ModelAlias)
 	endpoint := strings.TrimSpace(req.Endpoint)
-	sessionID := s.newID("sess_auto")
+	sessionID := policySessionID
 	eventID := s.newID("evt")
 	now := time.Now().UTC()
 	trust := s.trustMetadataFromClient(strings.TrimSpace(req.Client), strings.TrimSpace(req.TrustedClientToken))
@@ -205,6 +223,7 @@ func (s *SessionService) CreateAutoGatewaySession(ctx context.Context, req AutoG
 		Reason:             "auto session for model gateway " + endpoint,
 		EstimatedCostUSD:   request.EstimatedCostUSD,
 		CostCapUSD:         activeCostCap(s.costCapEnabled, s.sessionCostCapUSD),
+		PolicyDecisionID:   decision.DecisionID,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "model-gateway",
