@@ -6,6 +6,8 @@ implementation.md
 *.pdf
 reference/
 hackathon projects.zip
+.kiro/
+test-doc.md
 
 # Local secrets and machine-specific environment
 .env
