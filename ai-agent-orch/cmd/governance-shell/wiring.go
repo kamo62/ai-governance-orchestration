@@ -42,32 +42,102 @@ func (r copilotStoreResolver) TokenForActor(ctx context.Context, actorSubject st
 	return updated, nil
 }
 
-func registerRegistryHandlers(mux *http.ServeMux, registryHandler http.Handler) {
-	mux.Handle("/v1/use-cases", registryHandler)
-	mux.Handle("/v1/use-cases/", registryHandler)
-	mux.Handle("/v1/workflows", registryHandler)
-	mux.Handle("/v1/context-manifests", registryHandler)
-	mux.Handle("/v1/context-manifests/", registryHandler)
-	mux.Handle("/v1/reporting/maturity-governance", registryHandler)
-	mux.Handle("/v1/cache-outcomes", registryHandler)
-	mux.Handle("/v1/evidence", registryHandler)
+type authMode string
+
+const (
+	authRequired     authMode = "required"
+	authAdmin        authMode = "admin"
+	authAdminOnWrite authMode = "admin_on_write"
+	authPublic       authMode = "public"
+	authSelf         authMode = "self"
+)
+
+type authRouter struct {
+	mux   *http.ServeMux
+	modes map[string]authMode
 }
 
-func registerAdminRegistryHandlers(mux *http.ServeMux, adminRegistryHandler http.Handler) {
-	mux.Handle("/v1/admin/evidence", adminRegistryHandler)
-	mux.Handle("/v1/admin/evidence/", adminRegistryHandler)
-	mux.Handle("/v1/admin/cache-outcomes", adminRegistryHandler)
-	mux.Handle("/v1/admin/reporting/maturity-governance", adminRegistryHandler)
+func newAuthRouter() *authRouter {
+	return &authRouter{mux: http.NewServeMux(), modes: map[string]authMode{}}
+}
+
+func (r *authRouter) Handle(mode authMode, pattern string, handler http.Handler) {
+	r.mux.Handle(pattern, handler)
+	r.modes[pattern] = mode
+}
+
+func (r *authRouter) Handler(service *governance.SessionService) http.Handler {
+	return authModeMiddleware(service, r.mux, r.modes)
+}
+
+// authModeMiddleware authorizes each matched route from its registration mode.
+// A route registered directly on the mux has no mode and is denied by default.
+func authModeMiddleware(service *governance.SessionService, mux *http.ServeMux, modes map[string]authMode) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		next, pattern := mux.Handler(req)
+		mode, ok := modes[pattern]
+		if !ok {
+			http.Error(w, "route auth mode required", http.StatusUnauthorized)
+			return
+		}
+
+		switch mode {
+		case authPublic, authSelf:
+			next.ServeHTTP(w, req)
+			return
+		case authAdmin:
+			if service.RequireAdminRequest(w, req) {
+				next.ServeHTTP(w, req)
+			}
+			return
+		case authRequired, authAdminOnWrite:
+			if mode == authAdminOnWrite && req.Method != http.MethodGet {
+				if service.RequireAdminRequest(w, req) {
+					next.ServeHTTP(w, req)
+				}
+				return
+			}
+			if subject, ok := service.AdminBearerSubject(req.Header.Get("Authorization")); ok {
+				next.ServeHTTP(w, req.WithContext(governance.WithAuthInfo(req.Context(), governance.AuthInfo{Subject: subject, Method: "admin"})))
+				return
+			}
+			authReq, ok := service.RequireAuthorizedRequest(w, req)
+			if ok {
+				next.ServeHTTP(w, authReq)
+			}
+			return
+		default:
+			http.Error(w, "route auth mode required", http.StatusUnauthorized)
+		}
+	})
+}
+
+func registerRegistryHandlers(mux *authRouter, registryHandler http.Handler) {
+	mux.Handle(authRequired, "/v1/use-cases", registryHandler)
+	mux.Handle(authRequired, "/v1/use-cases/", registryHandler)
+	mux.Handle(authRequired, "/v1/workflows", registryHandler)
+	mux.Handle(authRequired, "/v1/context-manifests", registryHandler)
+	mux.Handle(authRequired, "/v1/context-manifests/", registryHandler)
+	mux.Handle(authRequired, "/v1/reporting/maturity-governance", registryHandler)
+	mux.Handle(authRequired, "/v1/cache-outcomes", registryHandler)
+	mux.Handle(authRequired, "/v1/evidence", registryHandler)
+}
+
+func registerAdminRegistryHandlers(mux *authRouter, adminRegistryHandler http.Handler) {
+	mux.Handle(authAdmin, "/v1/admin/evidence", adminRegistryHandler)
+	mux.Handle(authAdmin, "/v1/admin/evidence/", adminRegistryHandler)
+	mux.Handle(authAdmin, "/v1/admin/cache-outcomes", adminRegistryHandler)
+	mux.Handle(authAdmin, "/v1/admin/reporting/maturity-governance", adminRegistryHandler)
 }
 
 // registerInsightHandlers wires the read-only governance insight projection
 // (actor-scoped and admin) alongside the existing reporting routes, plus the
 // explicit admin-triggered maturity snapshot that materializes the same
 // window into maturity_exports.
-func registerInsightHandlers(mux *http.ServeMux, insightHandler, adminInsightHandler, maturityExportRunHandler http.Handler) {
-	mux.Handle("/v1/reporting/governance-insights", insightHandler)
-	mux.Handle("/v1/admin/reporting/governance-insights", adminInsightHandler)
-	mux.Handle("/v1/admin/reporting/maturity-export/run", maturityExportRunHandler)
+func registerInsightHandlers(mux *authRouter, insightHandler, adminInsightHandler, maturityExportRunHandler http.Handler) {
+	mux.Handle(authRequired, "/v1/reporting/governance-insights", insightHandler)
+	mux.Handle(authAdmin, "/v1/admin/reporting/governance-insights", adminInsightHandler)
+	mux.Handle(authAdmin, "/v1/admin/reporting/maturity-export/run", maturityExportRunHandler)
 }
 
 type contextResolverAdapter struct {

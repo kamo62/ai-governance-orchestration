@@ -100,6 +100,132 @@ func TestWaitForModelBackendHealthReturnsTimeout(t *testing.T) {
 	}
 }
 
+func TestAuthModeMiddlewareDeniesUnannotatedOrUnknownRoutes(t *testing.T) {
+	tests := []struct {
+		name  string
+		path  string
+		build func() http.Handler
+	}{
+		{
+			name: "unannotated",
+			path: "/unannotated",
+			build: func() http.Handler {
+				mux := http.NewServeMux()
+				mux.Handle("/unannotated", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusNoContent)
+				}))
+				return authModeMiddleware(nil, mux, nil)
+			},
+		},
+		{
+			name: "unknown mode",
+			path: "/unknown",
+			build: func() http.Handler {
+				routes := newAuthRouter()
+				routes.Handle(authMode("unknown"), "/unknown", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusNoContent)
+				}))
+				return routes.Handler(nil)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			tt.build().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestAuthModeMiddlewareKeepsPublicRoutesUnauthenticated(t *testing.T) {
+	routes := newAuthRouter()
+	for _, route := range []struct {
+		mode    authMode
+		pattern string
+	}{
+		{authPublic, "/ui"},
+		{authPublic, "/ui/"},
+		{authPublic, "/mcp/healthz"},
+		{authPublic, "/readyz"},
+		{authPublic, "/healthz"},
+		{authPublic, "/metrics"},
+		{authSelf, "/internal/v1/model/"},
+		{authSelf, "/internal/v1/mcp/"},
+		{authSelf, "/v1/mcp/"},
+		{authSelf, "/v1/managed-client/evidence"},
+	} {
+		routes.Handle(route.mode, route.pattern, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+	}
+
+	for _, path := range []string{
+		"/ui", "/ui/demo", "/mcp/healthz", "/readyz", "/healthz", "/metrics",
+		"/internal/v1/model/demo", "/internal/v1/mcp/demo", "/v1/mcp/demo", "/v1/managed-client/evidence",
+	} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			routes.Handler(nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("expected unauthenticated route to reach handler, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestManagedClientEvidenceSelfAuthRoute(t *testing.T) {
+	now := time.Date(2026, 7, 11, 9, 0, 0, 0, time.UTC)
+	credentials, err := governance.NewSQLiteDeveloperCredentialStore(":memory:")
+	if err != nil {
+		t.Fatalf("new credential store: %v", err)
+	}
+	defer credentials.Close()
+	_, token, err := credentials.Issue(context.Background(), governance.DeveloperCredentialIssue{
+		ActorSubject: "demo-managed-client",
+		Client:       "demo-managed-client",
+		Now:          now,
+	})
+	if err != nil {
+		t.Fatalf("issue credential: %v", err)
+	}
+	sessions, err := governance.NewSQLiteSessionStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("new session store: %v", err)
+	}
+	defer sessions.Close()
+	routes := newAuthRouter()
+	routes.Handle(authSelf, "/v1/managed-client/evidence", governance.NewManagedClientEvidenceHandler(governance.ManagedClientEvidenceConfig{
+		Credentials: credentials,
+		Audit:       audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl")),
+		Sessions:    sessions,
+		Now:         func() time.Time { return now },
+	}))
+	body := []byte(`{"events":[{"event_id":"cev_demo_managed_client_session_start","schema_version":"v0","client":"demo-managed-client","client_session_id":"demo-managed-client-session","event_type":"session_start","timestamp":"2026-07-11T09:00:00Z"}]}`)
+
+	for _, tc := range []struct {
+		name  string
+		token string
+		want  int
+	}{
+		{name: "bad token", token: "air_bad", want: http.StatusUnauthorized},
+		{name: "good token", token: token, want: http.StatusAccepted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/managed-client/evidence", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+			rec := httptest.NewRecorder()
+			routes.Handler(nil).ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("expected %d, got %d: %s", tc.want, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestRegisterRegistryHandlersIncludesEvidenceAndCacheRoutes(t *testing.T) {
 	sessionStore, err := governance.NewSQLiteSessionStore(filepath.Join(t.TempDir(), "sessions.db"))
 	if err != nil {
@@ -124,8 +250,8 @@ func TestRegisterRegistryHandlersIncludesEvidenceAndCacheRoutes(t *testing.T) {
 		Sessions: sessionStore,
 	})
 	handler := governance.NewRegistryHandlerWithMetrics(governance.NewRegistryStore(), service, nil)
-	mux := http.NewServeMux()
-	registerRegistryHandlers(mux, handler)
+	routes := newAuthRouter()
+	registerRegistryHandlers(routes, handler)
 
 	for _, tc := range []struct {
 		name string
@@ -157,7 +283,7 @@ func TestRegisterRegistryHandlersIncludesEvidenceAndCacheRoutes(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, tc.path, bytes.NewReader(body))
 			req.Header.Set("Authorization", "Bearer test-token")
 			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, req)
+			routes.Handler(service).ServeHTTP(rec, req)
 			if rec.Code != http.StatusCreated {
 				t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 			}
@@ -166,10 +292,11 @@ func TestRegisterRegistryHandlersIncludesEvidenceAndCacheRoutes(t *testing.T) {
 }
 
 func TestRegisterAdminRegistryHandlersIncludesEvidenceDecisionRoutes(t *testing.T) {
-	mux := http.NewServeMux()
-	registerAdminRegistryHandlers(mux, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	routes := newAuthRouter()
+	registerAdminRegistryHandlers(routes, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
+	service := governance.NewSessionService(governance.SessionConfig{AdminToken: "test-admin"})
 	for _, path := range []string{
 		"/v1/admin/evidence",
 		"/v1/admin/evidence/ev_1/confirm",
@@ -178,8 +305,9 @@ func TestRegisterAdminRegistryHandlersIncludesEvidenceDecisionRoutes(t *testing.
 		"/v1/admin/reporting/maturity-governance",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer test-admin")
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, req)
+		routes.Handler(service).ServeHTTP(rec, req)
 		if rec.Code != http.StatusNoContent {
 			t.Fatalf("route %s was not registered: got %d", path, rec.Code)
 		}

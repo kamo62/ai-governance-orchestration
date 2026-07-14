@@ -35,6 +35,7 @@ env_value() {
 }
 
 DEV_TOKEN="$(env_value AI_ORCH_DEV_TOKEN local-dev)"
+MANAGED_CLIENT_RUNTIME_TOKEN="$(env_value AI_ORCH_CIO_MANAGED_CLIENT_RUNTIME_TOKEN "")"
 # Compose requires BIFROST_ENCRYPTION_KEY with no default. Prefer the shell or
 # .env.dev value so re-runs against a persisted bifrost volume keep working;
 # fall back to an ephemeral key for one-off demo runs.
@@ -68,6 +69,9 @@ curl -fsS -H "Authorization: Bearer ${DEV_TOKEN}" "${BASE_URL}/v1/system/status"
 
 echo "==> Seeding self-review evidence"
 AI_ORCH_CIO_BASE_URL="${BASE_URL}" AI_ORCH_DEV_TOKEN="${DEV_TOKEN}" "${ROOT}/scripts/cio-demo-seed-self-review.sh"
+
+echo "==> Seeding managed-client evidence"
+AI_ORCH_CIO_BASE_URL="${BASE_URL}" AI_ORCH_DEV_TOKEN="${DEV_TOKEN}" AI_ORCH_CIO_MANAGED_CLIENT_RUNTIME_TOKEN="${MANAGED_CLIENT_RUNTIME_TOKEN}" "${ROOT}/scripts/cio-demo-seed-managed-client.sh"
 
 echo "==> Checking metrics and UI"
 curl -fsS "${BASE_URL}/metrics" >/dev/null

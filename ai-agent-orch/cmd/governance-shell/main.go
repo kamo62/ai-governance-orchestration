@@ -264,15 +264,18 @@ func main() {
 	}
 	runtimeGatewayEnabled := cfg.RuntimeToken != "" || developerCredentialStore != nil
 
-	handler := http.NewServeMux()
-	handler.Handle("/ui", governanceui.Redirect())
-	handler.Handle("/ui/", http.StripPrefix("/ui/", governanceui.Handler()))
-	handler.Handle("/", baseHandler)
+	handler := newAuthRouter()
+	handler.Handle(authPublic, "/ui", governanceui.Redirect())
+	handler.Handle(authPublic, "/ui/", http.StripPrefix("/ui/", governanceui.Handler()))
+	handler.Handle(authPublic, "/mcp/healthz", baseHandler)
+	handler.Handle(authPublic, "/readyz", baseHandler)
+	handler.Handle(authPublic, "/healthz", baseHandler)
+	handler.Handle(authRequired, "/", baseHandler)
 	gatewayOptions := []governance.GatewayOption{
 		{ID: "bifrost", Label: "Bifrost", Mode: "sidecar", Default: true},
 		{ID: "copilot-user", Label: "GitHub Copilot", Mode: "per-user", ComposeFile: "docker-compose.copilot.yml"},
 	}
-	handler.Handle("/v1/system/status", governance.NewSystemStatusHandler(governance.SystemStatusConfig{
+	handler.Handle(authRequired, "/v1/system/status", governance.NewSystemStatusHandler(governance.SystemStatusConfig{
 		Service:               "governance-shell",
 		Version:               appversion.Version,
 		Environment:           cfg.Environment,
@@ -283,14 +286,14 @@ func main() {
 		PolicyEngine:          cfg.PolicyEngine,
 		Gateways:              gatewayOptions,
 	}))
-	handler.Handle("/v1/backends", governance.NewBackendHandler(governance.BackendHandlerConfig{
+	handler.Handle(authAdminOnWrite, "/v1/backends", governance.NewBackendHandler(governance.BackendHandlerConfig{
 		CurrentBackend: modelBackend.Name(),
 		GatewayOptions: gatewayOptions,
 		AdminToken:     cfg.AdminToken,
 		ControlEnabled: cfg.BackendControlEnabled,
 		WorkDir:        cfg.BackendControlWorkDir,
 	}))
-	handler.Handle("/v1/admin/providers/status", governance.NewProviderStatusHandlerFunc(func() []governance.ProviderReadiness {
+	handler.Handle(authAdmin, "/v1/admin/providers/status", governance.NewProviderStatusHandlerFunc(func() []governance.ProviderReadiness {
 		enrollments := 0
 		if copilotStore != nil {
 			if count, err := copilotStore.EnrollmentCount(context.Background()); err == nil {
@@ -300,42 +303,42 @@ func main() {
 		return governance.ProviderReadinessFromEnv(os.Getenv, modelBackend.Name(), enrollments)
 	}))
 	if copilotStore != nil {
-		handler.Handle("/v1/copilot/", governance.NewCopilotHandler(governance.CopilotHandlerConfig{DevToken: cfg.DevToken, Authorizer: requestAuthorizer, Store: copilotStore}))
+		handler.Handle(authRequired, "/v1/copilot/", governance.NewCopilotHandler(governance.CopilotHandlerConfig{DevToken: cfg.DevToken, Authorizer: requestAuthorizer, Store: copilotStore}))
 	}
-	handler.Handle("/v1/developer/", governance.NewDeveloperHandler(governance.DeveloperHandlerConfig{
+	handler.Handle(authRequired, "/v1/developer/", governance.NewDeveloperHandler(governance.DeveloperHandlerConfig{
 		DevToken:             cfg.DevToken,
 		Authorizer:           requestAuthorizer,
 		CopilotStore:         copilotStore,
 		CredentialStore:      developerCredentialStore,
 		RuntimeCredentialTTL: 90 * 24 * time.Hour,
 	}))
-	handler.Handle("/v1/agents", governance.NewAgentListHandler(cfg.CatalogRoot))
-	handler.Handle("/v1/runs", governance.NewRunHandler(sessionService, orchClient))
-	handler.Handle("/v1/sessions", governance.NewSessionHandler(sessionService))
-	handler.Handle("/v1/sessions/", &sessionSubrouter{
+	handler.Handle(authRequired, "/v1/agents", governance.NewAgentListHandler(cfg.CatalogRoot))
+	handler.Handle(authRequired, "/v1/runs", governance.NewRunHandler(sessionService, orchClient))
+	handler.Handle(authRequired, "/v1/sessions", governance.NewSessionHandler(sessionService))
+	handler.Handle(authRequired, "/v1/sessions/", &sessionSubrouter{
 		sessionService: sessionService,
 		orchClient:     orchClient,
 		events:         eventStore,
 	})
-	handler.Handle("/v1/audit/sessions/", governance.NewAuditLookupHandler(governance.AuditLookupConfig{
+	handler.Handle(authRequired, "/v1/audit/sessions/", governance.NewAuditLookupHandler(governance.AuditLookupConfig{
 		DevToken:     cfg.DevToken,
 		Authorizer:   requestAuthorizer,
 		Audit:        auditStore,
 		ModelPricing: modelPricingStore,
 		Sessions:     sessionStore,
 	}))
-	handler.Handle("/v1/managed-client/evidence", governance.NewManagedClientEvidenceHandler(governance.ManagedClientEvidenceConfig{
+	handler.Handle(authSelf, "/v1/managed-client/evidence", governance.NewManagedClientEvidenceHandler(governance.ManagedClientEvidenceConfig{
 		Credentials: developerCredentialStore,
 		Audit:       auditStore,
 		Sessions:    sessionStore,
 		Receipts:    managedClientReceiptStore(policyDecisionStore),
 	}))
-	handler.Handle("/v1/admin/killswitch", governance.NewAdminHandler(killSwitchStore, sessionService))
-	handler.Handle("/v1/admin/killswitch/", governance.NewAdminHandler(killSwitchStore, sessionService))
-	handler.Handle("/v1/admin/audit/retention", governance.NewAdminAuditHandler(auditStore, sessionService))
-	handler.Handle("/v1/admin/sessions", governance.NewAdminSessionsHandler(sessionService))
-	handler.Handle("/v1/admin/sessions/export", governance.NewAdminSessionsExportHandler(sessionService))
-	handler.Handle("/v1/admin/audit/sessions/", governance.NewAdminAuditLookupHandler(governance.AdminAuditLookupConfig{
+	handler.Handle(authAdmin, "/v1/admin/killswitch", governance.NewAdminHandler(killSwitchStore, sessionService))
+	handler.Handle(authAdmin, "/v1/admin/killswitch/", governance.NewAdminHandler(killSwitchStore, sessionService))
+	handler.Handle(authAdmin, "/v1/admin/audit/retention", governance.NewAdminAuditHandler(auditStore, sessionService))
+	handler.Handle(authAdmin, "/v1/admin/sessions", governance.NewAdminSessionsHandler(sessionService))
+	handler.Handle(authAdmin, "/v1/admin/sessions/export", governance.NewAdminSessionsExportHandler(sessionService))
+	handler.Handle(authAdmin, "/v1/admin/audit/sessions/", governance.NewAdminAuditLookupHandler(governance.AdminAuditLookupConfig{
 		Service:      sessionService,
 		Audit:        auditStore.(governance.AuditReader),
 		ModelPricing: modelPricingStore,
@@ -347,8 +350,8 @@ func main() {
 		governance.NewAdminInsightHandler(governance.InsightHandlerConfig{Service: sessionService, Registry: registryStore}),
 		governance.NewMaturityExportRunHandler(governance.MaturityExportRunConfig{Service: sessionService, Registry: registryStore}),
 	)
-	handler.Handle("/v1/compositions", governance.NewCompositionHandler(sessionService, compositionStore))
-	handler.Handle("/v1/compositions/", governance.NewCompositionHandler(sessionService, compositionStore))
+	handler.Handle(authRequired, "/v1/compositions", governance.NewCompositionHandler(sessionService, compositionStore))
+	handler.Handle(authRequired, "/v1/compositions/", governance.NewCompositionHandler(sessionService, compositionStore))
 	registerRegistryHandlers(handler, governance.NewRegistryHandlerWithMetrics(registryStore, sessionService, metricsHandler))
 	if err := governance.SeedPOCRegistryDefaults(registryStore); err != nil {
 		logx.Warnf("registry seed warning: %v", err)
@@ -365,20 +368,17 @@ func main() {
 		PolicyDecisions:   policyDecisionStore,
 		ClassificationMax: cfg.ClassificationMax,
 	})
-	handler.Handle("/v1/mcp/", mcpProxy)
-	handler.Handle("/internal/v1/model/", governance.NewModelProxyHandler(governance.ModelProxyConfig{
+	handler.Handle(authSelf, "/v1/mcp/", mcpProxy)
+	handler.Handle(authSelf, "/internal/v1/model/", governance.NewModelProxyHandler(governance.ModelProxyConfig{
 		ServiceToken:  cfg.ServiceToken,
 		Backend:       modelBackend,
 		Audit:         auditStore,
 		LookupSession: sessionService.SessionRecord,
 	}))
-	handler.Handle("/internal/v1/mcp/", mcpProxy)
-	handler.Handle("/metrics", metricsHandler)
+	handler.Handle(authSelf, "/internal/v1/mcp/", mcpProxy)
+	handler.Handle(authPublic, "/metrics", metricsHandler)
 
-	// Centralized auth middleware with explicit public allow-list.
-	// Internal proxy endpoints use service-token auth inside their own handlers.
-	publicPaths := []string{"/ui", "/mcp/healthz", "/readyz", "/healthz", "/metrics", "/internal/v1/model/", "/internal/v1/mcp/", "/v1/mcp/", "/v1/managed-client/evidence"}
-	authHandler := governance.AuthMiddleware(sessionService, publicPaths)(handler)
+	authHandler := handler.Handler(sessionService)
 
 	wrappedHandler := logRequestLatency(authHandler)
 	// TLS note: ListenAndServe runs plain HTTP. In production, terminate TLS at
