@@ -2,10 +2,14 @@
 
 ## v0.23.1-beta - 2026-07-14 (Patch)
 
-Release impact: Patch because this fixes static analysis findings and expands CI push coverage without changing public contracts.
+Release impact: Patch because route authorization is now declared explicitly with unchanged behavior for existing routes, and the remaining changes are demo tooling, CI coverage and static-analysis fixes.
 
+- Registered every governance-shell route with an explicit auth mode (required, admin, admin-on-write, self, public) and default deny, replacing the public-paths list.
+- Added `scripts/cio-demo-seed-managed-client.sh`, a synthetic managed-client evidence seed wired into `cio-demo-verify.sh` that skips with guidance when the default stack cannot mint a credential.
+- Added `scripts/dev-mint-runtime-credential.sh` to mint an actor-bound `air_` credential for managed-client test connections, with automatic device-login enrolment; documented in `runtime-client-integration.md` and the deployment guide's managed-client on-ramp section.
 - Lowercased the Foundry Claude unsupported-backend error and removed an unused Anthropic stream event type.
-- Run CI on pushes to all `feat/**` branches.
+- Run CI on pushes to all `feat/**` branches and aligned the agent-bridge package version with the root VERSION.
+- Updated Go to 1.26.5 for GO-2026-5856 (crypto/tls).
 
 ## v0.23.0-beta - 2026-07-03 (Minor)
 

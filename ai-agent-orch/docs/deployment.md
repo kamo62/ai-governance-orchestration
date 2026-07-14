@@ -142,6 +142,42 @@ Cleanup after the walkthrough:
 docker compose -p ai-orch-cio-demo -f docker-compose.yml -f docker-compose.beta.yml --profile beta down --remove-orphans
 ```
 
+### Managed-client live evidence on-ramp (Neokod / T3Code)
+
+The live managed-client story runs against the Copilot-backed local stack. The isolated
+CIO demo project cannot mint actor-bound credentials: it has no Copilot token store and
+no enrolled actors, which is why its seed step skips managed-client seeding by default.
+
+```sh
+cd ai-agent-orch
+./scripts/local-copilot-compose-up.sh   # governance shell on http://127.0.0.1:18080
+AI_ORCH_RUNTIME_CREDENTIAL_CLIENT=neokod ./scripts/dev-mint-runtime-credential.sh
+```
+
+The helper reuses existing enrolment. If the shell has never seen the actor it starts
+the GitHub device-login flow; this is identity proof for binding the credential to a
+person and has nothing to do with model routing. The client keeps its own provider
+logins.
+
+Paste the printed `air_` value into the client's governance settings, which live under
+`providerInstances.githubCopilot.config.managedClientEvidence` in the Neokod
+settings.json (`~/.neokod/dev/settings.json` for dev runs,
+`~/.neokod/userdata/settings.json` for the packaged app), with `enabled: true` and
+`governanceUrl: http://127.0.0.1:18080`. The client's test-connection posts a synthetic
+batch to `/v1/managed-client/evidence`; a `202` with `accepted: 1` proves the lane.
+Live evidence then appears in the Governance UI of the same stack at
+`http://127.0.0.1:18080/ui/`.
+
+Notes:
+
+- `gatewayEnabled` stays `false` for the recording-only posture. Enabling it routes MCP
+  calls through the gateway in the request path, which is a separate decision.
+- The credential sits in the client's plaintext settings.json until the client ships its
+  secret-store migration. Never show it on a projected screen.
+- Credentials are bound to the stack that minted them. A token minted on the Copilot
+  stack is not valid on the isolated CIO demo project; to seed that project, set
+  `AI_ORCH_CIO_MANAGED_CLIENT_RUNTIME_TOKEN` to a token minted for that stack.
+
 ### Provider-backed smoke (optional, requires OpenRouter)
 
 ```sh
