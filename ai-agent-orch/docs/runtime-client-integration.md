@@ -61,6 +61,24 @@ Single-command developer onboarding wires these lanes per client:
   model endpoint override, because Kiro has no governed model proxy lane — only the MCP
   tool lane and the hook→REST evidence lane.
 
+### Managed-Client Runtime Credential
+
+For a managed-client test connection such as T3Code/Neokod, mint an actor-bound
+credential against the local Governance Shell and paste the `air_` value into the
+client's governance settings:
+
+```sh
+cd ai-agent-orch
+AI_ORCH_ACTOR_SUBJECT=<same-actor-used-for-Copilot> \
+AI_ORCH_RUNTIME_CREDENTIAL_CLIENT=neokod \
+scripts/dev-mint-runtime-credential.sh
+```
+
+The helper prints only the credential to stdout, so it can be command-substituted. If
+the actor is not enrolled, it starts the existing GitHub device-login flow before minting.
+For a non-default stack, set `AI_ORCH_GOVERNANCE_URL`, `AI_ORCH_DEV_TOKEN`, and optionally
+`AI_ORCH_RUNTIME_CREDENTIAL_DEVICE_NAME`.
+
 ## Source Check
 
 Checked on 2026-06-04:
