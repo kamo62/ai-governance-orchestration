@@ -207,7 +207,7 @@ func TestBifrostBackendRejectsFoundryClaudeUntilTranslationExists(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected Foundry Claude translation error")
 	}
-	if !strings.Contains(err.Error(), "Foundry Claude backend is configured but Anthropic-compatible translation is unavailable") {
+	if !strings.Contains(err.Error(), "foundry Claude backend is configured but Anthropic-compatible translation is unavailable") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

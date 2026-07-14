@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feat/governance-shell-beta]
+    branches: [main, 'feat/**']
   pull_request:
     branches: [main]
 

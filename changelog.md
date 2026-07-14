@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.23.1-beta - 2026-07-14 (Patch)
+
+Release impact: Patch because this fixes static analysis findings and expands CI push coverage without changing public contracts.
+
+- Lowercased the Foundry Claude unsupported-backend error and removed an unused Anthropic stream event type.
+- Run CI on pushes to all `feat/**` branches.
+
 ## v0.23.0-beta - 2026-07-03 (Minor)
 
 Release impact: Minor because this adds backward-compatible managed-client evidence fields and operator-selectable Claude provider routing without breaking existing client aliases or gateway APIs.

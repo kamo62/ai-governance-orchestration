@@ -145,12 +145,6 @@ type anthropicUsage struct {
 	OutputTokens int `json:"output_tokens"`
 }
 
-// anthropicStreamEvent is the stable subset of Anthropic SSE events the adapter
-// emits. Each event is framed as `event: <type>\ndata: <json>\n\n`.
-type anthropicStreamEvent struct {
-	Type string `json:"type"`
-}
-
 // --- Request/response translation (the only new logic) ---
 
 // toChatRequest maps an Anthropic message request to the internal chat request:

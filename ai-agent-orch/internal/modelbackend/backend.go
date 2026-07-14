@@ -385,7 +385,7 @@ func foundryClaudeUnsupported(provider, model string) bool {
 }
 
 func errFoundryClaudeUnsupported() error {
-	return errors.New("Foundry Claude backend is configured but Anthropic-compatible translation is unavailable; use anthropic or bedrock, or add a Foundry Anthropic request/response adapter")
+	return errors.New("foundry Claude backend is configured but Anthropic-compatible translation is unavailable; use anthropic or bedrock, or add a Foundry Anthropic request/response adapter")
 }
 
 func (b *openAICompatibleBackend) postRaw(ctx context.Context, path string, req RawRequest) ([]byte, error) {
