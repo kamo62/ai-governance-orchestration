@@ -44,7 +44,7 @@ OpenCode, Cline and similar runtimes need a model provider surface. The practica
 
 OpenCode and Cline both have documented paths for custom/OpenAI-compatible model providers. That means the runtime can point at `ai-orch` as if it were a model provider, while `ai-orch` still owns the routing, policy, secrets and audit trail.
 
-Claude Code is a related but different path. It can use MCP for tools now, and it can route Claude API traffic through `ANTHROPIC_BASE_URL`, but that requires an Anthropic-compatible ai-orch endpoint or adapter. Do not present Claude Code model routing as complete until that compatibility path is implemented and tested.
+Claude Code is a related but different path. It uses MCP for tools, and it routes Claude API traffic through `ANTHROPIC_BASE_URL`, which needs an Anthropic-compatible ai-orch endpoint. That adapter is now implemented: `POST /v1/messages` translates Anthropic traffic into governed model calls, so Claude Code model routing is `gateway_enforced` with real usage and cost (see the API surface and streaming sections below).
 
 This avoids giving the worker runtime provider keys. The runtime receives only a session-scoped token for the compatibility gateway.
 
@@ -76,11 +76,14 @@ The first version should expose only:
 GET /v1/models
 POST /v1/chat/completions
 POST /v1/responses
+POST /v1/messages
 ```
+
+`POST /v1/messages` is the Anthropic-compatible adapter for Claude Code (`ANTHROPIC_BASE_URL`); the OpenAI-compatible endpoints serve OpenCode, Cline and similar runtimes.
 
 ### `GET /v1/models`
 
-Return governed aliases, not raw provider inventory. When the active backend can list actor-bound Copilot models and the request includes actor context, the gateway also includes the enrolled actor's current Copilot picker chat models as governed `copilot-...` aliases. Hidden Copilot entries and non-chat models are filtered out.
+Return governed aliases, not raw provider inventory. When the active backend can list actor-bound Copilot models and the request includes actor context, the gateway also appends the enrolled actor's current Copilot picker chat models as governed `copilot-...` aliases. These dynamic picker additions are chat-only (hidden Copilot entries and non-chat models are filtered out). Static governed aliases that are Responses-API only, such as `copilot-gpt-5.3-codex`/`copilot-gpt-5.4-mini`/`copilot-gpt-5.5`, are still exposed for use, but through the `ai-orch-responses` OpenCode provider rather than this chat-picker list.
 
 Example:
 
@@ -135,6 +138,21 @@ Requirements:
 
 The first implementation does not need to support every advanced Responses feature. It needs enough compatibility for a runtime to call governed model aliases without bypassing policy.
 
+### `POST /v1/messages`
+
+The Anthropic-compatible adapter that lets Claude Code (and other Anthropic-native clients) route model traffic through ai-orch by setting `ANTHROPIC_BASE_URL`. It lives inside the same model gateway and reuses the identical governance boundary as `/v1/chat/completions`: runtime-token auth, session resolution, alias-only routing, the selected model backend, and `gateway_enforced` audit with real usage and cost. Only the Anthropic request/response/stream translation is adapter-specific.
+
+Requirements:
+
+- require a session-scoped runtime token; fail closed (401) when it is missing or invalid;
+- accept Anthropic `messages[]` plus an optional top-level `system` field, mapping `system` to a leading system message and `max_tokens` to the internal max-token limit;
+- treat `model` as a governed alias and reject raw provider ids or disallowed aliases (403); the backend is never called unless auth and routing both pass;
+- support `stream: true` via Anthropic SSE (see Streaming Contract);
+- return an Anthropic message response (`type:"message"`, `role:"assistant"`, `model:<alias>`, `content:[{type:"text",...}]`, `stop_reason`, `usage`);
+- translate tool calls bidirectionally on both the non-streaming and streaming paths: Anthropic `tools`/`tool_choice` and `tool_use`/`tool_result` content blocks map to OpenAI `tools`/`tool_choice` and `tool_calls`/`tool` messages on the request, and OpenAI `tool_calls` on the response map back to Anthropic `tool_use` blocks (with `stop_reason:"tool_use"`); text-only traffic is unchanged;
+- have full Copilot parity with the chat lane, including the non-streaming Responses bridge: requests routed to Copilot Responses-only models (GPT-5.x class) go through the same Responses-to-chat-completion bridge `/v1/chat/completions` uses, so both chat-capable and Responses-only models work on non-streaming and streaming;
+- record selected alias, resolved provider model, usage and cost in audit, with provider credentials kept behind the binary.
+
 ## Streaming Contract
 
 Streaming must preserve governance metadata without leaking provider secrets.
@@ -151,6 +169,21 @@ response.failed
 ```
 
 Provider-native streams may not line up perfectly with these events. The gateway should translate only the stable subset it can support honestly.
+
+For the Anthropic adapter (`/v1/messages` with `stream: true`), the gateway consumes the backend's OpenAI-compatible chat SSE and re-emits the stable Anthropic SSE event sequence:
+
+```text
+message_start
+content_block_start
+content_block_delta   (one per text chunk)
+content_block_stop
+message_delta         (carries stop_reason + final output_tokens)
+message_stop
+```
+
+The concatenation of `content_block_delta` text equals the backend assistant text, framed by a single `message_start` first and `message_stop` last. Stream completion records a `model.gateway_stream.completed` audit event and a mid-stream backend error records `model.gateway_stream.failed`, identical to the chat lane.
+
+Streaming tool calls are translated too. Backend `tool_calls` deltas are reassembled into Anthropic tool-use events: each distinct tool call opens a `content_block_start` whose block type is `tool_use` (carrying the tool-call id and name) at its own content-block index, its argument fragments stream as `content_block_delta` events with a `type:"input_json_delta"` `partial_json`, and a matching `content_block_stop` closes the block; a `tool_calls` finish sets the `message_delta` stop reason to `tool_use`. This gives the adapter full Copilot parity with the chat lane on both paths — the streaming bridge already converts Copilot Responses streams (GPT-5.x class) into chat-completion `tool_calls` chunks, and the non-streaming path uses the same Responses bridge described in the `/v1/messages` section — so chat-capable and Responses-only models both work streaming and non-streaming.
 
 Audit should record:
 
@@ -171,7 +204,12 @@ Audit should not store raw prompts, raw provider responses or provider credentia
 
 ## OpenCode Configuration Shape
 
-The OpenCode provider configuration should point at the compatibility gateway. Prefer `ai-orch opencode install-config` for real developers because it imports the current actor-bound `/v1/models` list into the provider config:
+The OpenCode provider configuration should point at the compatibility gateway. Prefer `ai-orch opencode install-config` (or `refresh`, which the setup scripts run) for real developers: it imports the current actor-bound `/v1/models` list, installs two governed providers, and writes the git-context plugin. The two providers exist because Copilot serves different model families on different API surfaces:
+
+- `ai-orch` (`@ai-sdk/openai-compatible`, `/v1/chat/completions`) for chat-capable models (Claude, Gemini, gpt-5-mini).
+- `ai-orch-responses` (`@ai-sdk/openai`, `/v1/responses`) for the Responses-API-only reasoning models (gpt-5.3-codex, gpt-5.4-mini, gpt-5.5).
+
+Install also writes a top-level `plugin` entry pointing at the embedded `ai-orch-context.ts`, which detects local git and sends `X-AI-Orch-Client-Session-ID` plus the git headers on the ai-orch providers. The simplified single-provider example below shows the base shape:
 
 ```json
 {
@@ -214,11 +252,11 @@ The OpenCode provider configuration should point at the compatibility gateway. P
         "edit": "deny",
         "bash": "deny",
         "task": {
-          "code-review": "allow",
-          "unit-tests": "allow",
-          "backend-development": "allow",
-          "frontend-development": "allow",
-          "security-review": "allow"
+          "code-review": "ask",
+          "unit-tests": "ask",
+          "backend-development": "ask",
+          "frontend-development": "ask",
+          "security-review": "ask"
         }
       }
     }
@@ -248,14 +286,26 @@ API key: AI_ORCH_RUNTIME_TOKEN
 Model ID: coding-balanced
 ```
 
-The equivalent Claude Code shape is future work:
+The Claude Code shape routes Claude's own API surface through the gateway's `/v1/messages` adapter:
 
 ```text
-ANTHROPIC_BASE_URL=<ai-orch anthropic-compatible gateway>
+ANTHROPIC_BASE_URL=http://127.0.0.1:18082   # ai-orch model gateway
 ANTHROPIC_AUTH_TOKEN=<session or runtime token>
 ```
 
-That endpoint is not the same as `/v1/chat/completions`, so it belongs in the roadmap until implemented.
+Claude Code appends `/v1/messages` to `ANTHROPIC_BASE_URL`, so the base URL points at the gateway root. The model alias is selected through Claude Code's model configuration; raw provider model ids are rejected by the router. This is a distinct endpoint from `/v1/chat/completions`, but it shares the same governance boundary and `gateway_enforced` audit.
+
+### Claude Backend Selection
+
+Operators can keep client model aliases stable and select the server-side Claude route with:
+
+```sh
+AI_ORCH_CLAUDE_BACKEND=anthropic # or bedrock, foundry
+```
+
+The selector filters the Claude coding aliases in `models/registry.yaml` to the matching route. `anthropic` and `bedrock` routes continue through the configured model backend/Bifrost provider plumbing. `foundry` is accepted as configuration plumbing only: Claude requests fail closed at runtime with `Foundry Claude backend is configured but Anthropic-compatible translation is unavailable; use anthropic or bedrock, or add a Foundry Anthropic request/response adapter`.
+
+Remaining provider work for Foundry is a real Anthropic-compatible request, response and SSE adapter for Microsoft Foundry's Claude endpoint. Until that exists, ai-orch does not translate Claude Code `/v1/messages` payloads into a Foundry-specific Anthropic surface.
 
 ## Relationship To Provider Gateways
 
@@ -341,7 +391,7 @@ The runtime should not be able to change:
 Every model call should emit a model decision envelope:
 
 ```yaml
-event_type: model.gateway.call
+event_type: model.gateway_call
 session_id: sess_123
 actor: developer
 requested_model: coding-balanced
@@ -368,76 +418,83 @@ trust_level: gateway_enforced
 
 This gives reporting and maturity exports a clean record without making the audit log a raw transcript store. For local tools, the model gateway audit proves that the model requested a tool/subagent call; it is not a substitute for ACP/MCP/client-event evidence of what the local tool actually did.
 
-## Build Order
+## Implemented Status And Remaining Work
 
-### Phase 1G.2: Model Compatibility Gateway Contract
+### Implemented In The Current Beta
 
-Deliverables:
+The compatibility gateway contract is now real enough for AI-Orch-routed OpenCode:
 
-- define selectable model backends: `bifrost` and `copilot-user`;
-- define provider-sidecar health and fail-closed startup behaviour for selected backends;
-- define runtime-token authentication for model calls;
-- define OpenAI-compatible response shapes for `/v1/models`, `/v1/chat/completions` and `/v1/responses`;
-- define streaming subset and failure semantics;
-- define audit metadata envelope;
-- define model-router decision schema;
-- document OpenCode provider configuration.
+- selectable model backends include `bifrost` and `copilot-user`;
+- `/v1/models`, `/v1/chat/completions`, and `/v1/responses` are exposed through the
+  Governance Shell model gateway;
+- `POST /v1/messages` exposes an Anthropic-compatible adapter so Claude Code's
+  `ANTHROPIC_BASE_URL` model traffic is `gateway_enforced` with real usage and cost;
+  it reuses the same auth, session resolution, alias-only routing, backend, and audit
+  as the chat lane, adding Anthropic request/response/SSE translation
+  (`message_start` … `message_stop`), bidirectional tool-call translation
+  (`tool_use`/`tool_result` ↔ `tool_calls`, with `input_json_delta` streaming), and the
+  non-streaming Responses bridge so it has full Copilot parity (chat-capable and
+  GPT-5.x Responses-only models work streaming and non-streaming);
+- `AI_ORCH_CLAUDE_BACKEND` can pin the existing Claude coding aliases to Anthropic,
+  Bedrock or Foundry routes without client-side alias changes; Foundry currently fails
+  closed until its Anthropic-compatible adapter is implemented;
+- streaming chat calls preserve OpenAI-compatible SSE frames, forward usage chunks where
+  providers send them, and record stream completion/failure audit events;
+- route-aware model listing hides aliases that the selected backend/actor cannot execute
+  and appends actor-bound Copilot picker models when enrolled;
+- runtime authentication supports the shared beta token, legacy composite actor tokens,
+  session-bound gateway tokens, and 90-day developer runtime credentials;
+- model gateway audit records sanitized model/tool-call metadata, provider/model
+  attribution, token usage, cost source, work context, and delegated child-session
+  lineage for OpenCode-style `task` calls;
+- reasoning effort is governed per route and endpoint: the gateway emits flat
+  `reasoning_effort` for Copilot `/chat/completions` and nested `reasoning.effort`
+  for `/responses`, across the full effort scale (none, minimal, low, medium, high,
+  xhigh, max), clamped to each model's `max_effort`; Copilot models default to xhigh
+  where supported and callers can request a lower effort;
+- conversation continuity is gateway-owned: a request carrying
+  `X-AI-Orch-Client-Session-ID` (and no session id) reuses one governed session per
+  `(actor + client session id)` instead of minting one per call, and that session
+  stays open across the conversation;
+- git context (repo URL, branch, commit) is captured client-side (the `ai-orch
+  opencode` wrapper or the headers-only OpenCode plugin), credentials are stripped
+  from the remote URL server-side, and `repo_url`/`branch`/`commit_sha` are recorded
+  on the session and the audit ledger;
+- AI-Orch-routed OpenCode has been proven as the strongest current client lane for
+  model route, stream, cost, session lifecycle, and patch/diff evidence.
 
-### Phase 1G.3: Chat Completions MVP
+This does not mean ai-orch has the full local OpenCode Task/Read/Edit/Bash transcript.
+The gateway proves model routing and model-emitted tool-call intent. Full local tool
+transcript evidence still needs ACP hooks, MCP-routing, or sanitized client-event
+forwarding.
 
-Deliverables:
+### Remaining Compatibility Work
 
-- implement `GET /v1/models`;
-- implement non-streaming `POST /v1/chat/completions`;
-- preserve OpenAI-compatible request fields such as `tools`, `tool_choice`, `tool_calls`, `tool_call_id`, `response_format`, multimodal content arrays and provider metadata;
-- route model alias through the Governance Shell backend selector;
-- rewrite only the concrete upstream `model` field before provider forwarding;
-- return the governed alias in the response `model` field;
-- record model decision audit event;
-- prove the runtime does not receive provider keys.
+Keep this work small and provider-specific:
 
-### Phase 1G.4: Streaming MVP
+- keep OpenCode fixture tests current as OpenCode payloads change;
+- prove Bedrock and Azure AI Foundry routes with real tool-call payloads before marking
+  those enterprise routes production-ready;
+- add provider-specific compatibility fixtures for DeepSeek, OpenRouter, Anthropic,
+  Bedrock, Foundry, and GitHub-backed routes where they differ from OpenAI-compatible
+  chat/Responses;
+- keep Bifrost, Bedrock, Foundry and provider credentials behind ai-orch rather than
+  exposing them directly to OpenCode.
 
-Deliverables:
+### OpenCode E2E Boundary
 
-- support `stream: true` for chat completions;
-- proxy OpenAI-compatible SSE chunks while rewriting only the chunk `model` field where present;
-- preserve tool-call deltas, reasoning deltas, provider-specific fields and usage chunks;
-- record stream start, completion and failure audit events with sanitized tool-call count/name metadata.
+The useful E2E shape is now:
 
-### Phase 1G.5: Responses API MVP
+```text
+OpenCode local workspace
+  -> ai-orch /v1 model gateway
+  -> Governance Shell policy/session/audit
+  -> Bifrost or actor-bound Copilot backend
+  -> ledger evidence for model route, usage, cost and patch/diff lifecycle
+```
 
-Deliverables:
-
-- implement non-streaming `POST /v1/responses`;
-- forward raw OpenAI-compatible Responses payloads for backends that support `/v1/responses`;
-- preserve `input`, `tools`, `tool_choice`, `include`, `store`, `reasoning`, `text`, `previous_response_id`, `prompt_cache_key` and provider metadata;
-- support Responses streaming for raw-compatible backends;
-- add response ID correlation;
-- add response usage audit records.
-
-### Phase 1G.6: Enterprise Provider Compatibility
-
-Deliverables:
-
-- verify OpenCode `v1.16.2` fixture payloads against the gateway contract;
-- prove `OpenCode -> ai-orch -> Bifrost -> Bedrock` with tool-call payloads;
-- prove `OpenCode -> ai-orch -> Bifrost or Foundry adapter -> Azure AI Foundry` with tool-call payloads;
-- keep direct Anthropic, Bedrock and Foundry SDK translation behind Bifrost or a dedicated backend adapter;
-- do not expose Bifrost, Bedrock, Foundry or provider credentials directly to OpenCode.
-
-### Phase 1M Dependency: OpenCode Managed-Provider E2E
-
-The local OpenCode E2E should not start until the compatibility gateway can prove:
-
-- runtime token works;
-- model aliases resolve through Governance Shell;
-- provider key is absent from runtime env;
-- model calls are audited;
-- ACP runtime file changes produce durable patch evidence;
-- MCP calls, when needed, use the MCP gateway route rather than the ACP session configuration.
-
-The first E2E should run OpenCode locally against a real repo or disposable worktree while routing model calls through ai-orch. Sandbox/worktree isolation remains a later risk-based mode, not the default proof of the provider endpoint lane.
+Sandbox/worktree isolation remains a risk-based mode, not the default proof of the
+provider endpoint lane.
 
 ## References
 

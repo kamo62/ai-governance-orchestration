@@ -36,6 +36,7 @@ type MCPProxyConfig struct {
 	Registrations     map[string]MCPProxyRegistration
 	UserTokens        UserTokenStore
 	PolicyEngine      policyengine.Engine
+	PolicyDecisions   PolicyDecisionStore
 	ClassificationMax string
 	HTTPClient        *http.Client
 	NewID             func(prefix string) string
@@ -50,6 +51,7 @@ type MCPProxyHandler struct {
 	registrations     map[string]MCPProxyRegistration
 	userTokens        UserTokenStore
 	policyEngine      policyengine.Engine
+	policyDecisions   PolicyDecisionStore
 	classificationMax string
 	httpClient        *http.Client
 	newID             func(prefix string) string
@@ -68,6 +70,10 @@ func NewMCPProxyHandler(cfg MCPProxyConfig) http.Handler {
 	if engine == nil {
 		engine, _ = policyengine.New("native")
 	}
+	policyDecisions := cfg.PolicyDecisions
+	if policyDecisions == nil {
+		policyDecisions = NewMemoryPolicyDecisionStore()
+	}
 	return &MCPProxyHandler{
 		serviceToken:      cfg.ServiceToken,
 		devToken:          cfg.DevToken,
@@ -77,6 +83,7 @@ func NewMCPProxyHandler(cfg MCPProxyConfig) http.Handler {
 		registrations:     cfg.Registrations,
 		userTokens:        cfg.UserTokens,
 		policyEngine:      engine,
+		policyDecisions:   policyDecisions,
 		classificationMax: defaultString(cfg.ClassificationMax, "internal"),
 		httpClient:        httpClient,
 		newID:             newID,
@@ -123,6 +130,10 @@ func (h *MCPProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	decision, err := h.authorizeTool(r.Context(), record, serverID, toolName, reg)
 	if err != nil {
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "policy evaluation failed"})
+		return
+	}
+	if err := h.recordPolicyDecision(r.Context(), record, serverID, toolName, decision); err != nil {
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "policy decision write failed"})
 		return
 	}
 	if !decision.Allowed {
@@ -241,6 +252,22 @@ func (h *MCPProxyHandler) authorizeTool(ctx context.Context, record SessionRecor
 			"tool_deny":      reg.ToolDeny,
 		},
 	})
+}
+
+func (h *MCPProxyHandler) recordPolicyDecision(ctx context.Context, record SessionRecord, serverID, toolName string, decision policyengine.Decision) error {
+	if h == nil || h.policyDecisions == nil {
+		return nil
+	}
+	return h.policyDecisions.RecordPolicyDecision(ctx, policyDecisionRecordFromEvaluation(policyengine.Request{
+		SessionID:         record.SessionID,
+		UserID:            record.ActorSubject,
+		AgentName:         record.Agent,
+		ActionType:        "mcp.tool_call",
+		Resource:          serverID,
+		ToolName:          toolName,
+		Classification:    record.Classification,
+		ClassificationMax: defaultString(strings.TrimSpace(h.registrations[serverID].ClassificationMax), h.classificationMax),
+	}, decision, record.ActorSubject, record.SessionID, ""))
 }
 
 func (h *MCPProxyHandler) authHeaderFor(ctx context.Context, reg MCPProxyRegistration, userID string, serverID string) (string, bool) {

@@ -337,6 +337,9 @@ func (b *openAICompatibleBackend) Health(ctx context.Context) error {
 }
 
 func (b *openAICompatibleBackend) encodeRequest(req openrouter.ChatCompletionRequest) ([]byte, error) {
+	if foundryClaudeUnsupported(req.Provider, req.Model) {
+		return nil, errFoundryClaudeUnsupported()
+	}
 	req.Model = b.ResolvedModel(req.Provider, req.Model)
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -355,6 +358,9 @@ func (b *openAICompatibleBackend) encodeRawRequest(req RawRequest) ([]byte, erro
 	if len(req.Body) == 0 {
 		return nil, errors.New("request body is required")
 	}
+	if foundryClaudeUnsupported(req.Provider, req.Model) {
+		return nil, errFoundryClaudeUnsupported()
+	}
 	var body map[string]json.RawMessage
 	if err := json.Unmarshal(req.Body, &body); err != nil {
 		return nil, fmt.Errorf("decode %s request body: %w", b.backendLabel(), err)
@@ -370,6 +376,16 @@ func (b *openAICompatibleBackend) encodeRawRequest(req RawRequest) ([]byte, erro
 		return nil, fmt.Errorf("encode %s request: %w", b.backendLabel(), err)
 	}
 	return encoded, nil
+}
+
+func foundryClaudeUnsupported(provider, model string) bool {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	model = strings.ToLower(strings.TrimSpace(model))
+	return (provider == "foundry" || provider == "azure" || provider == "azure-ai-foundry" || provider == "azure-openai") && strings.Contains(model, "claude")
+}
+
+func errFoundryClaudeUnsupported() error {
+	return errors.New("foundry Claude backend is configured but Anthropic-compatible translation is unavailable; use anthropic or bedrock, or add a Foundry Anthropic request/response adapter")
 }
 
 func (b *openAICompatibleBackend) postRaw(ctx context.Context, path string, req RawRequest) ([]byte, error) {

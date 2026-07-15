@@ -12,7 +12,7 @@ import (
 )
 
 func (g *Gateway) resolveSession(w http.ResponseWriter, r *http.Request, modelAlias string, body []byte, endpoint string) (string, SessionInfo, bool) {
-	if sessionID := strings.TrimSpace(r.Header.Get("X-AI-Orch-Session-ID")); sessionID != "" {
+	if sessionID := optionalHeaderValue(r, "X-AI-Orch-Session-ID"); sessionID != "" {
 		info, ok := g.sessionInfo(w, r, sessionID)
 		return sessionID, info, ok
 	}
@@ -20,43 +20,47 @@ func (g *Gateway) resolveSession(w http.ResponseWriter, r *http.Request, modelAl
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "X-AI-Orch-Session-ID header is required"})
 		return "", SessionInfo{}, false
 	}
-	actor := strings.TrimSpace(r.Header.Get("X-AI-Orch-Actor-Subject"))
+	// Actor-bound runtime credentials and composite API keys are
+	// non-forgeable at the gateway, so they win over client-supplied actor
+	// headers. The plain shared runtime token returns an empty actor and keeps
+	// the local-dev header path intact for beta tooling.
+	actor, _ := g.runtimeAuth(r)
 	if actor == "" {
-		actor = strings.TrimSpace(r.Header.Get("X-AI-Orch-Local-Identity"))
+		actor = optionalHeaderValue(r, "X-AI-Orch-Actor-Subject")
 	}
 	if actor == "" {
-		// Composite API key "<runtime-token>.<actor>" carries identity for
-		// clients that cannot send custom headers.
-		actor, _ = g.runtimeAuth(r)
+		actor = optionalHeaderValue(r, "X-AI-Orch-Local-Identity")
 	}
 	if actor == "" {
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "actor identity is required for auto sessions: send X-AI-Orch-Actor-Subject or use the composite API key <runtime-token>.<actor>"})
 		return "", SessionInfo{}, false
 	}
-	classification := strings.TrimSpace(r.Header.Get("X-AI-Orch-Classification"))
+	classification := optionalHeaderValue(r, "X-AI-Orch-Classification")
 	if classification == "" {
 		classification = "internal"
 	}
 	info, err := g.autoSession(r.Context(), AutoSessionRequest{
-		ActorSubject:       actor,
-		ModelAlias:         modelAlias,
-		PromptSHA256:       sha256Hex(body),
-		Client:             strings.TrimSpace(r.Header.Get("X-AI-Orch-Client")),
-		Endpoint:           endpoint,
-		Classification:     classification,
-		RawRequestBody:     body,
-		TrustedClientToken: strings.TrimSpace(r.Header.Get("X-AI-Orch-Trusted-Client-Token")),
-		UseCaseID:          strings.TrimSpace(r.Header.Get("X-AI-Orch-Use-Case-ID")),
-		WorkflowID:         strings.TrimSpace(r.Header.Get("X-AI-Orch-Workflow-ID")),
-		WorkItemID:         strings.TrimSpace(r.Header.Get("X-AI-Orch-Work-Item-ID")),
-		WorkItemType:       strings.TrimSpace(r.Header.Get("X-AI-Orch-Work-Item-Type")),
-		RepoURL:            strings.TrimSpace(r.Header.Get("X-AI-Orch-Repo-URL")),
-		Branch:             strings.TrimSpace(r.Header.Get("X-AI-Orch-Branch")),
-		CommitSHA:          strings.TrimSpace(r.Header.Get("X-AI-Orch-Commit-SHA")),
-		Intent:             strings.TrimSpace(r.Header.Get("X-AI-Orch-Intent")),
-		ActorHint:          strings.TrimSpace(r.Header.Get("X-AI-Orch-Actor-Hint")),
-		SourceSystem:       strings.TrimSpace(r.Header.Get("X-AI-Orch-Source-System")),
-		EstimatedCostUSD:   parseOptionalFloatHeader(r.Header.Get("X-AI-Orch-Estimated-Cost-USD")),
+		ActorSubject:          actor,
+		ModelAlias:            modelAlias,
+		PromptSHA256:          sha256Hex(body),
+		Client:                optionalHeaderValue(r, "X-AI-Orch-Client"),
+		Endpoint:              endpoint,
+		Classification:        classification,
+		RawRequestBody:        body,
+		TrustedClientToken:    optionalHeaderValue(r, "X-AI-Orch-Trusted-Client-Token"),
+		UseCaseID:             optionalHeaderValue(r, "X-AI-Orch-Use-Case-ID"),
+		WorkflowID:            optionalHeaderValue(r, "X-AI-Orch-Workflow-ID"),
+		WorkItemID:            optionalHeaderValue(r, "X-AI-Orch-Work-Item-ID"),
+		WorkItemType:          optionalHeaderValue(r, "X-AI-Orch-Work-Item-Type"),
+		RepoURL:               optionalHeaderValue(r, "X-AI-Orch-Repo-URL"),
+		Branch:                optionalHeaderValue(r, "X-AI-Orch-Branch"),
+		CommitSHA:             optionalHeaderValue(r, "X-AI-Orch-Commit-SHA"),
+		Intent:                optionalHeaderValue(r, "X-AI-Orch-Intent"),
+		ActorHint:             optionalHeaderValue(r, "X-AI-Orch-Actor-Hint"),
+		SourceSystem:          optionalHeaderValue(r, "X-AI-Orch-Source-System"),
+		EstimatedCostUSD:      parseOptionalFloatHeader(r.Header.Get("X-AI-Orch-Estimated-Cost-USD")),
+		ClientSessionID:       optionalHeaderValue(r, "X-AI-Orch-Client-Session-ID"),
+		ParentClientSessionID: optionalHeaderValue(r, "X-AI-Orch-Parent-Client-Session-ID"),
 	})
 	if err != nil {
 		httpx.WriteJSON(w, statusCodeFromAutoSessionError(err), map[string]any{"error": err.Error()})
@@ -118,6 +122,22 @@ func sessionStatusAllowsModelCalls(status string) bool {
 	}
 }
 
+func optionalHeaderValue(r *http.Request, key string) string {
+	if r == nil {
+		return ""
+	}
+	value := strings.TrimSpace(r.Header.Get(key))
+	if isUnresolvedEnvPlaceholder(value) {
+		return ""
+	}
+	return value
+}
+
+func isUnresolvedEnvPlaceholder(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.HasPrefix(value, "{env:") && strings.HasSuffix(value, "}")
+}
+
 func statusCodeFromAutoSessionError(err error) int {
 	if err == nil {
 		return http.StatusInternalServerError
@@ -156,7 +176,7 @@ func parseOptionalFloatHeader(value string) float64 {
 // with no stored hash predate token binding and pass unchanged.
 func sessionTokenMatches(r *http.Request, wantHashesHex ...string) bool {
 	anyConfigured := false
-	presented := strings.TrimSpace(r.Header.Get("X-AI-Orch-Session-Token"))
+	presented := optionalHeaderValue(r, "X-AI-Orch-Session-Token")
 	var sum [sha256.Size]byte
 	if presented != "" {
 		sum = sha256.Sum256([]byte(presented))
@@ -197,17 +217,24 @@ func (g *Gateway) authorized(r *http.Request) bool {
 func (g *Gateway) runtimeAuth(r *http.Request) (string, bool) {
 	const prefix = "Bearer "
 	header := r.Header.Get("Authorization")
-	if g.runtimeToken == "" || !strings.HasPrefix(header, prefix) {
+	if !strings.HasPrefix(header, prefix) {
 		return "", false
 	}
 	token := strings.TrimPrefix(header, prefix)
-	if subtle.ConstantTimeCompare([]byte(token), []byte(g.runtimeToken)) == 1 {
-		return "", true
+	if g.runtimeToken != "" {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(g.runtimeToken)) == 1 {
+			return "", true
+		}
+		sep := g.runtimeToken + "."
+		if len(token) > len(sep) && subtle.ConstantTimeCompare([]byte(token[:len(sep)]), []byte(sep)) == 1 {
+			actor := strings.TrimSpace(token[len(sep):])
+			if compositeActorLabelOK(actor) {
+				return actor, true
+			}
+		}
 	}
-	sep := g.runtimeToken + "."
-	if len(token) > len(sep) && subtle.ConstantTimeCompare([]byte(token[:len(sep)]), []byte(sep)) == 1 {
-		actor := strings.TrimSpace(token[len(sep):])
-		if compositeActorLabelOK(actor) {
+	if g.runtimeCredentialValidator != nil {
+		if actor, ok := g.runtimeCredentialValidator(token); ok && compositeActorLabelOK(actor) {
 			return actor, true
 		}
 	}

@@ -15,15 +15,17 @@ import (
 
 // SessionRecord is the durable representation of a user session.
 type SessionRecord struct {
-	SessionID       string
-	ParentSessionID string
-	ActorSubject    string
-	Agent           string
-	RoutedAgent     string
-	Classification  string
-	PromptSHA256    string
-	Status          string // created, awaiting_confirmation, confirming, confirmed, running, done, failed, confirm_failed, aborted
-	CreatedAt       time.Time
+	SessionID                 string
+	ParentSessionID           string
+	ActorSubject              string
+	Agent                     string
+	RoutedAgent               string
+	RoutingConfidence         string
+	HumanConfirmationRequired bool
+	Classification            string
+	PromptSHA256              string
+	Status                    string // created, awaiting_confirmation, confirming, confirmed, running, done, failed, confirm_failed, aborted
+	CreatedAt                 time.Time
 	// GatewayTokenSHA256 is the hash of the per-session secret a runtime must
 	// present on model gateway calls. Empty means the session predates token
 	// binding and is accepted with the shared runtime token alone.
@@ -48,6 +50,11 @@ type SessionRecord struct {
 	Intent       string
 	ActorHint    string
 	SourceSystem string
+	// ClientSessionID correlates an auto-created gateway session with the
+	// caller's own conversation id (for example an OpenCode session id), so a
+	// single conversation reuses one governed session instead of minting one
+	// per model call. Empty for wrapper-created and control-plane sessions.
+	ClientSessionID string
 	// Cost/value sizing.
 	StoryPoints         int
 	EstimatedDevDays    float64
@@ -149,37 +156,30 @@ func (s *SQLiteSessionStore) migrate() error {
 		"gateway_token_sha256":         "TEXT NOT NULL DEFAULT ''",
 		"runtime_gateway_token_sha256": "TEXT NOT NULL DEFAULT ''",
 		"routed_agent":                 "TEXT NOT NULL DEFAULT ''",
+		"routing_confidence":           "TEXT NOT NULL DEFAULT ''",
+		"human_confirmation_required":  "INTEGER NOT NULL DEFAULT 0",
+		"client_session_id":            "TEXT NOT NULL DEFAULT ''",
 	}
 	for col, def := range cols {
 		if err := s.ensureSessionColumn(col, def); err != nil {
 			return err
 		}
 	}
+	// Index supports auto-session reuse lookups keyed by the caller's
+	// conversation id within an actor.
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_actor_client ON sessions(actor_subject, client_session_id)`); err != nil {
+		return fmt.Errorf("create sessions actor/client index: %w", err)
+	}
 	return nil
 }
 
 func (s *SQLiteSessionStore) ensureSessionColumn(column string, definition string) error {
-	rows, err := s.db.Query(`PRAGMA table_info(sessions)`)
+	columns, err := sqlitex.TableColumns(s.db, "sessions")
 	if err != nil {
 		return fmt.Errorf("inspect sessions schema: %w", err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name string
-		var columnType string
-		var notNull int
-		var defaultValue sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
-			return fmt.Errorf("scan sessions schema: %w", err)
-		}
-		if name == column {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate sessions schema: %w", err)
+	if columns[column] {
+		return nil
 	}
 	if _, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE sessions ADD COLUMN %s %s`, column, definition)); err != nil {
 		// Another process may win the PRAGMA table_info -> ALTER TABLE race.
@@ -195,25 +195,25 @@ func (s *SQLiteSessionStore) ensureSessionColumn(column string, definition strin
 func (s *SQLiteSessionStore) Create(ctx context.Context, rec SessionRecord) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (
-			session_id, parent_session_id, actor_subject, agent, routed_agent, classification, prompt_sha256, status, created_at,
+			session_id, parent_session_id, actor_subject, agent, routed_agent, routing_confidence, human_confirmation_required, classification, prompt_sha256, status, created_at,
 			run_id, permission_mode, approval_mode, workspace_mode,
 			use_case_id, workflow_id, work_item_id, work_item_type, repo_url, branch, commit_sha, intent, actor_hint, source_system,
 			story_points, estimated_dev_days, blended_day_rate_usd, baseline_cost_usd,
 			model_cost_usd, tool_cost_usd, platform_cost_usd, review_cost_usd,
-			verification_cost_usd, retry_count, gateway_token_sha256, runtime_gateway_token_sha256
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+			verification_cost_usd, retry_count, gateway_token_sha256, runtime_gateway_token_sha256, client_session_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?, ?)
+			?, ?, ?, ?, ?)
 	`,
-		rec.SessionID, rec.ParentSessionID, rec.ActorSubject, rec.Agent, rec.RoutedAgent, rec.Classification, rec.PromptSHA256, rec.Status, rec.CreatedAt.Format(time.RFC3339Nano),
+		rec.SessionID, rec.ParentSessionID, rec.ActorSubject, rec.Agent, rec.RoutedAgent, rec.RoutingConfidence, boolToInt(rec.HumanConfirmationRequired), rec.Classification, rec.PromptSHA256, rec.Status, rec.CreatedAt.Format(time.RFC3339Nano),
 		rec.RunID, rec.PermissionMode, rec.ApprovalMode, rec.WorkspaceMode,
 		rec.UseCaseID, rec.WorkflowID, rec.WorkItemID, rec.WorkItemType, rec.RepoURL, rec.Branch, rec.CommitSHA, rec.Intent, rec.ActorHint, rec.SourceSystem,
 		rec.StoryPoints, rec.EstimatedDevDays, rec.BlendedDayRateUSD, rec.BaselineCostUSD,
 		rec.ModelCostUSD, rec.ToolCostUSD, rec.PlatformCostUSD, rec.ReviewCostUSD,
-		rec.VerificationCostUSD, rec.RetryCount, rec.GatewayTokenSHA256, rec.RuntimeGatewayTokenSHA256,
+		rec.VerificationCostUSD, rec.RetryCount, rec.GatewayTokenSHA256, rec.RuntimeGatewayTokenSHA256, rec.ClientSessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("insert session: %w", err)
@@ -224,24 +224,25 @@ func (s *SQLiteSessionStore) Create(ctx context.Context, rec SessionRecord) erro
 func (s *SQLiteSessionStore) Get(ctx context.Context, sessionID string) (SessionRecord, error) {
 	var rec SessionRecord
 	var createdAtStr string
+	var humanConfirmationRequired int
 	err := s.db.QueryRowContext(ctx, `
 			SELECT
-				session_id, COALESCE(parent_session_id, ''), actor_subject, agent, COALESCE(routed_agent, ''), classification, prompt_sha256, status, created_at,
+				session_id, COALESCE(parent_session_id, ''), actor_subject, agent, COALESCE(routed_agent, ''), COALESCE(routing_confidence, ''), COALESCE(human_confirmation_required, 0), classification, prompt_sha256, status, created_at,
 				COALESCE(run_id, ''), COALESCE(permission_mode, 'reviewed'), COALESCE(approval_mode, 'manual'), COALESCE(workspace_mode, ''),
 				COALESCE(use_case_id, ''), COALESCE(workflow_id, ''), COALESCE(work_item_id, ''), COALESCE(work_item_type, ''),
 				COALESCE(repo_url, ''), COALESCE(branch, ''), COALESCE(commit_sha, ''), COALESCE(intent, ''), COALESCE(actor_hint, ''), COALESCE(source_system, ''),
 				COALESCE(story_points, 0), COALESCE(estimated_dev_days, 0), COALESCE(blended_day_rate_usd, 0),
 				COALESCE(baseline_cost_usd, 0), COALESCE(model_cost_usd, 0), COALESCE(tool_cost_usd, 0),
 				COALESCE(platform_cost_usd, 0), COALESCE(review_cost_usd, 0),
-				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, '')
+				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, ''), COALESCE(client_session_id, '')
 			FROM sessions WHERE session_id = ?
 	`, sessionID).Scan(
-		&rec.SessionID, &rec.ParentSessionID, &rec.ActorSubject, &rec.Agent, &rec.RoutedAgent, &rec.Classification, &rec.PromptSHA256, &rec.Status, &createdAtStr,
+		&rec.SessionID, &rec.ParentSessionID, &rec.ActorSubject, &rec.Agent, &rec.RoutedAgent, &rec.RoutingConfidence, &humanConfirmationRequired, &rec.Classification, &rec.PromptSHA256, &rec.Status, &createdAtStr,
 		&rec.RunID, &rec.PermissionMode, &rec.ApprovalMode, &rec.WorkspaceMode,
 		&rec.UseCaseID, &rec.WorkflowID, &rec.WorkItemID, &rec.WorkItemType, &rec.RepoURL, &rec.Branch, &rec.CommitSHA, &rec.Intent, &rec.ActorHint, &rec.SourceSystem,
 		&rec.StoryPoints, &rec.EstimatedDevDays, &rec.BlendedDayRateUSD, &rec.BaselineCostUSD,
 		&rec.ModelCostUSD, &rec.ToolCostUSD, &rec.PlatformCostUSD, &rec.ReviewCostUSD,
-		&rec.VerificationCostUSD, &rec.RetryCount, &rec.GatewayTokenSHA256, &rec.RuntimeGatewayTokenSHA256,
+		&rec.VerificationCostUSD, &rec.RetryCount, &rec.GatewayTokenSHA256, &rec.RuntimeGatewayTokenSHA256, &rec.ClientSessionID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SessionRecord{}, fmt.Errorf("session not found")
@@ -250,7 +251,50 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, sessionID string) (Session
 		return SessionRecord{}, fmt.Errorf("query session: %w", err)
 	}
 	rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAtStr)
+	rec.HumanConfirmationRequired = humanConfirmationRequired != 0
 	return rec, nil
+}
+
+// clientSessionReuseWindow bounds how long a client conversation id keeps
+// reusing the same governed session. Past it, a new session is created so stale
+// or abandoned conversation ids cannot bind new traffic to old context.
+const clientSessionReuseWindow = 12 * time.Hour
+
+// FindActiveByActorClientSession returns the most recent non-terminal session
+// for the given actor and caller conversation id, created within the reuse
+// window. It powers auto-session reuse so one client conversation maps to one
+// governed session instead of one per model call. Returns ok=false when no
+// active, recent match exists.
+func (s *SQLiteSessionStore) FindActiveByActorClientSession(ctx context.Context, actorSubject, clientSessionID string) (SessionRecord, bool, error) {
+	actorSubject = strings.TrimSpace(actorSubject)
+	clientSessionID = strings.TrimSpace(clientSessionID)
+	if actorSubject == "" || clientSessionID == "" {
+		return SessionRecord{}, false, nil
+	}
+	// Bound reuse to a recent window so a stale or abandoned client conversation
+	// id cannot bind new traffic to an old governed session indefinitely. Past
+	// the window, a fresh session is created for the same client id.
+	cutoff := time.Now().UTC().Add(-clientSessionReuseWindow).Format(time.RFC3339Nano)
+	var sessionID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT session_id FROM sessions
+		WHERE actor_subject = ? AND client_session_id = ?
+			AND status NOT IN ('done', 'failed', 'confirm_failed', 'aborted')
+			AND created_at > ?
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, actorSubject, clientSessionID, cutoff).Scan(&sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SessionRecord{}, false, nil
+	}
+	if err != nil {
+		return SessionRecord{}, false, fmt.Errorf("find session by client id: %w", err)
+	}
+	rec, err := s.Get(ctx, sessionID)
+	if err != nil {
+		return SessionRecord{}, false, err
+	}
+	return rec, true, nil
 }
 
 func (s *SQLiteSessionStore) ListRecent(ctx context.Context, actorSubject string, limit int) ([]SessionRecord, error) {
@@ -299,6 +343,57 @@ func (s *SQLiteSessionStore) ListRecent(ctx context.Context, actorSubject string
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate recent sessions: %w", err)
+	}
+	return sessions, nil
+}
+
+// ListRecentSince returns an actor's sessions created at or after since,
+// newest first, capped at limit. It powers actor-scoped, time-windowed
+// reporting (the governance insight projection) where ListRecent's smaller
+// pagination cap is too tight for a multi-day window.
+func (s *SQLiteSessionStore) ListRecentSince(ctx context.Context, actorSubject string, since time.Time, limit int) ([]SessionRecord, error) {
+	if limit <= 0 || limit > insightSessionCap {
+		limit = insightSessionCap
+	}
+	rows, err := s.db.QueryContext(ctx, `
+			SELECT
+				session_id, COALESCE(parent_session_id, ''), actor_subject, agent, COALESCE(routed_agent, ''), classification, prompt_sha256, status, created_at,
+				COALESCE(run_id, ''), COALESCE(permission_mode, 'reviewed'), COALESCE(approval_mode, 'manual'), COALESCE(workspace_mode, ''),
+				COALESCE(use_case_id, ''), COALESCE(workflow_id, ''), COALESCE(work_item_id, ''), COALESCE(work_item_type, ''),
+				COALESCE(repo_url, ''), COALESCE(branch, ''), COALESCE(commit_sha, ''), COALESCE(intent, ''), COALESCE(actor_hint, ''), COALESCE(source_system, ''),
+				COALESCE(story_points, 0), COALESCE(estimated_dev_days, 0), COALESCE(blended_day_rate_usd, 0),
+				COALESCE(baseline_cost_usd, 0), COALESCE(model_cost_usd, 0), COALESCE(tool_cost_usd, 0),
+				COALESCE(platform_cost_usd, 0), COALESCE(review_cost_usd, 0),
+				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, '')
+			FROM sessions
+			WHERE actor_subject = ? AND created_at >= ?
+			ORDER BY created_at DESC
+			LIMIT ?
+	`, actorSubject, since.UTC().Format(time.RFC3339Nano), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recent sessions since: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []SessionRecord
+	for rows.Next() {
+		var rec SessionRecord
+		var createdAtStr string
+		if err := rows.Scan(
+			&rec.SessionID, &rec.ParentSessionID, &rec.ActorSubject, &rec.Agent, &rec.RoutedAgent, &rec.Classification, &rec.PromptSHA256, &rec.Status, &createdAtStr,
+			&rec.RunID, &rec.PermissionMode, &rec.ApprovalMode, &rec.WorkspaceMode,
+			&rec.UseCaseID, &rec.WorkflowID, &rec.WorkItemID, &rec.WorkItemType, &rec.RepoURL, &rec.Branch, &rec.CommitSHA, &rec.Intent, &rec.ActorHint, &rec.SourceSystem,
+			&rec.StoryPoints, &rec.EstimatedDevDays, &rec.BlendedDayRateUSD, &rec.BaselineCostUSD,
+			&rec.ModelCostUSD, &rec.ToolCostUSD, &rec.PlatformCostUSD, &rec.ReviewCostUSD,
+			&rec.VerificationCostUSD, &rec.RetryCount, &rec.GatewayTokenSHA256, &rec.RuntimeGatewayTokenSHA256,
+		); err != nil {
+			return nil, fmt.Errorf("scan recent session since: %w", err)
+		}
+		rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAtStr)
+		sessions = append(sessions, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recent sessions since: %w", err)
 	}
 	return sessions, nil
 }
@@ -426,6 +521,22 @@ func (s *SQLiteSessionStore) SetRoutedAgent(ctx context.Context, sessionID, agen
 	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET routed_agent = ? WHERE session_id = ?`, agent, sessionID)
 	if err != nil {
 		return fmt.Errorf("set routed agent: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("session not found")
+	}
+	return nil
+}
+
+func (s *SQLiteSessionStore) SetRouteDecision(ctx context.Context, sessionID, agent, routingConfidence string, humanConfirmationRequired bool) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET routed_agent = ?, routing_confidence = ?, human_confirmation_required = ?
+		WHERE session_id = ?
+	`, agent, routingConfidence, boolToInt(humanConfirmationRequired), sessionID)
+	if err != nil {
+		return fmt.Errorf("set route decision: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {

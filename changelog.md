@@ -1,5 +1,76 @@
 # Changelog
 
+## v0.23.1-beta - 2026-07-14 (Patch)
+
+Release impact: Patch because route authorization is now declared explicitly with unchanged behavior for existing routes, and the remaining changes are demo tooling, CI coverage and static-analysis fixes.
+
+- Registered every governance-shell route with an explicit auth mode (required, admin, admin-on-write, self, public) and default deny, replacing the public-paths list.
+- Added `scripts/cio-demo-seed-managed-client.sh`, a synthetic managed-client evidence seed wired into `cio-demo-verify.sh` that skips with guidance when the default stack cannot mint a credential.
+- Added `scripts/dev-mint-runtime-credential.sh` to mint an actor-bound `air_` credential for managed-client test connections, with automatic device-login enrolment; documented in `runtime-client-integration.md` and the deployment guide's managed-client on-ramp section.
+- Lowercased the Foundry Claude unsupported-backend error and removed an unused Anthropic stream event type.
+- Run CI on pushes to all `feat/**` branches and aligned the agent-bridge package version with the root VERSION.
+- Updated Go to 1.26.5 for GO-2026-5856 (crypto/tls).
+
+## v0.23.0-beta - 2026-07-03 (Minor)
+
+Release impact: Minor because this adds backward-compatible managed-client evidence fields and operator-selectable Claude provider routing without breaking existing client aliases or gateway APIs.
+
+Governed Copilot model routing, reasoning-effort control, per-conversation sessions, and client-side git context.
+
+- **Added managed-client permission decisions**: `permission_decision` v0 evidence events record tool/command approval decisions with the decider and optional reason, preserving managed-client advisory provenance.
+- **Added Claude backend selection plumbing**: `AI_ORCH_CLAUDE_BACKEND` / `--claude-backend` can pin existing Claude coding aliases to Anthropic, Bedrock, or Foundry routes through the server-side model registry. Foundry Claude routes fail closed until a Foundry Anthropic-compatible adapter exists.
+- **Copilot model routing and endpoints**: added governed aliases `copilot-claude-opus-4.8`, `copilot-gpt-5.4-mini`, and `copilot-gemini-3.5-flash`. Endpoint support is verified live: `gpt-5.3-codex`, `gpt-5.4-mini`, and `gpt-5.5` are Responses-API only on Copilot, so OpenCode is configured with two governed providers, `ai-orch` (`@ai-sdk/openai-compatible`, `/v1/chat/completions`) and `ai-orch-responses` (`@ai-sdk/openai`, `/v1/responses`). The lead runs on `copilot-gpt-5.4-mini`, frontend on Opus 4.8, documentation on Gemini 3.5 Flash.
+- **Reasoning effort governance**: the gateway emits flat `reasoning_effort` for Copilot `/chat/completions` and nested `reasoning.effort` for `/responses`, across the full scale (none, minimal, low, medium, high, xhigh, max) clamped to each model's `max_effort`. Copilot models default to xhigh where supported (Gemini and gpt-5-mini cap at high); callers can request a lower effort. Both effort normalizers (gateway and router) were extended so high-tier defaults are no longer dropped.
+- **Gateway-owned session continuity**: a request carrying `X-AI-Orch-Client-Session-ID` (and no session id) reuses one governed session per `(actor + client session id)` instead of minting one per model call; the session stays open across the conversation.
+- **Client-side git context**: repo URL, branch, and commit are captured where the runtime runs, via the `ai-orch opencode` wrapper or a headers-only OpenCode plugin (installed by `ai-orch opencode refresh`). Embedded credentials are stripped from the remote URL server-side, and `repo_url`/`branch`/`commit_sha` are now recorded on the session and the audit ledger (`audit_events`).
+- **Added durable policy decision records**: a `policy_decisions` side table persists allow and deny outcomes with reason and findings for session create, gateway auto-create, delegation, and executed MCP tool calls. Denial audit events now carry the decision id, with a correlation id when no session exists yet. Catalog preflight checks are not persisted. The audit ledger schema is unchanged.
+- **Hardened managed-client ingest idempotency**: a `managed_client_receipts` table keyed by `(session_id, client_event_id)` replaces the per-request audit scan, audit event ids are now server-generated, duplicate detection verifies the recorded audit event so a failed append can always be retried, and batches mixing client session ids are rejected with 400.
+- **Added evidence provenance**: evidence records carry a subject key, optional numeric confidence with read-time bands (`internal/confidence`), and server-derived source authority, strength, and status per trust lane. Requests claiming confirmed status or stronger provenance than their lane are rejected. Manual confirmation and rejection are separate admin endpoints recording immutable `evidence_confirmations` rows with an enforced transition matrix.
+- **Added the governance insight projection**: read-only `GET /v1/reporting/governance-insights` (actor-scoped, global kill switches only) and an org-wide admin variant fold sessions, audit events, evidence, policy decisions, and active kill switches into a deduplicated severity-ranked attention queue with summary counts, windowed to 7 days by default and 30 days maximum. The Governance UI gains an Attention view.
+- **Added explicit maturity snapshots**: `POST /v1/admin/reporting/maturity-export/run` materializes per-session maturity rows (policy decision, cost cap, patch decision, evidence completeness, cost fields) idempotently per day, serialized against concurrent runs. Insight GETs perform no writes.
+- **Made evidence delivery at-least-once**: `ai-orch hook` spools evidence that fails with network or 5xx errors to a per-event spool directory (`.ai-orch-spool/`, atomic per-file writes, 500-file bound, legacy JSONL import) and replays it on the next invocation; `POST /v1/evidence` dedupes on an optional `client_event_id`; the model pricing refresh now retries with bounded jittered backoff; evidence POST bodies are capped at 1 MiB.
+- **Hardened SQLite plumbing**: in-memory DSNs use a single pooled connection, and all store migrations materialize `PRAGMA table_info` results before executing DDL (governance, audit, and Copilot stores), removing a latent lock hazard.
+- **UI and demo honesty**: the Activity Ledger shows stalled badges and last-event age for active sessions and stops re-fetching finished ones; the CIO demo seeds an idempotent self-review evidence record through the public API; `docs/deployment.md` gains a failure-modes runbook and `docs/self-review-evidence.md` a truthful self-assessment.
+
+## v0.22.0-beta - 2026-07-02 (Minor)
+
+Release impact: Minor because this adds a backward-compatible managed-client evidence ingestion API and new client-reported audit event types without breaking existing gateway or session APIs.
+
+- **Added managed-client evidence ingestion**: `/v1/managed-client/evidence` accepts idempotent v0 transcript evidence batches from actor-bound developer runtime credentials, creates or attaches governed sessions by client conversation id, stores prompt/response/diff hashes by default, and tags all lane evidence as `managed_client` provenance with advisory enforcement.
+- **Included client-reported token usage in rollups**: `managed_client.token_usage` events now contribute to existing session usage summaries while remaining marked as `client_reported` instead of gateway-priced provider usage.
+- **Documented the v0 managed-client contract**: `docs/managed-client-evidence-v0.md` freezes the receiving-side schema for the T3 Code fork.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.22.0-beta.
+
+## v0.21.2-beta - 2026-06-13 (Patch)
+
+Release impact: Patch because this hardens confirmation-gate and audit-attribution integrity without changing the normal high-confidence run path.
+
+- **Server-enforced low-confidence confirmation**: sessions routed with `human_confirmation_required=true` now persist that gate state and `/confirm` returns `409` unless the caller sends explicit `human_confirmed:true`, keeping accidental client auto-confirmation from bypassing the human gate. This is an explicit beta confirmation marker, not yet a separate human-proof token.
+- **Recorded truthful runtime attribution**: successful specialist execution audit events now use the runtime name exposed by the session handle, so Direct/OpenRouter, OpenCode ACP and explicit Echo smoke runs no longer collapse into a hard-coded `opencode_acp` label.
+- **Trimmed the root README**: the README is now evaluator-skim first, with capability inventory and developer runbook detail delegated to the changelog, deployment guide and runtime integration docs.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and current status docs now agree on v0.21.2-beta.
+
+## v0.21.1-beta - 2026-06-13 (Patch)
+
+Release impact: Patch because this fixes fail-open runtime fallback and routing confidence audit metadata without breaking existing APIs.
+
+- **Failed closed when no real runtime is available**: Dispatch no longer falls through to EchoRuntime unless `AI_ORCH_BETA_SMOKE=true`; unavailable runtime dispatches now return `failed_closed` and write a `specialist.dispatch_failed` audit event.
+- **Marked low-confidence router decisions**: default and conflicting keyword routes now carry `routing_confidence`, `human_confirmation_required`, and `routing_alternates` metadata so clients can require a human gate instead of silently proceeding.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.21.1-beta.
+- **Re-synced beta documentation**: API, Copilot, model gateway, local state, runtime integration, and governance insight docs now reflect the current SQLite-backed beta and AI-Orch-routed OpenCode posture.
+
+## v0.21.0-beta - 2026-06-13 (Minor)
+
+Release impact: Minor because this adds backward-compatible developer onboarding, runtime credential, provider-readiness and benchmark CLI surfaces.
+
+- **Added AI-Orch-routed OpenCode enrolment and refresh**: `ai-orch developer enroll --client opencode` now drives Copilot enrolment, requests an actor-bound AI-Orch runtime credential, installs the OpenCode provider, and can install a user-level refresh job; `ai-orch opencode refresh` updates only the AI-Orch provider block and model list.
+- **Issued revocable 90-day developer runtime credentials**: the Governance Shell stores only token hashes, binds credentials to actor/client/device hash, and the model gateway accepts those credentials while preferring their bound actor over spoofable actor headers.
+- **Exposed operator provider readiness**: `/v1/admin/providers/status` and the UI report configured/missing status for OpenRouter, Azure AI Foundry, Bedrock, OpenAI, Anthropic, DeepSeek and Copilot enrolments without exposing secret values.
+- **Added model benchmark CLI plumbing**: `ai-orch bench run --workflow <workflow> --models all-enabled` calls enabled model aliases through the gateway, records latency/token/pass evidence, and posts benchmark evidence when a session ID is returned.
+- **Clarified OpenCode wording**: docs and CLI messages now say AI-Orch-routed OpenCode rather than implying OpenCode itself is governed.
+- **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.21.0-beta.
+- **Split README and architecture docs**: the root README is now a lightweight entry point, with north-star, boundary and design-question detail moved into ai-agent-orch/docs/architecture.md.
+
 ## v0.20.3-beta - 2026-06-13 (Patch)
 
 Release impact: Patch because this tightens beta safety defaults, CI verification, runtime timeout configuration, and README/OpenCode positioning without changing public API contracts.
@@ -83,7 +154,7 @@ Release impact: Patch because this fixes session-usage accounting, Responses str
 - **Fixed Responses stream usage rollups**: session usage now includes `model.gateway_responses_stream.completed` events so streamed Responses sessions report tokens and cost.
 - **Corrected incomplete Responses auditing**: provider `response.incomplete` streams now record `model.gateway_responses_stream.incomplete` instead of looking like successful completions.
 - **Fixed direct runtime route selection**: the direct runtime now chooses from effective model routes and skips actor-bound routes it cannot serve.
-- **Corrected governed OpenCode launch reporting**: the wrapper records the local OpenCode lane as `self_reported`, keeps the routed specialist visible to the developer, and no longer claims a manual confirm gate that is not exercised.
+- **Corrected AI-Orch-routed OpenCode launch reporting**: the wrapper records the local OpenCode lane as `self_reported`, keeps the routed specialist visible to the developer, and no longer claims a manual confirm gate that is not exercised.
 - **Fixed OpenCode launcher argument forwarding**: `scripts/opencode-governed.sh` and `.ps1` now forward governance flags such as `--model-only` to `ai-orch opencode` instead of hiding them behind an extra separator; added regression coverage for the documented model-only launcher path.
 - **Cleaned review-follow-up scaffolding**: test-only exports and duplicated helper loops were removed or moved to the production packages that own the behaviour.
 - **Aligned version references**: root VERSION, Go runtime version, Bridge package metadata, README, and changelog now agree on v0.18.5-beta.
@@ -132,17 +203,17 @@ Release impact: Minor because this adds backwards-compatible model route metadat
 
 - **Made `coding-gpt55` a capability alias**: the gateway now prefers actor-bound Copilot for enrolled users and falls back to the approved Bifrost/OpenRouter `openai/gpt-5.5` route.
 - **Added provider-pinned GPT-5.5 selection**: `openrouter-openai-gpt55` gives model-only sessions an explicit Bifrost/OpenRouter path for comparison and audit clarity.
-- **Governed OpenCode reasoning effort**: the model gateway accepts `reasoningEffort`, `reasoning_effort`, and `reasoning.effort`, applies route and agent policy, forwards Bifrost-compatible `reasoning.effort`, and strips unsupported reasoning controls.
+- **AI-Orch-routed OpenCode reasoning effort**: the model gateway accepts `reasoningEffort`, `reasoning_effort`, and `reasoning.effort`, applies route and agent policy, forwards Bifrost-compatible `reasoning.effort`, and strips unsupported reasoning controls.
 - **Expanded model audit metadata**: model events now record requested alias, credential source, requested/applied reasoning effort, and reasoning source alongside existing provider, resolved model, token, cost and hash fields.
 - **Tightened OpenCode agent config**: generated and sandbox configs use `governance-lead` as a low-reasoning primary agent with scoped specialist delegation rather than an unrestricted task permission.
 - **Aligned version references**: root `VERSION`, Go runtime version, Bridge package metadata, README, and changelog now agree on `v0.18.0-beta`.
 
 ## v0.17.0-beta - 2026-06-11 (Minor)
 
-Release impact: Minor because this changes the governed OpenCode default entry flow and adds a model-only governed lane without breaking existing specialist/session APIs.
+Release impact: Minor because this changes the AI-Orch-routed OpenCode default entry flow and adds a model-only governed lane without breaking existing specialist/session APIs.
 
 - **Changed OpenCode's default entry point**: `ai-orch opencode` now creates a `governance-lead` run by default, launches OpenCode with the `governance-lead` primary agent, and records the selected specialist separately as `routed_agent`.
-- **Added Copilot-aware default model selection**: governed OpenCode runs default to the `ai-orch/coding-gpt55` capability alias, which resolves through the actor's Copilot entitlement when available and otherwise uses the approved platform route.
+- **Added Copilot-aware default model selection**: AI-Orch-routed OpenCode runs default to the `ai-orch/coding-gpt55` capability alias, which resolves through the actor's Copilot entitlement when available and otherwise uses the approved platform route.
 - **Added a governed model-only lane**: developers can choose `--model-only` with a required `--governance-intent`, creating a tracked `model-gateway` session instead of pretending the work started as a delivery specialist.
 - **Added OpenCode subagent config generation**: generated and sandbox configs now define `governance-lead` as the primary agent and delivery agents as subagents with session-token, actor and intent headers.
 - **Cleaned public POC docs**: examples now use org-neutral work-item IDs and stale backend-spike/OpenCode instructions were removed or updated.

@@ -28,16 +28,17 @@ import (
 
 // GatewayConfig holds the configuration for the model compatibility gateway.
 type GatewayConfig struct {
-	RuntimeToken      string
-	Router            *router.Router
-	Backend           modelbackend.Backend
-	Audit             audit.Store
-	NewID             func(prefix string) string
-	ValidateSession   func(context.Context, string) error
-	LookupSession     func(context.Context, string) (SessionInfo, error)
-	AutoSession       func(context.Context, AutoSessionRequest) (SessionInfo, error)
-	FinishAutoSession func(context.Context, string, string) error
-	DelegateTask      func(context.Context, TaskDelegationRequest) error
+	RuntimeToken               string
+	RuntimeCredentialValidator func(token string) (actorSubject string, ok bool)
+	Router                     *router.Router
+	Backend                    modelbackend.Backend
+	Audit                      audit.Store
+	NewID                      func(prefix string) string
+	ValidateSession            func(context.Context, string) error
+	LookupSession              func(context.Context, string) (SessionInfo, error)
+	AutoSession                func(context.Context, AutoSessionRequest) (SessionInfo, error)
+	FinishAutoSession          func(context.Context, string, string) error
+	DelegateTask               func(context.Context, TaskDelegationRequest) error
 	// MaxRequestBytes caps inbound request bodies. Coding agents send
 	// multi-megabyte contexts, so the default is deliberately generous.
 	MaxRequestBytes int64
@@ -77,6 +78,14 @@ type AutoSessionRequest struct {
 	ActorHint          string
 	SourceSystem       string
 	EstimatedCostUSD   float64
+	// ClientSessionID is the caller's own conversation id (e.g. an OpenCode
+	// session id). When set, the gateway reuses one governed session per
+	// (actor + client session id) instead of creating one per request.
+	ClientSessionID string
+	// ParentClientSessionID is the caller's root conversation id when a local
+	// subagent has its own client session id. When set, the shell links the new
+	// auto-created gateway session under the governed parent conversation.
+	ParentClientSessionID string
 }
 
 const defaultMaxRequestBytes = 20 << 20 // 20 MiB
@@ -108,21 +117,26 @@ type SessionInfo struct {
 	WorkspaceMode             string
 	GatewayToken              string
 	AutoCreated               bool
+	// ClientSessionID, when set, marks the session as scoped to a caller
+	// conversation. Such sessions stay open across requests (not finished per
+	// call) so the conversation reuses one governed session.
+	ClientSessionID string
 }
 
 // Gateway is an OpenAI-compatible model endpoint owned by the Governance Shell.
 type Gateway struct {
-	runtimeToken      string
-	router            *router.Router
-	backend           modelbackend.Backend
-	audit             audit.Store
-	newID             func(prefix string) string
-	validateSession   func(context.Context, string) error
-	lookupSession     func(context.Context, string) (SessionInfo, error)
-	autoSession       func(context.Context, AutoSessionRequest) (SessionInfo, error)
-	finishAutoSession func(context.Context, string, string) error
-	delegateTask      func(context.Context, TaskDelegationRequest) error
-	maxRequestBytes   int64
+	runtimeToken               string
+	runtimeCredentialValidator func(token string) (actorSubject string, ok bool)
+	router                     *router.Router
+	backend                    modelbackend.Backend
+	audit                      audit.Store
+	newID                      func(prefix string) string
+	validateSession            func(context.Context, string) error
+	lookupSession              func(context.Context, string) (SessionInfo, error)
+	autoSession                func(context.Context, AutoSessionRequest) (SessionInfo, error)
+	finishAutoSession          func(context.Context, string, string) error
+	delegateTask               func(context.Context, TaskDelegationRequest) error
+	maxRequestBytes            int64
 }
 
 // NewGateway creates a new model compatibility gateway.
@@ -136,17 +150,18 @@ func NewGateway(cfg GatewayConfig) *Gateway {
 		maxRequestBytes = defaultMaxRequestBytes
 	}
 	return &Gateway{
-		runtimeToken:      cfg.RuntimeToken,
-		router:            cfg.Router,
-		backend:           cfg.Backend,
-		audit:             cfg.Audit,
-		newID:             newID,
-		validateSession:   cfg.ValidateSession,
-		lookupSession:     cfg.LookupSession,
-		autoSession:       cfg.AutoSession,
-		finishAutoSession: cfg.FinishAutoSession,
-		delegateTask:      cfg.DelegateTask,
-		maxRequestBytes:   maxRequestBytes,
+		runtimeToken:               cfg.RuntimeToken,
+		runtimeCredentialValidator: cfg.RuntimeCredentialValidator,
+		router:                     cfg.Router,
+		backend:                    cfg.Backend,
+		audit:                      cfg.Audit,
+		newID:                      newID,
+		validateSession:            cfg.ValidateSession,
+		lookupSession:              cfg.LookupSession,
+		autoSession:                cfg.AutoSession,
+		finishAutoSession:          cfg.FinishAutoSession,
+		delegateTask:               cfg.DelegateTask,
+		maxRequestBytes:            maxRequestBytes,
 	}
 }
 
@@ -156,6 +171,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/models", g.handleModels)
 	mux.HandleFunc("/v1/chat/completions", g.handleChatCompletions)
 	mux.HandleFunc("/v1/responses", g.handleResponses)
+	mux.HandleFunc("/v1/messages", g.handleAnthropicMessages)
 	return mux
 }
 
@@ -250,7 +266,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
 		return
 	}
-	body, decision, err = applyGovernedReasoning(body, decision, session)
+	body, decision, err = applyGovernedReasoning(body, decision, session, "chat")
 	if err != nil {
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -263,6 +279,21 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if rawBackend, ok := g.backend.(modelbackend.RawChatBackend); ok {
+		responsesBackend, responsesOK := g.backend.(modelbackend.RawResponsesBackend)
+		if responsesOK && copilotModelUsesResponsesAPI(decision.Provider, decision.SelectedModelID) {
+			respBody, usage, err := responsesRawAsChatCompletion(r.Context(), responsesBackend, decision, req, session.ActorSubject, body)
+			if err != nil {
+				g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, nil, nil, err.Error())
+				httpx.WriteJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
+				return
+			}
+			g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, respBody, usage, "")
+			finishStatus = "completed"
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(respBody)
+			return
+		}
 		respBody, err := rawBackend.ChatCompletionRaw(r.Context(), modelbackend.RawRequest{
 			Provider:     decision.Provider,
 			ModelAlias:   decision.SelectedAlias,
@@ -271,6 +302,18 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			ActorSubject: session.ActorSubject,
 		})
 		if err != nil {
+			if responsesOK && responsesOnlyChatError(err) {
+				respBody, usage, responsesErr := responsesRawAsChatCompletion(r.Context(), responsesBackend, decision, req, session.ActorSubject, body)
+				if responsesErr == nil {
+					g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, respBody, usage, "")
+					finishStatus = "completed"
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write(respBody)
+					return
+				}
+				err = responsesErr
+			}
 			g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, nil, nil, err.Error())
 			httpx.WriteJSON(w, providerErrorStatus(err), map[string]any{"error": fmt.Sprintf("model provider failed: %v", err)})
 			return
@@ -278,6 +321,7 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		respBody = rewriteTopLevelModel(respBody, decision.SelectedAlias)
 		usage := usageFromRawResponse(respBody)
 		g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_call", body, respBody, usage, "")
+		finishStatus = "completed"
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(respBody)
@@ -397,6 +441,12 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, req openA
 
 func (g *Gateway) finishGatewayAutoSession(ctx context.Context, sessionID string, session SessionInfo, status string) {
 	if g == nil || g.finishAutoSession == nil || !session.AutoCreated || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(status) == "" {
+		return
+	}
+	// Conversation-scoped sessions (keyed by a client session id) stay open so
+	// later requests in the same conversation reuse them. Finishing per request
+	// would force a new session each call.
+	if strings.TrimSpace(session.ClientSessionID) != "" {
 		return
 	}
 	_ = g.finishAutoSession(ctx, sessionID, status)

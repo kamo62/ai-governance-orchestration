@@ -48,7 +48,8 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Agent string `json:"agent"`
+		Agent          string `json:"agent"`
+		HumanConfirmed bool   `json:"human_confirmed,omitempty"`
 	}
 	if err := readJSON(w, r, &req); err != nil {
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
@@ -93,6 +94,15 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteJSON(w, http.StatusConflict, map[string]any{"error": "confirmed agent does not match routed specialist"})
 			return
 		}
+		if record.HumanConfirmationRequired && !req.HumanConfirmed {
+			httpx.WriteJSON(w, http.StatusConflict, map[string]any{
+				"error":                       "human confirmation required",
+				"status":                      "awaiting_confirmation",
+				"next_gate":                   "confirm",
+				"human_confirmation_required": true,
+			})
+			return
+		}
 		if err := h.service.sessions.CompareAndSwapStatus(r.Context(), sessionID, "awaiting_confirmation", "confirming"); err != nil {
 			httpx.WriteJSON(w, http.StatusConflict, map[string]any{"error": "session state transition failed"})
 			return
@@ -109,6 +119,10 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Record confirmation audit event, linked to the router event.
 	eventID := h.newID("evt")
 	trust := h.service.trustMetadataFromRequest(r)
+	findings := []string{}
+	if req.HumanConfirmed {
+		findings = append(findings, "human_confirmed=true")
+	}
 	_, err := h.service.audit.Append(r.Context(), audit.Event{
 		EventID:            eventID,
 		ParentEventID:      h.service.parentEventID(sessionID),
@@ -116,6 +130,7 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		EventType:          "session.confirmed",
 		Actor:              actor,
 		Agent:              req.Agent,
+		Findings:           findings,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",

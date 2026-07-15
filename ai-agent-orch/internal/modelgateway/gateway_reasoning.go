@@ -9,7 +9,7 @@ import (
 	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/router"
 )
 
-func applyGovernedReasoning(body []byte, decision router.Decision, session SessionInfo) ([]byte, router.Decision, error) {
+func applyGovernedReasoning(body []byte, decision router.Decision, session SessionInfo, endpoint string) ([]byte, router.Decision, error) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(body, &obj); err != nil {
 		return nil, decision, fmt.Errorf("decode request for reasoning policy: %w", err)
@@ -22,7 +22,7 @@ func applyGovernedReasoning(body []byte, decision router.Decision, session Sessi
 	decision.ReasoningEffortRequested = requested
 	decision.ReasoningEffortApplied = applied
 	decision.ReasoningSource = source
-	encoded, err := rewriteReasoningEffort(obj, decision.ReasoningSupportsEffort, applied)
+	encoded, err := rewriteReasoningEffort(obj, decision.ReasoningSupportsEffort, applied, decision.Provider, endpoint)
 	if err != nil {
 		return nil, decision, err
 	}
@@ -34,7 +34,7 @@ func extractReasoningEffort(obj map[string]json.RawMessage) (string, bool, error
 		if raw, ok := obj[key]; ok {
 			effort, err := reasoningEffortFromRaw(raw)
 			if err != nil {
-				return "", true, fmt.Errorf("%s must be one of low, medium, high", key)
+				return "", true, fmt.Errorf("%s is not a supported reasoning effort", key)
 			}
 			return effort, true, nil
 		}
@@ -45,7 +45,7 @@ func extractReasoningEffort(obj map[string]json.RawMessage) (string, bool, error
 			if effortRaw, ok := reasoning["effort"]; ok {
 				effort, err := reasoningEffortFromRaw(effortRaw)
 				if err != nil {
-					return "", true, errors.New("reasoning.effort must be one of low, medium, high")
+					return "", true, errors.New("reasoning.effort is not a supported reasoning effort")
 				}
 				return effort, true, nil
 			}
@@ -94,7 +94,7 @@ func chooseReasoningEffort(requested string, requestedPresent bool, decision rou
 	return applied, source
 }
 
-func rewriteReasoningEffort(obj map[string]json.RawMessage, supportsEffort bool, applied string) ([]byte, error) {
+func rewriteReasoningEffort(obj map[string]json.RawMessage, supportsEffort bool, applied string, provider string, endpoint string) ([]byte, error) {
 	delete(obj, "reasoningEffort")
 	delete(obj, "reasoning_effort")
 	if !supportsEffort {
@@ -104,13 +104,21 @@ func rewriteReasoningEffort(obj map[string]json.RawMessage, supportsEffort bool,
 	if applied == "" {
 		return json.Marshal(obj)
 	}
-	reasoning := map[string]json.RawMessage{}
-	if raw, ok := obj["reasoning"]; ok {
-		_ = json.Unmarshal(raw, &reasoning)
-	}
 	effortJSON, err := json.Marshal(applied)
 	if err != nil {
 		return nil, fmt.Errorf("encode reasoning effort: %w", err)
+	}
+	// Copilot's /chat/completions surface takes the flat reasoning_effort field.
+	// Its /responses surface (OpenAI Responses API) and other backends (Bifrost)
+	// take the nested reasoning.effort object.
+	if usesFlatReasoningEffort(provider, endpoint) {
+		delete(obj, "reasoning")
+		obj["reasoning_effort"] = effortJSON
+		return json.Marshal(obj)
+	}
+	reasoning := map[string]json.RawMessage{}
+	if raw, ok := obj["reasoning"]; ok {
+		_ = json.Unmarshal(raw, &reasoning)
 	}
 	reasoning["effort"] = effortJSON
 	reasoningJSON, err := json.Marshal(reasoning)
@@ -121,14 +129,29 @@ func rewriteReasoningEffort(obj map[string]json.RawMessage, supportsEffort bool,
 	return json.Marshal(obj)
 }
 
+// usesFlatReasoningEffort reports whether a request expects the flat
+// reasoning_effort field rather than the nested reasoning.effort object. Only
+// Copilot's OpenAI-compatible /chat/completions surface uses the flat form; the
+// /responses (Responses API) surface uses the nested object.
+func usesFlatReasoningEffort(provider, endpoint string) bool {
+	return endpoint == "chat" && strings.EqualFold(strings.TrimSpace(provider), "copilot-user")
+}
+
+// agentReasoningPolicy sets a per-agent default and ceiling for reasoning
+// effort. The ceiling is intentionally generous (up to max) so the binding
+// clamp comes from the route's per-model max_effort, which reflects what each
+// provider model actually supports. governance-lead stays low because it only
+// routes and triages.
 func agentReasoningPolicy(agent string) (defaultEffort string, maxEffort string) {
 	switch strings.TrimSpace(agent) {
 	case "governance-lead":
 		return "low", "medium"
-	case "code-review", "unit-tests", "backend-development", "frontend-development", "documentation", "refactor":
-		return "medium", "high"
+	case "frontend-development", "code-review":
+		return "high", "max"
 	case "security-review", "security-scan", "architecture-review", "terraform-review":
-		return "medium", "high"
+		return "high", "max"
+	case "backend-development", "unit-tests", "refactor", "documentation":
+		return "medium", "max"
 	default:
 		return "", ""
 	}
@@ -151,7 +174,7 @@ func stricterReasoningMax(routeMax string, agentMax string) string {
 
 func normalizeReasoningEffort(effort string) string {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "low", "medium", "high":
+	case "none", "minimal", "low", "medium", "high", "xhigh", "max":
 		return strings.ToLower(strings.TrimSpace(effort))
 	default:
 		return ""
@@ -160,12 +183,20 @@ func normalizeReasoningEffort(effort string) string {
 
 func reasoningRank(effort string) int {
 	switch normalizeReasoningEffort(effort) {
-	case "low":
+	case "none":
+		return 0
+	case "minimal":
 		return 1
-	case "medium":
+	case "low":
 		return 2
-	case "high":
+	case "medium":
 		return 3
+	case "high":
+		return 4
+	case "xhigh":
+		return 5
+	case "max":
+		return 6
 	default:
 		return 0
 	}

@@ -899,6 +899,21 @@ func authorizedSessionRequest(body string) *http.Request {
 	return req
 }
 
+func TestSessionSummaryIncludesClientSessionID(t *testing.T) {
+	summary := sessionSummaryFromRecord(SessionRecord{
+		SessionID:       "sess_auto",
+		ActorSubject:    "dev@example.test",
+		Agent:           "model-gateway",
+		Classification:  "internal",
+		Status:          "running",
+		CreatedAt:       time.Now().UTC(),
+		ClientSessionID: "opencode-session-123",
+	})
+	if summary.ClientSessionID != "opencode-session-123" {
+		t.Fatalf("expected client session id in summary, got %#v", summary)
+	}
+}
+
 func TestCreateAutoGatewaySessionAppliesGovernanceAndTokenBinding(t *testing.T) {
 	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
 	store := &recordingSessionStore{}
@@ -950,6 +965,54 @@ func TestCreateAutoGatewaySessionAppliesGovernanceAndTokenBinding(t *testing.T) 
 	}
 	if len(events) != 1 || events[0].TrustLevel != "gateway_enforced" || events[0].EnforcementMode != "gateway" {
 		t.Fatalf("expected trusted auto-session audit, got %#v", events)
+	}
+}
+
+func TestCreateAutoGatewaySessionLinksToParentClientSession(t *testing.T) {
+	auditStore := audit.NewFileStore(filepath.Join(t.TempDir(), "audit.jsonl"))
+	store := &recordingSessionStore{created: []SessionRecord{{
+		SessionID:       "sess_parent",
+		ActorSubject:    "dev@example.test",
+		Agent:           "model-gateway",
+		Classification:  "internal",
+		PromptSHA256:    "sha256:parent",
+		Status:          "running",
+		CreatedAt:       time.Now().UTC().Add(-time.Minute),
+		ClientSessionID: "opencode-root",
+	}}}
+	service := NewSessionService(SessionConfig{
+		Audit:             auditStore,
+		Sessions:          store,
+		ClassificationMax: "internal",
+		NewID: fixedIDs(
+			"sess_auto_child",
+			"evt_auto_child",
+			"sgt_auto_child",
+		),
+	})
+	result, err := service.CreateAutoGatewaySession(context.Background(), AutoGatewaySessionRequest{
+		ActorSubject:          "dev@example.test",
+		Classification:        "internal",
+		PromptSHA256:          "sha256:req",
+		ModelAlias:            "coding-fast",
+		Client:                "opencode",
+		Endpoint:              "chat.completions",
+		RawRequestBody:        []byte(`{"model":"coding-fast","messages":[{"role":"user","content":"hello"}]}`),
+		ClientSessionID:       "opencode-child",
+		ParentClientSessionID: "opencode-root",
+	})
+	if err != nil {
+		t.Fatalf("create auto session: %v", err)
+	}
+	if result.Record.ParentSessionID != "sess_parent" || result.Record.ClientSessionID != "opencode-child" {
+		t.Fatalf("expected child auto-session linked to parent, got %#v", result.Record)
+	}
+	events, err := auditStore.EventsBySession(context.Background(), "sess_auto_child")
+	if err != nil {
+		t.Fatalf("audit lookup: %v", err)
+	}
+	if len(events) != 1 || events[0].ParentSessionID != "sess_parent" {
+		t.Fatalf("expected parent session on auto-created audit event, got %#v", events)
 	}
 }
 
@@ -1113,6 +1176,20 @@ func (s *recordingSessionStore) ListRecent(_ context.Context, actorSubject strin
 		records = records[:limit]
 	}
 	return records, nil
+}
+
+func (s *recordingSessionStore) FindActiveByActorClientSession(_ context.Context, actorSubject, clientSessionID string) (SessionRecord, bool, error) {
+	for _, rec := range s.created {
+		if rec.ActorSubject == actorSubject && rec.ClientSessionID == clientSessionID {
+			switch rec.Status {
+			case "done", "failed", "confirm_failed", "aborted":
+				continue
+			default:
+				return rec, true, nil
+			}
+		}
+	}
+	return SessionRecord{}, false, nil
 }
 
 func (s *recordingSessionStore) UpdateStatus(_ context.Context, sessionID string, status string) error {

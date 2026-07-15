@@ -83,6 +83,85 @@ func copilotModelUsesResponsesAPI(provider string, model string) bool {
 	return !strings.HasPrefix(model, "gpt-5-mini")
 }
 
+func responsesRawAsChatCompletion(ctx context.Context, responsesBackend modelbackend.RawResponsesBackend, decision router.Decision, req openAIChatCompletionRequest, actorSubject string, chatBody []byte) ([]byte, map[string]any, error) {
+	responsesBody, err := chatCompletionToResponsesBody(req, decision.SelectedAlias, chatBody)
+	if err != nil {
+		return nil, nil, err
+	}
+	responsesBody = ensureJSONBool(responsesBody, "stream", false)
+	respBody, err := responsesBackend.ResponsesRaw(ctx, modelbackend.RawRequest{
+		Provider:     decision.Provider,
+		ModelAlias:   decision.SelectedAlias,
+		Model:        decision.SelectedModelID,
+		Body:         responsesBody,
+		ActorSubject: actorSubject,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	usage := usageFromRawResponse(respBody)
+	chatBodyOut, err := responsesRawToChatCompletion(respBody, decision.SelectedAlias)
+	if err != nil {
+		return nil, nil, err
+	}
+	return chatBodyOut, usage, nil
+}
+
+func responsesRawToChatCompletion(body []byte, alias string) ([]byte, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil, err
+	}
+	id := rawString(obj["id"])
+	if id == "" {
+		id = "chatcmpl_ai_orch_responses_bridge"
+	}
+	content := responsesOutputText(obj["output"])
+	usage := normalizeChatCompletionUsage(usageFromRawObject(obj))
+	resp := map[string]any{
+		"id":     id,
+		"object": "chat.completion",
+		"model":  alias,
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": content,
+				},
+				"finish_reason": "stop",
+			},
+		},
+		"usage": usage,
+	}
+	return json.Marshal(resp)
+}
+
+func responsesOutputText(raw json.RawMessage) string {
+	var items []map[string]json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &items) != nil {
+		return ""
+	}
+	var parts []string
+	for _, item := range items {
+		if rawString(item["type"]) != "message" {
+			continue
+		}
+		var contentItems []map[string]json.RawMessage
+		if len(item["content"]) == 0 || json.Unmarshal(item["content"], &contentItems) != nil {
+			continue
+		}
+		for _, content := range contentItems {
+			if rawString(content["type"]) == "output_text" {
+				if text := rawString(content["text"]); text != "" {
+					parts = append(parts, text)
+				}
+			}
+		}
+	}
+	return strings.Join(parts, "")
+}
+
 func startResponsesStreamAsChatCompletion(ctx context.Context, responsesBackend modelbackend.RawResponsesBackend, decision router.Decision, req openAIChatCompletionRequest, actorSubject string, chatBody []byte, fallbackErr error) (io.ReadCloser, error) {
 	responsesBody, convertErr := chatCompletionToResponsesBody(req, decision.SelectedAlias, chatBody)
 	if convertErr != nil {

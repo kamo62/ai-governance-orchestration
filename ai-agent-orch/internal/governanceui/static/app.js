@@ -10,6 +10,11 @@
     lastAgents: [],
     lastSessions: [],
     selectedSessionID: "",
+    // Tracks which session/status the audit panel last fetched, so the 15s
+    // auto-refresh only re-fetches audit detail for active sessions instead
+    // of repeatedly re-fetching a done/failed/aborted session's unchanging trail.
+    lastAuditSessionID: "",
+    lastAuditStatus: "",
   };
 
   const el = {
@@ -29,6 +34,7 @@
     patchCount: document.getElementById("patchCount"),
     versionBadge: document.getElementById("versionBadge"),
     gatewayList: document.getElementById("gatewayList"),
+    providerStatusList: document.getElementById("providerStatusList"),
     backendCommandList: document.getElementById("backendCommandList"),
     copilotEnrollments: document.getElementById("copilotEnrollments"),
     sessionList: document.getElementById("sessionList"),
@@ -55,6 +61,9 @@
     killSwitchGlobalOff: document.getElementById("killSwitchGlobalOff"),
     killSwitchAgentForm: document.getElementById("killSwitchAgentForm"),
     killSwitchList: document.getElementById("killSwitchList"),
+    attentionBadge: document.getElementById("attentionBadge"),
+    attentionSummary: document.getElementById("attentionSummary"),
+    attentionList: document.getElementById("attentionList"),
   };
 
   el.baseUrl.value = state.baseUrl;
@@ -206,6 +215,8 @@
     state.lastAgents = [];
     state.lastSessions = [];
     state.selectedSessionID = "";
+    state.lastAuditSessionID = "";
+    state.lastAuditStatus = "";
     el.modelBackend.textContent = "-";
     el.versionBadge.textContent = "-";
     el.agentCount.textContent = "-";
@@ -217,6 +228,7 @@
     renderAuditTrail({ session_id: "", events: [] });
     renderRecords(el.evidenceList, el.evidenceBadge, [], ["evidence_type", "description"]);
     renderRecords(el.maturityList, el.maturityBadge, [], ["workflow_id", "use_case_id", "session_id"]);
+    renderAttention(null);
     renderReadiness();
   }
 
@@ -260,7 +272,37 @@
       el.gatewayList.appendChild(card);
     });
     loadBackends().catch((err) => log("backend commands unavailable: " + err.message));
+    loadProviderStatus().catch((err) => {
+      if (el.providerStatusList) emptyList(el.providerStatusList, "Provider readiness requires operator token");
+      log("provider readiness unavailable: " + err.message);
+    });
     loadCopilotFleet().catch(() => {});
+  }
+
+  async function loadProviderStatus() {
+    if (!el.providerStatusList) return;
+    if (!state.adminToken.trim()) {
+      emptyList(el.providerStatusList, "Operator token required");
+      return;
+    }
+    const data = await api("/v1/admin/providers/status", { headers: adminHeaders() });
+    const providers = Array.isArray(data.providers) ? data.providers : [];
+    el.providerStatusList.innerHTML = "";
+    if (!providers.length) {
+      emptyList(el.providerStatusList, "No provider readiness returned");
+      return;
+    }
+    providers.forEach((provider) => {
+      const card = document.createElement("article");
+      card.className = "gateway-card" + (provider.configured ? " active" : "");
+      const enrolments = provider.enrollment_count ? " / enrollments " + provider.enrollment_count : "";
+      card.innerHTML = [
+        "<strong>" + escapeHtml(provider.label || provider.id) + "</strong>",
+        "<p>" + escapeHtml(provider.state || "-") + enrolments + "</p>",
+        "<p>" + escapeHtml(provider.detail || provider.mode || "-") + "</p>",
+      ].join("");
+      el.providerStatusList.appendChild(card);
+    });
   }
 
   async function loadBackends() {
@@ -371,6 +413,100 @@
     }
   }
 
+  // Attention: a read-only, deterministic queue folded from data already
+  // stored (policy decisions, audit events, evidence, sessions, kill
+  // switches). Mirrors the sessions view's admin-vs-dev endpoint choice.
+  const severityOrder = ["critical", "high", "medium", "low"];
+
+  async function loadAttention() {
+    if (!hasAnyAuth()) {
+      renderAttention(null);
+      return;
+    }
+    try {
+      const orgWide = hasAdminToken();
+      const data = orgWide
+        ? await api("/v1/admin/reporting/governance-insights", { headers: adminHeaders() })
+        : await api("/v1/reporting/governance-insights", { headers: devHeaders() });
+      renderAttention(data);
+    } catch (err) {
+      renderAttention(null);
+      log("attention queue failed: " + err.message);
+    }
+  }
+
+  function renderAttention(data) {
+    const items = Array.isArray(data && data.items) ? data.items : [];
+    const summary = (data && data.summary) || {};
+    if (el.attentionBadge) el.attentionBadge.textContent = String(summary.total || items.length || 0);
+
+    if (el.attentionSummary) {
+      el.attentionSummary.innerHTML = "";
+      severityOrder.forEach((severity) => {
+        const count = (summary.by_severity && summary.by_severity[severity]) || 0;
+        const tile = document.createElement("article");
+        tile.className = "metric-tile severity-" + severity;
+        tile.innerHTML = "<span>" + escapeHtml(humanLabel(severity)) + "</span><strong>" + count + "</strong>";
+        el.attentionSummary.appendChild(tile);
+      });
+    }
+
+    if (!el.attentionList) return;
+    el.attentionList.innerHTML = "";
+    if (!items.length) {
+      emptyList(el.attentionList, "No open attention items in this window");
+      return;
+    }
+
+    const sorted = items.slice().sort((a, b) => {
+      const rankDiff = severityOrder.indexOf(a.severity) - severityOrder.indexOf(b.severity);
+      if (rankDiff !== 0) return rankDiff;
+      return new Date(b.observed_at || 0) - new Date(a.observed_at || 0);
+    });
+
+    const table = document.createElement("table");
+    table.className = "ledger-table";
+    table.innerHTML = [
+      "<thead><tr>",
+      "<th>Severity</th>",
+      "<th>Category</th>",
+      "<th>Title</th>",
+      "<th>Reason</th>",
+      "<th>Observed</th>",
+      "<th>Session</th>",
+      "</tr></thead><tbody></tbody>",
+    ].join("");
+    const tbody = table.querySelector("tbody");
+    sorted.forEach((item) => {
+      const severity = item.severity || "low";
+      const row = document.createElement("tr");
+      row.className = "attention-row severity-" + severity;
+      const sessionCell = item.session_id
+        ? "<a href=\"#/sessions\" data-session-jump=\"" + escapeHtml(item.session_id) + "\">" + escapeHtml(shortSessionID(item.session_id)) + "</a>"
+        : "-";
+      row.innerHTML = [
+        "<td><span class=\"severity-pill severity-" + escapeHtml(severity) + "\">" + escapeHtml(humanLabel(severity)) + "</span></td>",
+        "<td>" + escapeHtml(humanLabel(item.category)) + "</td>",
+        "<td><strong>" + escapeHtml(item.title || "-") + "</strong></td>",
+        "<td>" + escapeHtml(item.reason || "-") + "</td>",
+        "<td>" + escapeHtml(formatShortDate(item.observed_at)) + "</td>",
+        "<td>" + sessionCell + "</td>",
+      ].join("");
+      tbody.appendChild(row);
+    });
+    el.attentionList.appendChild(table);
+
+    // Jump to the existing session audit view instead of duplicating it here.
+    el.attentionList.querySelectorAll("a[data-session-jump]").forEach((link) => {
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        const sessionID = link.dataset.sessionJump;
+        window.location.hash = "#/sessions";
+        loadAuditTrail(sessionID);
+      });
+    });
+  }
+
   function renderAgents(agents) {
     const list = Array.isArray(agents) ? agents : [];
     state.lastAgents = list;
@@ -403,63 +539,225 @@
     el.patchCount.textContent = String(applied + rejected);
   }
 
+  // Session activity: statuses the runtime still owns (server-side kill
+  // switch, run dispatch and confirm handlers use these same literal status
+  // strings), and the client-side staleness window for the "stalled" badge.
+  // This 90s window is a UI freshness cue distinct from the server's own
+  // 30-minute "stalled_session" attention item -- it flags a quiet session
+  // long before it would show up in the Attention queue.
+  const ACTIVE_SESSION_STATUSES = ["running", "confirming", "awaiting_confirmation"];
+  const STALLABLE_SESSION_STATUSES = ["running", "confirming"];
+  const STALL_THRESHOLD_MS = 90 * 1000;
+
+  function isActiveStatus(status) {
+    return ACTIVE_SESSION_STATUSES.indexOf(status) !== -1;
+  }
+
+  function elapsedMs(value) {
+    if (!value) return NaN;
+    const then = new Date(value).getTime();
+    return Number.isNaN(then) ? NaN : Date.now() - then;
+  }
+
+  function isStalledSession(session) {
+    if (!session || STALLABLE_SESSION_STATUSES.indexOf(session.status) === -1) return false;
+    const age = elapsedMs(session.latest_event_at);
+    return !Number.isNaN(age) && age >= STALL_THRESHOLD_MS;
+  }
+
+  function elapsedLabel(value) {
+    const ms = elapsedMs(value);
+    if (Number.isNaN(ms)) return "";
+    const seconds = Math.max(0, Math.floor(ms / 1000));
+    if (seconds < 60) return seconds + "s ago";
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + "m ago";
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + "h ago";
+    return Math.floor(hours / 24) + "d ago";
+  }
+
+  // Status cell: real status plus a client-computed staleness cue. Kept
+  // separate from the generic cell() helper because it embeds the stalled
+  // pill as raw markup rather than escaped text.
+  function statusCell(session) {
+    const primaryText = escapeHtml(humanLabel(session.status) || "-");
+    const stalled = isStalledSession(session);
+    const stalledPill = stalled
+      ? "<span class=\"stalled-pill\" title=\"" + escapeHtml("no audit activity since " + formatDate(session.latest_event_at)) + "\">Stalled</span>"
+      : "";
+    const secondaryParts = [];
+    if (session.patch_state) secondaryParts.push("patch " + session.patch_state);
+    else if (session.tool_call_count) secondaryParts.push(session.tool_call_count + " tool calls");
+    if (session.status === "running") {
+      const elapsed = elapsedLabel(session.latest_event_at);
+      if (elapsed) secondaryParts.push("last event " + elapsed);
+    }
+    const secondary = secondaryParts.length ? escapeHtml(secondaryParts.join(" · ")) : "-";
+    return "<td><strong>" + primaryText + (stalledPill ? " " + stalledPill : "") + "</strong><span>" + secondary + "</span></td>";
+  }
+
   function renderSessions(sessions) {
-  const list = Array.isArray(sessions) ? sessions : [];
-  state.lastSessions = list;
-  el.sessionCount.textContent = String(list.length);
-  el.sessionBadge.textContent = String(list.length);
+    const list = Array.isArray(sessions) ? sessions : [];
+    state.lastSessions = list;
+    el.sessionCount.textContent = String(list.length);
+    el.sessionBadge.textContent = String(list.length);
     el.sessionList.innerHTML = "";
     if (!list.length) {
       emptyList(el.sessionList, "No governed sessions");
       return;
     }
-  const table = document.createElement("table");
-  table.className = "ledger-table";
-  table.innerHTML = [
-    "<thead><tr>",
-    "<th>Time</th>",
-    "<th>Actor / Source</th>",
-    "<th>Work item</th>",
-    "<th>Agent</th>",
-    "<th>Model / Backend</th>",
-    "<th>Status</th>",
-    "<th>Tokens</th>",
-    "<th>Cost</th>",
-    "<th>Trust</th>",
-    "</tr></thead><tbody></tbody>",
-  ].join("");
-  const tbody = table.querySelector("tbody");
-  list.slice(0, 50).forEach((session) => {
-    const summary = session.usage_summary || {};
-    const row = document.createElement("tr");
-    row.className = session.session_id === state.selectedSessionID ? "selected" : "";
-    row.innerHTML = [
-      cell(formatShortDate(session.latest_event_at || session.created_at), session.latest_event_type || "created"),
-      cell(session.actor_subject || "-", session.source_system || session.actor_hint || "-"),
-      cell(session.work_item_id || "-", [session.repo_url, session.branch].filter(Boolean).join(" / ") || session.use_case_id || "-"),
-      cell(session.routed_agent || session.agent || "-", [session.parent_session_id ? "child of " + session.parent_session_id : "", formatModeLabels(session)].filter(Boolean).join(" / ") || "-"),
-      cell(summary.model_alias || "-", [summary.model_resolved, summary.gateway_backend].filter(Boolean).join(" / ") || "-"),
-      cell(session.status || "-", session.patch_state ? "patch " + session.patch_state : (session.tool_call_count ? session.tool_call_count + " tool calls" : "-")),
-      cell(String(summary.total_tokens || 0), (summary.prompt_tokens || 0) + " in / " + (summary.completion_tokens || 0) + " out"),
-      cell(formatCostValue(summary.estimated_cost_usd), costSourceLabel(summary.cost_source) || "unpriced"),
-      cell(session.trust_level || "-", session.enforcement_mode || "-"),
+    const grouped = groupSessions(list).slice(0, 100);
+    const table = document.createElement("table");
+    table.className = "ledger-table";
+    table.innerHTML = [
+      "<thead><tr>",
+      "<th>Time</th>",
+      "<th>Actor / Source</th>",
+      "<th>Work item</th>",
+      "<th>Agent</th>",
+      "<th>Model / Backend</th>",
+      "<th>Status</th>",
+      "<th>Tokens</th>",
+      "<th>Cost</th>",
+      "<th>Trust</th>",
+      "</tr></thead><tbody></tbody>",
     ].join("");
-    row.addEventListener("click", () => loadAuditTrail(session.session_id));
-    tbody.appendChild(row);
-  });
-  el.sessionList.appendChild(table);
+    const tbody = table.querySelector("tbody");
+    grouped.forEach((item) => {
+      const session = item.session;
+      const summary = item.rollup || session.usage_summary || {};
+      const row = document.createElement("tr");
+      row.dataset.sessionId = session.session_id || "";
+      row.dataset.depth = String(item.depth || 0);
+      row.tabIndex = 0;
+      row.setAttribute("role", "button");
+      row.setAttribute("aria-label", "Load audit trail for " + (session.session_id || "session"));
+      if (item.depth > 0) row.classList.add("ledger-row-child");
+      if (item.orphanChild) row.classList.add("ledger-row-orphan");
+      if (session.session_id === state.selectedSessionID) {
+        row.classList.add("selected");
+        row.setAttribute("aria-selected", "true");
+      } else {
+        row.setAttribute("aria-selected", "false");
       }
+      const childHint = item.childCount > 0 ? "<span class=\"ledger-child-count\">" + item.childCount + " delegated</span>" : "";
+      const rollupHint = item.rollupChildCount > 0 ? "<span class=\"ledger-rollup\">cost rollup</span>" : "";
+      const delegatedHint = item.depth > 0 ? "<span class=\"ledger-status-delegated\">delegated</span>" : "";
+      const orphanHint = item.orphanChild ? "<span class=\"ledger-orphan\">parent not in view</span>" : "";
+      row.title = item.depth > 0 && session.parent_session_id ? "Child of " + session.parent_session_id : session.session_id || "";
+      const modeLabel = escapeHtml(formatModeLabels(session));
+      row.innerHTML = [
+        cell(formatShortDate(session.latest_event_at || session.created_at), session.latest_event_type || "created", "mono", item.depth),
+        cell(session.actor_subject || "-", [session.source_system || session.actor_hint || "-", session.client_session_id ? "OpenCode " + shortSessionID(session.client_session_id) : ""].filter(Boolean).join(" / ")),
+        cell(session.work_item_id || session.branch || "-", [session.repo_url, session.branch].filter(Boolean).join(" / ") || session.use_case_id || "-"),
+        cell(session.routed_agent || session.agent || "-", [orphanHint, delegatedHint, childHint, rollupHint, modeLabel].filter(Boolean).join(" ") || "-", "", 0, true),
+        cell(summary.model_alias || "-", [summary.model_resolved, summary.gateway_backend].filter(Boolean).join(" / ") || "-"),
+        statusCell(session),
+        cell(String(summary.total_tokens || 0), (summary.prompt_tokens || 0) + " in / " + (summary.completion_tokens || 0) + " out", "tokens"),
+        cell(formatCostValue(summary), costSourceLabel(summary.cost_source) || "unpriced", "cost"),
+        cell(session.trust_level || "-", session.enforcement_mode || "-"),
+      ].join("");
+      row.addEventListener("click", () => loadAuditTrail(session.session_id));
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          loadAuditTrail(session.session_id);
+        }
+      });
+      tbody.appendChild(row);
+    });
+    el.sessionList.appendChild(table);
+    markSelectedRow(state.selectedSessionID);
+  }
 
-      function cell(primary, secondary) {
-  return "<td><strong>" + escapeHtml(primary || "-") + "</strong><span>" + escapeHtml(secondary || "") + "</span></td>";
+  function groupSessions(sessions) {
+    const list = Array.isArray(sessions) ? sessions : [];
+    const byID = new Map();
+    list.forEach((session) => {
+      if (session && session.session_id) byID.set(session.session_id, session);
+    });
+    const childrenByParent = new Map();
+    const parents = [];
+    list.forEach((session) => {
+      const parentID = session && session.parent_session_id;
+      if (parentID && byID.has(parentID)) {
+        if (!childrenByParent.has(parentID)) childrenByParent.set(parentID, []);
+        childrenByParent.get(parentID).push(session);
+      } else {
+        parents.push(session);
       }
+    });
+    childrenByParent.forEach((children) => {
+      children.sort((a, b) => sessionTime(a) - sessionTime(b));
+    });
+    const rows = [];
+    parents.forEach((session) => {
+      const parentID = session && session.session_id;
+      const isOrphanChild = Boolean(session && session.parent_session_id && !byID.has(session.parent_session_id));
+      const children = parentID ? childrenByParent.get(parentID) || [] : [];
+      rows.push({ session, depth: 0, childCount: children.length, rollupChildCount: rollupCostChildCount(children), orphanChild: isOrphanChild, rollup: rollupUsage(session, children) });
+      children.forEach((child) => rows.push({ session: child, depth: 1, childCount: 0, orphanChild: false, rollup: child.usage_summary || {} }));
+    });
+    return rows;
+  }
+
+  function rollupCostChildCount(children) {
+    const childList = Array.isArray(children) ? children : [];
+    return childList.filter((child) => Number(((child && child.usage_summary) || {}).total_tokens || 0) > 0).length;
+  }
+
+  function rollupUsage(parent, children) {
+    const rollup = Object.assign({}, (parent && parent.usage_summary) || {});
+    const childList = Array.isArray(children) ? children : [];
+    for (const child of childList) {
+      const usage = (child && child.usage_summary) || {};
+      rollup.total_tokens = Number(rollup.total_tokens || 0) + Number(usage.total_tokens || 0);
+      rollup.prompt_tokens = Number(rollup.prompt_tokens || 0) + Number(usage.prompt_tokens || 0);
+      rollup.completion_tokens = Number(rollup.completion_tokens || 0) + Number(usage.completion_tokens || 0);
+      rollup.estimated_cost_usd = Number(rollup.estimated_cost_usd || 0) + Number(usage.estimated_cost_usd || 0);
+      if (usage.cost_source) rollup.cost_source = mergeCostSource(rollup.cost_source, usage.cost_source);
+    }
+    return rollup;
+  }
+
+  function mergeCostSource(current, next) {
+    if (!next || current === next) return current || next || "";
+    if (!current || current === "unavailable") return next;
+    if (next === "unavailable") return current;
+    return "mixed";
+  }
+
+  function sessionTime(session) {
+    const value = session && (session.latest_event_at || session.created_at);
+    const parsed = value ? new Date(value).getTime() : 0;
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+
+  function markSelectedRow(sessionID) {
+    const id = sessionID || "";
+    if (!el.sessionList) return;
+    el.sessionList.querySelectorAll("tbody tr[data-session-id]").forEach((row) => {
+      const selected = row.dataset.sessionId === id;
+      row.classList.toggle("selected", selected);
+      row.setAttribute("aria-selected", selected ? "true" : "false");
+    });
+  }
+
+  function cell(primary, secondary, className, depth, secondaryHTML) {
+    const primaryText = escapeHtml(primary || "-");
+    const prefix = depth > 0 ? "<span class=\"ledger-tree-glyph\" aria-hidden=\"true\">└</span>" : "";
+    const cls = className ? " class=\"" + escapeHtml(className) + "\"" : "";
+    const detail = secondaryHTML ? String(secondary || "") : escapeHtml(secondary || "");
+    return "<td" + cls + "><strong>" + prefix + primaryText + "</strong><span>" + detail + "</span></td>";
+  }
 
   function renderAuditTrail(audit) {
 	const sessionID = audit && audit.session_id ? audit.session_id : "";
 	const events = audit && Array.isArray(audit.events) ? audit.events : [];
 	const usage = audit && audit.usage_summary ? audit.usage_summary : null;
 	el.auditEventBadge.textContent = String(events.length);
-	el.auditSessionTitle.textContent = sessionID ? "Session Audit Trail" : "Session Audit Trail";
+	el.auditSessionTitle.textContent = sessionID ? "Audit · " + shortSessionID(sessionID) : "Session Audit Trail";
 	el.auditSummary.textContent = sessionID
 	  ? sessionID + " - " + events.length + " event" + (events.length === 1 ? "" : "s") + (usage ? " - " + formatTokenSummary(usage) + " - " + formatCostSummary(usage) : "")
 	  : "Select a session to inspect its governed events.";
@@ -497,12 +795,17 @@
       return;
     }
     state.selectedSessionID = sessionID;
-    renderSessions(state.lastSessions);
+    markSelectedRow(sessionID);
     const orgWide = hasAdminToken();
     const audit = orgWide
       ? await api("/v1/admin/audit/sessions/" + encodeURIComponent(sessionID), { headers: adminHeaders() })
       : await api("/v1/audit/sessions/" + encodeURIComponent(sessionID), { headers: devHeaders() });
     renderAuditTrail(audit);
+    // Record what was fetched so the next auto-refresh tick can tell whether
+    // this session's detail is still worth re-fetching (see loadOrgSessions).
+    const matched = state.lastSessions.find((session) => session.session_id === sessionID);
+    state.lastAuditSessionID = sessionID;
+    state.lastAuditStatus = (matched && matched.status) || "";
     log("audit loaded: " + sessionID);
   }
 
@@ -518,6 +821,33 @@
 	const date = new Date(value);
 	if (Number.isNaN(date.getTime())) return String(value);
 	return date.toLocaleString([], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+      }
+
+      function shortSessionID(value) {
+	value = String(value || "");
+	if (value.length <= 18) return value;
+	return value.slice(0, 10) + "..." + value.slice(-6);
+      }
+
+      function defaultSelectedSessionID(sessions) {
+	const list = Array.isArray(sessions) ? sessions : [];
+	const parent = list.find((session) => session && !session.parent_session_id && session.session_id);
+	return (parent && parent.session_id) || (list[0] && list[0].session_id) || "";
+      }
+
+      function scrollSelectedSessionIntoView() {
+	if (!state.selectedSessionID || !el.sessionList) return;
+	const row = el.sessionList.querySelector("tr[data-session-id=\"" + cssEscape(state.selectedSessionID) + "\"]");
+	if (row && typeof row.scrollIntoView === "function") {
+	  row.scrollIntoView({ block: "nearest" });
+	}
+      }
+
+      function cssEscape(value) {
+	if (window.CSS && typeof window.CSS.escape === "function") {
+	  return window.CSS.escape(value);
+	}
+	return String(value || "").replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
       }
 
       function formatModeLabels(session) {
@@ -613,9 +943,12 @@
 	return "$" + value.toFixed(2);
       }
 
-      function formatCostValue(value) {
-	const cost = Number(value || 0);
-	return cost > 0 ? formatCost(cost) : "$0";
+      function formatCostValue(summary) {
+	const cost = Number((summary && summary.estimated_cost_usd) || 0);
+	if (cost > 0) return formatCost(cost);
+	const total = Number((summary && summary.total_tokens) || 0);
+	if (total > 0) return "unpriced";
+	return "-";
       }
 
       function costSourceLabel(value) {
@@ -686,16 +1019,31 @@
       // (governance oversight); otherwise it shows the configured actor's own.
       const orgWide = hasAdminToken();
       const response = orgWide
-        ? await api("/v1/admin/sessions?limit=20", { headers: adminHeaders() })
-        : await api("/v1/sessions?limit=20", { headers: devHeaders() });
+        ? await api("/v1/admin/sessions?limit=100", { headers: adminHeaders() })
+        : await api("/v1/sessions?limit=100", { headers: devHeaders() });
       const sessions = response.sessions || [];
       const selectedStillExists = sessions.some((session) => session.session_id === state.selectedSessionID);
       renderSessions(sessions);
-      const nextSessionID = selectedStillExists ? state.selectedSessionID : (sessions[0] && sessions[0].session_id) || "";
+      const nextSessionID = selectedStillExists ? state.selectedSessionID : defaultSelectedSessionID(sessions);
       if (nextSessionID) {
-        await loadAuditTrail(nextSessionID);
+        const nextSession = sessions.find((session) => session.session_id === nextSessionID);
+        const nextStatus = (nextSession && nextSession.status) || "";
+        // The 15s auto-refresh tick lands here too. Re-fetching the audit
+        // trail on every tick is only useful while the session is still
+        // active; once it settles into done/failed/aborted, fetch once more
+        // to pick up its final events, then stop polling that session.
+        // loadAuditTrail() records what it fetched in state.lastAudit*, so
+        // this compares against the last *fetched* state, not this tick's.
+        const sessionChanged = nextSessionID !== state.lastAuditSessionID;
+        const statusChanged = nextStatus !== state.lastAuditStatus;
+        if (sessionChanged || statusChanged || isActiveStatus(nextStatus)) {
+          await loadAuditTrail(nextSessionID);
+          scrollSelectedSessionIntoView();
+        }
       } else {
         state.selectedSessionID = "";
+        state.lastAuditSessionID = "";
+        state.lastAuditStatus = "";
         renderAuditTrail({ session_id: "", events: [] });
       }
     } catch (err) {
@@ -817,6 +1165,7 @@
     await loadOrgSessions();
 
     loadKillSwitches();
+    loadAttention();
     renderReadiness();
   }
 
@@ -875,6 +1224,7 @@
   const pageTitles = {
     overview: "Overview",
     sessions: "Activity Ledger",
+    attention: "Attention",
     gateways: "Gateways",
     governance: "Risk Controls",
     catalog: "Evidence & Reporting",

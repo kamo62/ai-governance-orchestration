@@ -1,7 +1,9 @@
 package governance
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,10 +15,10 @@ import (
 
 func TestAdminRegistryHandlerListsCrossActorEvidence(t *testing.T) {
 	store := NewRegistryStore()
-	if err := store.AppendEvidence(EvidenceRecord{ID: "ev_1", SessionID: "sess_1", EvidenceType: "test", Description: "owned", RecordedAt: time.Now().UTC()}); err != nil {
+	if _, _, err := store.AppendEvidence(EvidenceRecord{ID: "ev_1", SessionID: "sess_1", EvidenceType: "test", Description: "owned", RecordedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("append evidence: %v", err)
 	}
-	if err := store.AppendEvidence(EvidenceRecord{ID: "ev_2", SessionID: "sess_2", EvidenceType: "review", Description: "other", RecordedAt: time.Now().UTC()}); err != nil {
+	if _, _, err := store.AppendEvidence(EvidenceRecord{ID: "ev_2", SessionID: "sess_2", EvidenceType: "review", Description: "other", RecordedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("append evidence: %v", err)
 	}
 
@@ -93,6 +95,98 @@ func TestAdminRegistryHandlerRequiresAdminToken(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminRegistryEvidenceDecisionTransitionMatrix(t *testing.T) {
+	statuses := []string{"proposed", "candidate", "legacy", "confirmed", "rejected"}
+	for _, from := range statuses {
+		for _, action := range []string{"confirm", "reject"} {
+			t.Run(from+"_to_"+action, func(t *testing.T) {
+				store := NewRegistryStore()
+				if _, _, err := store.AppendEvidence(EvidenceRecord{ID: "ev_1", SessionID: "sess_1", EvidenceType: "test", Description: "result", Status: from, SourceAuthority: 4}); err != nil {
+					t.Fatalf("append evidence: %v", err)
+				}
+				h := NewAdminRegistryHandler(store, adminRegistryService(t))
+				req := httptest.NewRequest(http.MethodPost, "/v1/admin/evidence/ev_1/"+action, bytes.NewBufferString(`{"reason":"reviewed by operator"}`))
+				req.Header.Set("Authorization", "Bearer admin-token")
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, req)
+
+				allowed := action == "reject" && from != "rejected"
+				allowed = allowed || action == "confirm" && (from == "proposed" || from == "candidate" || from == "legacy")
+				want := http.StatusConflict
+				if allowed {
+					want = http.StatusOK
+				}
+				if rec.Code != want {
+					t.Fatalf("expected %d, got %d: %s", want, rec.Code, rec.Body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestEvidenceStoreTransitionMatrix(t *testing.T) {
+	statuses := []string{"proposed", "candidate", "legacy", "confirmed", "rejected"}
+	targets := []string{"candidate", "confirmed", "rejected"}
+	for _, from := range statuses {
+		for _, to := range targets {
+			t.Run(from+"_to_"+to, func(t *testing.T) {
+				store := NewRegistryStore()
+				if _, _, err := store.AppendEvidence(EvidenceRecord{ID: "ev_1", SessionID: "sess_1", EvidenceType: "test", Description: "result", Status: from, SourceAuthority: 4}); err != nil {
+					t.Fatalf("append evidence: %v", err)
+				}
+				var decision *EvidenceDecision
+				if to != "candidate" {
+					decision = &EvidenceDecision{ID: "decision_1", EvidenceID: "ev_1", ConfirmedBy: AdminOperatorSubject, Decision: to, Reason: "reviewed", RecordedAt: time.Now().UTC()}
+				}
+				_, err := store.TransitionEvidence("ev_1", to, decision)
+				allowed := to == "candidate" && from == "proposed"
+				allowed = allowed || to == "confirmed" && (from == "proposed" || from == "candidate" || from == "legacy")
+				allowed = allowed || to == "rejected" && from != "rejected"
+				if allowed && err != nil {
+					t.Fatalf("expected allowed transition, got %v", err)
+				}
+				if !allowed && !errors.Is(err, ErrEvidenceTransitionConflict) {
+					t.Fatalf("expected transition conflict, got %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestAdminRegistryEvidenceDecisionsRequireAdmin(t *testing.T) {
+	for _, action := range []string{"confirm", "reject"} {
+		t.Run(action, func(t *testing.T) {
+			store := NewRegistryStore()
+			if _, _, err := store.AppendEvidence(EvidenceRecord{ID: "ev_1", SessionID: "sess_1", EvidenceType: "test", Description: "result", Status: "candidate"}); err != nil {
+				t.Fatalf("append evidence: %v", err)
+			}
+			h := NewAdminRegistryHandler(store, adminRegistryService(t))
+			req := httptest.NewRequest(http.MethodPost, "/v1/admin/evidence/ev_1/"+action, bytes.NewBufferString(`{"reason":"reviewed"}`))
+			req.Header.Set("Authorization", "Bearer dev-token")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestAdminRegistryEvidenceDecisionRequiresReason(t *testing.T) {
+	store := NewRegistryStore()
+	if _, _, err := store.AppendEvidence(EvidenceRecord{ID: "ev_1", SessionID: "sess_1", EvidenceType: "test", Description: "result", Status: "candidate"}); err != nil {
+		t.Fatalf("append evidence: %v", err)
+	}
+	h := NewAdminRegistryHandler(store, adminRegistryService(t))
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/evidence/ev_1/confirm", bytes.NewBufferString(`{"reason":""}`))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

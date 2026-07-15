@@ -65,7 +65,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("routing failed: %v", err)})
 		return
 	}
-	body, decision, err = applyGovernedReasoning(body, decision, session)
+	body, decision, err = applyGovernedReasoning(body, decision, session, "responses")
 	if err != nil {
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -92,6 +92,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		respBody = rewriteTopLevelModel(respBody, decision.SelectedAlias)
 		usage := usageFromRawResponse(respBody)
 		g.auditModelCall(r.Context(), sessionID, session, decision, "model.gateway_responses", body, respBody, usage, "")
+		finishStatus = "completed"
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(respBody)

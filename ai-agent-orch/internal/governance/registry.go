@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/confidence"
 	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
 )
 
@@ -75,20 +78,45 @@ type CacheOutcome struct {
 
 // EvidenceRecord records test results, review outputs, approvals and quality links.
 type EvidenceRecord struct {
-	ID                string    `json:"id"`
-	SessionID         string    `json:"session_id"`
-	EvidenceType      string    `json:"evidence_type"`
-	Description       string    `json:"description"`
-	TestResult        string    `json:"test_result,omitempty"`
-	QualitySystemLink string    `json:"quality_system_link,omitempty"`
-	SecurityFinding   string    `json:"security_finding,omitempty"`
-	ApprovalReceipt   string    `json:"approval_receipt,omitempty"`
-	PatchDecision     string    `json:"patch_decision,omitempty"`
-	ExternalTicket    string    `json:"external_ticket,omitempty"`
-	TrustLevel        string    `json:"trust_level,omitempty"`
-	EnforcementMode   string    `json:"enforcement_mode,omitempty"`
-	RecordedAt        time.Time `json:"recorded_at"`
+	ID                string          `json:"id"`
+	SessionID         string          `json:"session_id"`
+	EvidenceType      string          `json:"evidence_type"`
+	Description       string          `json:"description"`
+	TestResult        string          `json:"test_result,omitempty"`
+	QualitySystemLink string          `json:"quality_system_link,omitempty"`
+	SecurityFinding   string          `json:"security_finding,omitempty"`
+	ApprovalReceipt   string          `json:"approval_receipt,omitempty"`
+	PatchDecision     string          `json:"patch_decision,omitempty"`
+	ExternalTicket    string          `json:"external_ticket,omitempty"`
+	TrustLevel        string          `json:"trust_level,omitempty"`
+	EnforcementMode   string          `json:"enforcement_mode,omitempty"`
+	SubjectKey        string          `json:"subject_key"`
+	Confidence        *float64        `json:"confidence,omitempty"`
+	ConfidenceBand    confidence.Band `json:"confidence_band,omitempty"`
+	SourceAuthority   int             `json:"source_authority"`
+	EvidenceStrength  string          `json:"evidence_strength"`
+	Status            string          `json:"status"`
+	// ClientEventID is an optional client-supplied idempotency key. Retried
+	// posts that reuse the same (session_id, client_event_id) pair are
+	// deduped server-side instead of creating a second record.
+	ClientEventID string    `json:"client_event_id,omitempty"`
+	RecordedAt    time.Time `json:"recorded_at"`
 }
+
+// EvidenceDecision is an immutable administrative decision attached to evidence.
+type EvidenceDecision struct {
+	ID          string    `json:"confirmation_id"`
+	EvidenceID  string    `json:"evidence_id"`
+	ConfirmedBy string    `json:"confirmed_by"`
+	Decision    string    `json:"decision"`
+	Reason      string    `json:"reason"`
+	RecordedAt  time.Time `json:"recorded_at"`
+}
+
+var (
+	ErrEvidenceNotFound           = errors.New("evidence not found")
+	ErrEvidenceTransitionConflict = errors.New("evidence status transition conflict")
+)
 
 // MaturityExportRecord is a single bounded fact for downstream maturity reporting.
 type MaturityExportRecord struct {
@@ -146,13 +174,14 @@ type MaturityExportRecord struct {
 // For Phase 1 this is local-process only.  Promotion to durable storage
 // (SQLite/Postgres) is the path to team/organisation use.
 type RegistryStore struct {
-	mu            sync.RWMutex
-	useCases      map[string]UseCase
-	workflows     map[string]Workflow
-	manifests     map[string]ContextManifest
-	cacheOutcomes []CacheOutcome
-	evidence      []EvidenceRecord
-	exports       []MaturityExportRecord
+	mu                sync.RWMutex
+	useCases          map[string]UseCase
+	workflows         map[string]Workflow
+	manifests         map[string]ContextManifest
+	cacheOutcomes     []CacheOutcome
+	evidence          []EvidenceRecord
+	evidenceDecisions []EvidenceDecision
+	exports           []MaturityExportRecord
 }
 
 func NewRegistryStore() *RegistryStore {
@@ -176,8 +205,13 @@ type RegistryStoreInterface interface {
 	GetManifest(string) (ContextManifest, bool)
 	AppendCacheOutcome(CacheOutcome) error
 	CacheOutcomes() ([]CacheOutcome, error)
-	AppendEvidence(EvidenceRecord) error
+	// AppendEvidence stores e, unless e.ClientEventID is non-empty and a
+	// record with the same (session_id, client_event_id) already exists, in
+	// which case the existing record is returned unchanged with duplicate
+	// set to true instead of an error.
+	AppendEvidence(e EvidenceRecord) (stored EvidenceRecord, duplicate bool, err error)
 	Evidence() ([]EvidenceRecord, error)
+	TransitionEvidence(string, string, *EvidenceDecision) (EvidenceRecord, error)
 	AppendExport(MaturityExportRecord) error
 	Exports() ([]MaturityExportRecord, error)
 }
@@ -305,14 +339,24 @@ func (s *RegistryStore) CacheOutcomes() ([]CacheOutcome, error) {
 
 // Evidence methods.
 
-func (s *RegistryStore) AppendEvidence(e EvidenceRecord) error {
+func (s *RegistryStore) AppendEvidence(e EvidenceRecord) (EvidenceRecord, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	e = evidenceWithDefaults(e)
+	e.ConfidenceBand = ""
 	if e.RecordedAt.IsZero() {
 		e.RecordedAt = time.Now().UTC()
 	}
+	clientEventID := strings.TrimSpace(e.ClientEventID)
+	if clientEventID != "" {
+		for _, existing := range s.evidence {
+			if existing.SessionID == e.SessionID && strings.TrimSpace(existing.ClientEventID) == clientEventID {
+				return existing, true, nil
+			}
+		}
+	}
 	s.evidence = append(s.evidence, e)
-	return nil
+	return e, false, nil
 }
 
 func (s *RegistryStore) Evidence() ([]EvidenceRecord, error) {
@@ -320,7 +364,78 @@ func (s *RegistryStore) Evidence() ([]EvidenceRecord, error) {
 	defer s.mu.RUnlock()
 	out := make([]EvidenceRecord, len(s.evidence))
 	copy(out, s.evidence)
+	for i := range out {
+		out[i] = evidenceWithConfidenceBand(out[i])
+	}
 	return out, nil
+}
+
+func (s *RegistryStore) TransitionEvidence(id string, to string, decision *EvidenceDecision) (EvidenceRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.evidence {
+		if s.evidence[i].ID != id {
+			continue
+		}
+		if err := validateEvidenceTransition(s.evidence[i].Status, to, decision); err != nil {
+			return EvidenceRecord{}, err
+		}
+		if decision != nil && decision.EvidenceID != id {
+			return EvidenceRecord{}, errors.New("evidence decision evidence_id mismatch")
+		}
+		s.evidence[i].Status = to
+		if decision != nil {
+			s.evidence[i].SourceAuthority = 2
+			s.evidenceDecisions = append(s.evidenceDecisions, *decision)
+		}
+		return evidenceWithConfidenceBand(s.evidence[i]), nil
+	}
+	return EvidenceRecord{}, ErrEvidenceNotFound
+}
+
+func evidenceWithDefaults(e EvidenceRecord) EvidenceRecord {
+	if e.Status == "" {
+		e.Status = "legacy"
+	}
+	if e.EvidenceStrength == "" {
+		e.EvidenceStrength = "weak"
+	}
+	if e.SourceAuthority == 0 {
+		switch e.TrustLevel {
+		case "gateway_enforced":
+			e.SourceAuthority = 1
+		case "managed_client":
+			e.SourceAuthority = 3
+		default:
+			e.SourceAuthority = 4
+		}
+	}
+	return e
+}
+
+func evidenceWithConfidenceBand(e EvidenceRecord) EvidenceRecord {
+	e.ConfidenceBand = ""
+	if e.Confidence != nil {
+		e.ConfidenceBand = confidence.ToBand(*e.Confidence)
+	}
+	return e
+}
+
+func validateEvidenceTransition(from string, to string, decision *EvidenceDecision) error {
+	allowed := to == "candidate" && from == "proposed" && decision == nil
+	if to == "confirmed" {
+		allowed = (from == "proposed" || from == "candidate" || from == "legacy") && decision != nil
+	}
+	if to == "rejected" {
+		allowed = from != "rejected" && decision != nil
+	}
+	if !allowed {
+		return fmt.Errorf("%w: %s -> %s", ErrEvidenceTransitionConflict, from, to)
+	}
+	if decision != nil && (decision.ID == "" || decision.Decision != to || strings.TrimSpace(decision.Reason) == "" || strings.TrimSpace(decision.ConfirmedBy) == "" || decision.RecordedAt.IsZero()) {
+		return errors.New("evidence decision id, decision, reason, confirmed_by, and recorded_at are required")
+	}
+	return nil
 }
 
 // MaturityExport methods.
@@ -412,8 +527,8 @@ func (h *RegistryHandler) createUseCase(w http.ResponseWriter, r *http.Request) 
 		Classification  string `json:"classification"`
 		RiskLevel       string `json:"risk_level"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+	if err := readJSON(w, r, &req); err != nil {
+		writeRequestBodyError(w, err)
 		return
 	}
 	uc := UseCase{
@@ -477,8 +592,8 @@ func (h *RegistryHandler) createWorkflow(w http.ResponseWriter, r *http.Request)
 		Description string   `json:"description"`
 		Stages      []string `json:"stages,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+	if err := readJSON(w, r, &req); err != nil {
+		writeRequestBodyError(w, err)
 		return
 	}
 	wf := Workflow{
@@ -516,8 +631,8 @@ func (h *RegistryHandler) createManifest(w http.ResponseWriter, r *http.Request)
 		ChunkHashes     []string `json:"chunk_hashes,omitempty"`
 		InfluencedModel bool     `json:"influenced_model"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+	if err := readJSON(w, r, &req); err != nil {
+		writeRequestBodyError(w, err)
 		return
 	}
 	if !h.requireOwnedSession(w, r, req.SessionID) {
@@ -687,8 +802,8 @@ func (h *RegistryHandler) filterOwnedMaturityExports(w http.ResponseWriter, r *h
 
 func (h *RegistryHandler) createCacheOutcome(w http.ResponseWriter, r *http.Request) {
 	var c CacheOutcome
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+	if err := readJSON(w, r, &c); err != nil {
+		writeRequestBodyError(w, err)
 		return
 	}
 	if c.SessionID == "" {
@@ -740,8 +855,26 @@ func (h *RegistryHandler) listCacheOutcomes(w http.ResponseWriter, r *http.Reque
 
 func (h *RegistryHandler) createEvidence(w http.ResponseWriter, r *http.Request) {
 	var e EvidenceRecord
-	if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
+	if err != nil {
+		writeRequestBodyError(w, err)
+		return
+	}
+	if err := json.Unmarshal(body, &e); err != nil {
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+		return
+	}
+	var supplied map[string]json.RawMessage
+	if err := json.Unmarshal(body, &supplied); err != nil {
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+		return
+	}
+	if _, ok := supplied["status"]; ok {
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "status is server-derived and must not be supplied"})
+		return
+	}
+	if _, ok := supplied["source_authority"]; ok {
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "source_authority is server-derived and must not be supplied"})
 		return
 	}
 	if e.SessionID == "" {
@@ -755,6 +888,7 @@ func (h *RegistryHandler) createEvidence(w http.ResponseWriter, r *http.Request)
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "evidence_type is required"})
 		return
 	}
+	e.ClientEventID = strings.TrimSpace(e.ClientEventID)
 	if e.ID == "" {
 		e.ID = h.newID("evidence")
 	}
@@ -764,14 +898,39 @@ func (h *RegistryHandler) createEvidence(w http.ResponseWriter, r *http.Request)
 	trust := h.evidenceTrustMetadata(e, r)
 	e.TrustLevel = trust.TrustLevel
 	e.EnforcementMode = trust.EnforcementMode
-	if err := h.store.AppendEvidence(e); err != nil {
+	if err := deriveEvidenceProvenance(&e, trust); err != nil {
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	stored, duplicate, err := h.store.AppendEvidence(e)
+	if err != nil {
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if h.metrics != nil {
+	if h.metrics != nil && !duplicate {
 		h.metrics.RecordEvidenceRecorded()
 	}
-	httpx.WriteJSON(w, http.StatusCreated, e)
+	httpx.WriteJSON(w, http.StatusCreated, evidenceCreateResponse{
+		EvidenceRecord: evidenceWithConfidenceBand(stored),
+		Duplicate:      duplicate,
+	})
+}
+
+func writeRequestBodyError(w http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		status = http.StatusRequestEntityTooLarge
+	}
+	httpx.WriteJSON(w, status, map[string]any{"error": "invalid request body: " + err.Error()})
+}
+
+// evidenceCreateResponse is the POST /v1/evidence response shape: the normal
+// evidence record, plus a duplicate marker set when the request replayed an
+// already-recorded client_event_id instead of creating a new record.
+type evidenceCreateResponse struct {
+	EvidenceRecord
+	Duplicate bool `json:"duplicate,omitempty"`
 }
 
 func (h *RegistryHandler) evidenceTrustMetadata(e EvidenceRecord, r *http.Request) requestTrustMetadata {
@@ -781,6 +940,47 @@ func (h *RegistryHandler) evidenceTrustMetadata(e EvidenceRecord, r *http.Reques
 	default:
 		return h.service.trustMetadataFromRequest(r)
 	}
+}
+
+func deriveEvidenceProvenance(e *EvidenceRecord, trust requestTrustMetadata) error {
+	if e.Status != "" {
+		return errors.New("status is server-derived and must not be supplied")
+	}
+	if e.SourceAuthority != 0 {
+		return errors.New("source_authority is server-derived and must not be supplied")
+	}
+	if e.Confidence != nil && (*e.Confidence < 0 || *e.Confidence > 1) {
+		return errors.New("confidence must be between 0 and 1")
+	}
+
+	defaultStrength := "weak"
+	maxStrength := 1
+	switch trust.TrustLevel {
+	case "gateway_enforced":
+		e.SourceAuthority = 1
+		e.Status = "candidate"
+		defaultStrength, maxStrength = "strong", 3
+	case "managed_client":
+		e.SourceAuthority = 3
+		e.Status = "candidate"
+		defaultStrength, maxStrength = "medium", 2
+	default:
+		e.SourceAuthority = 4
+		e.Status = "proposed"
+	}
+
+	if e.EvidenceStrength == "" {
+		e.EvidenceStrength = defaultStrength
+		return nil
+	}
+	strength := map[string]int{"weak": 1, "medium": 2, "strong": 3}[e.EvidenceStrength]
+	if strength == 0 {
+		return errors.New("evidence_strength must be strong, medium, or weak")
+	}
+	if strength > maxStrength {
+		return fmt.Errorf("evidence_strength %q exceeds the %s lane cap", e.EvidenceStrength, trust.TrustLevel)
+	}
+	return nil
 }
 
 func (h *RegistryHandler) listEvidence(w http.ResponseWriter, r *http.Request) {

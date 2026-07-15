@@ -52,6 +52,11 @@ func SummarizeSessionUsageWithPricing(ctx context.Context, events []audit.Event,
 			} else if event.TokenUsage != nil && summary.CostSource == "" {
 				summary.CostSource = "unavailable"
 			}
+		case "managed_client.token_usage":
+			summary.ModelProxyCalls++
+			rememberModelAttribution(&summary, event)
+			addTokenUsage(&summary, event.TokenUsage)
+			summary.CostSource = mergeCostSource(summary.CostSource, "client_reported")
 		case "mcp.proxy_call":
 			if event.Reason == "forwarded" {
 				summary.MCPProxyCalls++
@@ -110,7 +115,13 @@ func estimateCostFromPricing(ctx context.Context, event audit.Event, pricing Mod
 			continue
 		}
 		promptTokens := intFromAny(event.TokenUsage["prompt_tokens"])
+		if promptTokens == 0 {
+			promptTokens = intFromAny(event.TokenUsage["input_tokens"])
+		}
 		completionTokens := intFromAny(event.TokenUsage["completion_tokens"])
+		if completionTokens == 0 {
+			completionTokens = intFromAny(event.TokenUsage["output_tokens"])
+		}
 		estimate := float64(promptTokens)*record.PromptCostPerToken + float64(completionTokens)*record.CompletionCostPerToken
 		return estimate, estimate > 0
 	}
@@ -138,14 +149,11 @@ func pricingLookupCandidates(event audit.Event) []usagePricingLookup {
 }
 
 func copilotEquivalentPricingModelID(modelID string) string {
-	modelID = strings.TrimSpace(strings.TrimPrefix(modelID, "copilot-"))
-	if strings.EqualFold(modelID, "gpt-5.5") {
-		return "openai/gpt-5.5"
-	}
-	if strings.HasPrefix(strings.ToLower(modelID), "gpt-") {
-		return "openai/" + modelID
-	}
-	return ""
+	// Map a Copilot upstream model id to its vendor-prefixed OpenRouter id so the
+	// price book (keyed "<vendor>/<model>") can price Copilot routes. List price
+	// is the same model regardless of being served via Copilot. Covers Claude,
+	// Gemini, and OpenAI/GPT families.
+	return openRouterVendorModel(strings.TrimPrefix(strings.TrimSpace(modelID), "copilot-"))
 }
 
 func addTokenUsage(summary *SessionUsageSummary, usage map[string]any) {

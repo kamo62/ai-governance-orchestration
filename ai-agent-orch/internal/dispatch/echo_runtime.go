@@ -98,6 +98,8 @@ func (h *echoHandle) run(ctx context.Context) {
 	}
 }
 
+func (h *echoHandle) RuntimeName() string { return "echo_beta_smoke" }
+
 func (h *echoHandle) Wait() error {
 	<-h.done
 	return nil

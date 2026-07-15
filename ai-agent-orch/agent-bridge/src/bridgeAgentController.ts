@@ -414,6 +414,9 @@ export class BridgeAgentController {
                 sessionId: run.session_id,
                 specialist: run.specialist,
                 reason: run.reason,
+                routingConfidence: run.routing_confidence,
+                humanConfirmationRequired: run.human_confirmation_required,
+                routingAlternates: run.routing_alternates,
                 userIntent: trimmed,
             };
 
@@ -433,7 +436,7 @@ export class BridgeAgentController {
             );
             this.emit();
 
-            if (this.state.autoConfirm) {
+            if (this.state.autoConfirm && !run.human_confirmation_required) {
                 await this.confirmPendingRun();
                 return;
             }
@@ -441,7 +444,7 @@ export class BridgeAgentController {
             this.state = {
                 ...this.state,
                 status: 'awaiting_confirm',
-                statusDetail: `Confirm ${run.specialist}`,
+                statusDetail: run.human_confirmation_required ? `Confirm low-confidence route to ${run.specialist}` : `Confirm ${run.specialist}`,
             };
             this.emit();
         } catch (err: any) {
@@ -474,16 +477,19 @@ export class BridgeAgentController {
         this.state = appendTimeline(this.state, 'Follow-up turn', trimmed.slice(0, 80));
         this.emit();
 
-        if (!this.state.autoConfirm && turn.next_gate === 'confirm') {
+        if ((turn.human_confirmation_required || !this.state.autoConfirm) && turn.next_gate === 'confirm') {
             this.state = {
                 ...this.state,
                 status: 'awaiting_confirm',
-                statusDetail: `Confirm ${turn.specialist}`,
+                statusDetail: turn.human_confirmation_required ? `Confirm low-confidence route to ${turn.specialist}` : `Confirm ${turn.specialist}`,
                 pendingRun: {
                     runId: this.state.runId || '',
                     sessionId: turn.session_id,
                     specialist: turn.specialist || this.state.agentHint,
                     reason: turn.reason || '',
+                    routingConfidence: turn.routing_confidence,
+                    humanConfirmationRequired: turn.human_confirmation_required,
+                    routingAlternates: turn.routing_alternates,
                     userIntent: trimmed,
                 },
             };
@@ -564,7 +570,7 @@ export class BridgeAgentController {
 
         try {
             const streamDone = stream.promise;
-            await client.confirmSession(pending.sessionId, pending.specialist);
+            await client.confirmSession(pending.sessionId, pending.specialist, Boolean(pending.humanConfirmationRequired));
             this.outputChannel.appendLine(`[agent] session confirmed: ${pending.sessionId}`);
             await streamDone;
         } catch (err: any) {

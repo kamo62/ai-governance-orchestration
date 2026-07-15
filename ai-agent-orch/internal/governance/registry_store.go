@@ -115,6 +115,19 @@ func (s *DurableRegistryStore) migrate() error {
 			external_ticket TEXT,
 			trust_level TEXT,
 			enforcement_mode TEXT,
+			subject_key TEXT NOT NULL DEFAULT '',
+			confidence REAL,
+			source_authority INTEGER NOT NULL DEFAULT 4,
+			evidence_strength TEXT NOT NULL DEFAULT 'weak',
+			status TEXT NOT NULL DEFAULT 'legacy',
+			recorded_at TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS evidence_confirmations (
+			confirmation_id TEXT PRIMARY KEY,
+			evidence_id TEXT NOT NULL,
+			confirmed_by TEXT NOT NULL,
+			decision TEXT NOT NULL,
+			reason TEXT NOT NULL,
 			recorded_at TEXT NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS maturity_exports (
@@ -178,31 +191,54 @@ func (s *DurableRegistryStore) migrate() error {
 	if err := s.ensureColumn("evidence_records", "enforcement_mode", "TEXT"); err != nil {
 		return err
 	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "subject_key", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "confidence", definition: "REAL"},
+		{name: "source_authority", definition: "INTEGER NOT NULL DEFAULT 4"},
+		{name: "evidence_strength", definition: "TEXT NOT NULL DEFAULT 'weak'"},
+		{name: "status", definition: "TEXT NOT NULL DEFAULT 'legacy'"},
+		{name: "client_event_id", definition: "TEXT"},
+	} {
+		if err := s.ensureColumn("evidence_records", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	_, err = s.db.Exec(`
+		UPDATE evidence_records
+		SET source_authority = CASE trust_level
+			WHEN 'gateway_enforced' THEN 1
+			WHEN 'managed_client' THEN 3
+			ELSE 4
+		END
+		WHERE status = 'legacy'
+	`)
+	if err != nil {
+		return fmt.Errorf("backfill evidence provenance: %w", err)
+	}
+	// Client-supplied idempotency key: retried evidence posts that reuse the
+	// same (session_id, client_event_id) pair must not create a second row.
+	// The partial WHERE clause excludes NULL/empty values, so evidence without
+	// a client_event_id (the common case today) is never subject to it.
+	if _, err := s.db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_client_event_id
+		ON evidence_records(session_id, client_event_id)
+		WHERE client_event_id IS NOT NULL AND client_event_id != ''
+	`); err != nil {
+		return fmt.Errorf("create evidence client_event_id index: %w", err)
+	}
 	return nil
 }
 
 func (s *DurableRegistryStore) ensureColumn(table string, column string, definition string) error {
-	rows, err := s.db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	columns, err := sqlitex.TableColumns(s.db, table)
 	if err != nil {
 		return fmt.Errorf("inspect %s schema: %w", table, err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name string
-		var columnType string
-		var notNull int
-		var defaultValue sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
-			return fmt.Errorf("scan %s schema: %w", table, err)
-		}
-		if name == column {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate %s schema: %w", table, err)
+	if columns[column] {
+		return nil
 	}
 	if _, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, definition)); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
@@ -414,28 +450,64 @@ func scanCacheOutcomes(rows *sql.Rows) ([]CacheOutcome, error) {
 
 // Evidence methods.
 
-func (s *DurableRegistryStore) AppendEvidence(e EvidenceRecord) error {
+// AppendEvidence inserts e. When e.ClientEventID is set and a record already
+// exists for (session_id, client_event_id) -- caught via the unique partial
+// index rather than a separate check-then-insert, so concurrent retries
+// cannot both "win" -- the pre-existing record is returned with duplicate
+// set to true instead of an error.
+func (s *DurableRegistryStore) AppendEvidence(e EvidenceRecord) (EvidenceRecord, bool, error) {
+	e = evidenceWithDefaults(e)
 	if e.RecordedAt.IsZero() {
 		e.RecordedAt = s.now().UTC()
+	}
+	var confidenceValue any
+	if e.Confidence != nil {
+		confidenceValue = *e.Confidence
+	}
+	clientEventID := strings.TrimSpace(e.ClientEventID)
+	e.ClientEventID = clientEventID
+	var clientEventIDValue any
+	if clientEventID != "" {
+		clientEventIDValue = clientEventID
 	}
 	_, err := s.db.Exec(`
 		INSERT INTO evidence_records (
 			id, session_id, evidence_type, description, test_result, quality_system_link,
 			security_finding, approval_receipt, patch_decision, external_ticket,
-			trust_level, enforcement_mode, recorded_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			trust_level, enforcement_mode, subject_key, confidence, source_authority,
+			evidence_strength, status, client_event_id, recorded_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, e.ID, e.SessionID, e.EvidenceType, e.Description, e.TestResult, e.QualitySystemLink,
 		e.SecurityFinding, e.ApprovalReceipt, e.PatchDecision, e.ExternalTicket,
-		e.TrustLevel, e.EnforcementMode,
+		e.TrustLevel, e.EnforcementMode, e.SubjectKey, confidenceValue, e.SourceAuthority,
+		e.EvidenceStrength, e.Status, clientEventIDValue,
 		e.RecordedAt.Format(time.RFC3339Nano))
-	return err
+	if err != nil {
+		if clientEventID != "" && isUniqueConstraintErr(err) {
+			existing, findErr := s.evidenceByClientEvent(e.SessionID, clientEventID)
+			if findErr != nil {
+				return EvidenceRecord{}, false, findErr
+			}
+			return existing, true, nil
+		}
+		return EvidenceRecord{}, false, err
+	}
+	return e, false, nil
+}
+
+// isUniqueConstraintErr reports whether err came from a SQLite UNIQUE
+// constraint violation. modernc.org/sqlite does not expose a typed
+// sentinel for this, so match the driver's error text.
+func isUniqueConstraintErr(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "unique constraint")
 }
 
 func (s *DurableRegistryStore) Evidence() ([]EvidenceRecord, error) {
 	rows, err := s.db.Query(`
 		SELECT id, session_id, evidence_type, description, test_result, quality_system_link,
 			security_finding, approval_receipt, patch_decision, external_ticket,
-			trust_level, enforcement_mode, recorded_at
+			trust_level, enforcement_mode, subject_key, confidence, source_authority,
+			evidence_strength, status, client_event_id, recorded_at
 		FROM evidence_records ORDER BY recorded_at ASC
 	`)
 	if err != nil {
@@ -448,17 +520,117 @@ func (s *DurableRegistryStore) Evidence() ([]EvidenceRecord, error) {
 func scanEvidence(rows *sql.Rows) ([]EvidenceRecord, error) {
 	var out []EvidenceRecord
 	for rows.Next() {
-		var e EvidenceRecord
-		var recordedAtStr string
-		if err := rows.Scan(&e.ID, &e.SessionID, &e.EvidenceType, &e.Description, &e.TestResult,
-			&e.QualitySystemLink, &e.SecurityFinding, &e.ApprovalReceipt, &e.PatchDecision,
-			&e.ExternalTicket, &e.TrustLevel, &e.EnforcementMode, &recordedAtStr); err != nil {
+		e, err := scanEvidenceRecord(rows)
+		if err != nil {
 			return nil, err
 		}
-		e.RecordedAt, _ = time.Parse(time.RFC3339Nano, recordedAtStr)
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+type evidenceScanner interface {
+	Scan(...any) error
+}
+
+func scanEvidenceRecord(scanner evidenceScanner) (EvidenceRecord, error) {
+	var e EvidenceRecord
+	var testResult, qualitySystemLink, securityFinding, approvalReceipt sql.NullString
+	var patchDecision, externalTicket, trustLevel, enforcementMode sql.NullString
+	var confidenceValue sql.NullFloat64
+	var clientEventID sql.NullString
+	var recordedAtStr string
+	if err := scanner.Scan(&e.ID, &e.SessionID, &e.EvidenceType, &e.Description, &testResult,
+		&qualitySystemLink, &securityFinding, &approvalReceipt, &patchDecision,
+		&externalTicket, &trustLevel, &enforcementMode, &e.SubjectKey, &confidenceValue,
+		&e.SourceAuthority, &e.EvidenceStrength, &e.Status, &clientEventID, &recordedAtStr); err != nil {
+		return EvidenceRecord{}, err
+	}
+	e.TestResult = testResult.String
+	e.QualitySystemLink = qualitySystemLink.String
+	e.SecurityFinding = securityFinding.String
+	e.ApprovalReceipt = approvalReceipt.String
+	e.PatchDecision = patchDecision.String
+	e.ExternalTicket = externalTicket.String
+	e.TrustLevel = trustLevel.String
+	e.EnforcementMode = enforcementMode.String
+	if confidenceValue.Valid {
+		e.Confidence = &confidenceValue.Float64
+	}
+	e.ClientEventID = clientEventID.String
+	e.RecordedAt, _ = time.Parse(time.RFC3339Nano, recordedAtStr)
+	return evidenceWithConfidenceBand(e), nil
+}
+
+func (s *DurableRegistryStore) TransitionEvidence(id string, to string, decision *EvidenceDecision) (EvidenceRecord, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return EvidenceRecord{}, err
+	}
+	defer tx.Rollback()
+
+	var from string
+	if err := tx.QueryRow(`SELECT status FROM evidence_records WHERE id = ?`, id).Scan(&from); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return EvidenceRecord{}, ErrEvidenceNotFound
+		}
+		return EvidenceRecord{}, err
+	}
+	if err := validateEvidenceTransition(from, to, decision); err != nil {
+		return EvidenceRecord{}, err
+	}
+	if decision != nil && decision.EvidenceID != id {
+		return EvidenceRecord{}, errors.New("evidence decision evidence_id mismatch")
+	}
+	if decision != nil {
+		if _, err := tx.Exec(`
+			INSERT INTO evidence_confirmations (
+				confirmation_id, evidence_id, confirmed_by, decision, reason, recorded_at
+			) VALUES (?, ?, ?, ?, ?, ?)
+		`, decision.ID, id, decision.ConfirmedBy, decision.Decision, decision.Reason, decision.RecordedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			return EvidenceRecord{}, err
+		}
+		_, err = tx.Exec(`UPDATE evidence_records SET status = ?, source_authority = 2 WHERE id = ?`, to, id)
+	} else {
+		_, err = tx.Exec(`UPDATE evidence_records SET status = ? WHERE id = ?`, to, id)
+	}
+	if err != nil {
+		return EvidenceRecord{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return EvidenceRecord{}, err
+	}
+	return s.evidenceByID(id)
+}
+
+func (s *DurableRegistryStore) evidenceByID(id string) (EvidenceRecord, error) {
+	row := s.db.QueryRow(`
+		SELECT id, session_id, evidence_type, description, test_result, quality_system_link,
+			security_finding, approval_receipt, patch_decision, external_ticket,
+			trust_level, enforcement_mode, subject_key, confidence, source_authority,
+			evidence_strength, status, client_event_id, recorded_at
+		FROM evidence_records WHERE id = ?
+	`, id)
+	e, err := scanEvidenceRecord(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return EvidenceRecord{}, ErrEvidenceNotFound
+	}
+	return e, err
+}
+
+func (s *DurableRegistryStore) evidenceByClientEvent(sessionID string, clientEventID string) (EvidenceRecord, error) {
+	row := s.db.QueryRow(`
+		SELECT id, session_id, evidence_type, description, test_result, quality_system_link,
+			security_finding, approval_receipt, patch_decision, external_ticket,
+			trust_level, enforcement_mode, subject_key, confidence, source_authority,
+			evidence_strength, status, client_event_id, recorded_at
+		FROM evidence_records WHERE session_id = ? AND client_event_id = ?
+	`, sessionID, clientEventID)
+	e, err := scanEvidenceRecord(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return EvidenceRecord{}, ErrEvidenceNotFound
+	}
+	return e, err
 }
 
 // MaturityExport methods.

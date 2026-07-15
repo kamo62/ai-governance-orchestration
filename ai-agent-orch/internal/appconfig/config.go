@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/envx"
@@ -26,6 +27,7 @@ type Config struct {
 	ToolLoopMax                 int
 	GatewayAddr                 string // Listen address for the model compatibility gateway.
 	ModelBackend                string // bifrost or copilot-user.
+	ClaudeBackend               string // Optional Claude route selector: anthropic, bedrock, or foundry.
 	BifrostBaseURL              string // Base URL for the Bifrost sidecar when selected.
 	BifrostAPIKey               string // Optional Bifrost bearer token if sidecar auth is enabled.
 	EnableServerContextResolver bool   // Local-dev only git context fallback.
@@ -149,6 +151,7 @@ func Load(args []string) (Config, error) {
 		ToolLoopMax:                 toolLoopMax,
 		GatewayAddr:                 envx.OrDefault("AI_ORCH_GATEWAY_ADDR", ":18082"),
 		ModelBackend:                envx.OrDefault("AI_ORCH_MODEL_BACKEND", "bifrost"),
+		ClaudeBackend:               envx.OrDefault("AI_ORCH_CLAUDE_BACKEND", ""),
 		BifrostBaseURL:              envx.OrDefault("AI_ORCH_BIFROST_BASE_URL", ""),
 		BifrostAPIKey:               envx.OrDefault("AI_ORCH_BIFROST_API_KEY", ""),
 		EnableServerContextResolver: enableServerContextResolver,
@@ -179,6 +182,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.PolicyEngine, "policy-engine", cfg.PolicyEngine, "policy engine adapter (native; agt is reserved)")
 	fs.IntVar(&cfg.ToolLoopMax, "consecutive-tool-call-max", cfg.ToolLoopMax, "maximum consecutive tool/MCP calls before output")
 	fs.StringVar(&cfg.ModelBackend, "model-backend", cfg.ModelBackend, "model backend adapter (bifrost or copilot-user)")
+	fs.StringVar(&cfg.ClaudeBackend, "claude-backend", cfg.ClaudeBackend, "Claude provider route override (anthropic, bedrock, foundry)")
 	fs.StringVar(&cfg.BifrostBaseURL, "bifrost-base-url", cfg.BifrostBaseURL, "Bifrost sidecar base URL")
 	fs.StringVar(&cfg.BifrostAPIKey, "bifrost-api-key", cfg.BifrostAPIKey, "optional Bifrost sidecar bearer token")
 	fs.BoolVar(&cfg.EnableServerContextResolver, "enable-server-context-resolver", cfg.EnableServerContextResolver, "enable local-dev server-side git context fallback")
@@ -190,7 +194,27 @@ func Load(args []string) (Config, error) {
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
+	claudeBackend, err := normalizeClaudeBackend(cfg.ClaudeBackend)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ClaudeBackend = claudeBackend
 	return cfg, nil
+}
+
+func normalizeClaudeBackend(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return "", nil
+	case "anthropic":
+		return "anthropic", nil
+	case "bedrock", "aws-bedrock", "amazon-bedrock":
+		return "bedrock", nil
+	case "foundry", "azure", "azure-ai-foundry", "azure-openai":
+		return "foundry", nil
+	default:
+		return "", fmt.Errorf("AI_ORCH_CLAUDE_BACKEND must be one of anthropic, bedrock, or foundry")
+	}
 }
 
 func envFloat(key string, fallback float64) (float64, error) {

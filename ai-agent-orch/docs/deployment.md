@@ -2,7 +2,7 @@
 
 This document explains how to run and verify the local AI Agent Orchestration POC.
 
-The root [README.md](../../README.md) explains the aim of the project. This file is intentionally more operational.
+The root [README.md](../../README.md) explains the aim of the project, and [architecture.md](architecture.md) explains the system boundary. This file is intentionally operational.
 
 ## Current Deployment Shape
 
@@ -142,6 +142,42 @@ Cleanup after the walkthrough:
 docker compose -p ai-orch-cio-demo -f docker-compose.yml -f docker-compose.beta.yml --profile beta down --remove-orphans
 ```
 
+### Managed-client live evidence on-ramp (Neokod / T3Code)
+
+The live managed-client story runs against the Copilot-backed local stack. The isolated
+CIO demo project cannot mint actor-bound credentials: it has no Copilot token store and
+no enrolled actors, which is why its seed step skips managed-client seeding by default.
+
+```sh
+cd ai-agent-orch
+./scripts/local-copilot-compose-up.sh   # governance shell on http://127.0.0.1:18080
+AI_ORCH_RUNTIME_CREDENTIAL_CLIENT=neokod ./scripts/dev-mint-runtime-credential.sh
+```
+
+The helper reuses existing enrolment. If the shell has never seen the actor it starts
+the GitHub device-login flow; this is identity proof for binding the credential to a
+person and has nothing to do with model routing. The client keeps its own provider
+logins.
+
+Paste the printed `air_` value into the client's governance settings, which live under
+`providerInstances.githubCopilot.config.managedClientEvidence` in the Neokod
+settings.json (`~/.neokod/dev/settings.json` for dev runs,
+`~/.neokod/userdata/settings.json` for the packaged app), with `enabled: true` and
+`governanceUrl: http://127.0.0.1:18080`. The client's test-connection posts a synthetic
+batch to `/v1/managed-client/evidence`; a `202` with `accepted: 1` proves the lane.
+Live evidence then appears in the Governance UI of the same stack at
+`http://127.0.0.1:18080/ui/`.
+
+Notes:
+
+- `gatewayEnabled` stays `false` for the recording-only posture. Enabling it routes MCP
+  calls through the gateway in the request path, which is a separate decision.
+- The credential sits in the client's plaintext settings.json until the client ships its
+  secret-store migration. Never show it on a projected screen.
+- Credentials are bound to the stack that minted them. A token minted on the Copilot
+  stack is not valid on the isolated CIO demo project; to seed that project, set
+  `AI_ORCH_CIO_MANAGED_CLIENT_RUNTIME_TOKEN` to a token minted for that stack.
+
 ### Provider-backed smoke (optional, requires OpenRouter)
 
 ```sh
@@ -153,6 +189,8 @@ docker compose -f docker-compose.yml -f docker-compose.provider.yml --profile pr
 ```
 
 `provider-gateway-smoke` is the OpenCode-style path (governed run + `/v1/chat/completions` on the model gateway). `provider-run-smoke` proves full orchestrator dispatch with a live model response and patch envelope.
+
+EchoRuntime is used only when `AI_ORCH_BETA_SMOKE=true` for explicit beta/CI smoke. Normal dispatch fails closed when OpenCode/ACP and direct/provider-backed runtimes are unavailable; this prevents fake patches from being recorded as successful execution.
 
 CI runs this nightly when `OPENROUTER_API_KEY` is configured as a repository secret.
 
@@ -348,34 +386,179 @@ The model gateway uses `AI_ORCH_RUNTIME_TOKEN`, not `AI_ORCH_DEV_TOKEN`. Runtime
 
 ### GitHub Copilot User Backend
 
-The experimental Copilot backend is per-user and actor-bound. It is intended for internal beta use where developers already have Copilot seats. In the team shape, this runs on the central ai-orch server; developers do not run Docker locally just to use OpenCode or Cline.
+The experimental Copilot backend is per-user and actor-bound. It is intended for internal beta use where developers already have Copilot seats. Keep two flows separate:
 
-Operator setup on the central server:
+- **Local operator flow**: starts a local Docker Compose Governance Shell and model gateway on the developer/operator machine.
+- **Deployed gateway flow**: a QA/prod/shared Governance Shell is already running; developers only enroll their local OpenCode config against that deployed gateway.
+
+#### Local Operator Flow
+
+Use this only when you are running the local Copilot-backed stack yourself:
 
 ```sh
-export AI_ORCH_MODEL_BACKEND=copilot-user
-export AI_ORCH_COPILOT_TOKEN_DB=/app/var/audit/copilot-tokens.db
-export AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY='<server secret>'
-docker compose -f docker-compose.yml -f docker-compose.copilot.yml up -d orchestrator governance-shell
+cd ai-agent-orch
+scripts/copilot-verify.sh
+scripts/local-copilot-compose-up.sh
 ```
 
-Developer enrollment against that server:
+`scripts/local-copilot-compose-up.sh` starts the Copilot-backed Governance Shell with
+`AI_ORCH_MODEL_BACKEND=copilot-user`. It supplies the server-side Copilot
+token-store encryption key from `AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY` or the
+local key file created by `scripts/copilot-verify.sh`
+(`~/.ai-orch/copilot-token.key`). This value is not a GitHub Copilot OAuth token
+and should not be confused with a developer's per-user Copilot credential. Each
+developer still authenticates with their own GitHub/Copilot account through
+`ai-orch copilot login` or `ai-orch developer enroll --client opencode`, so
+Copilot usage remains actor-bound for audit and billing attribution. For shared
+or production-like deployments, store `AI_ORCH_COPILOT_TOKEN_ENCRYPTION_KEY` in
+the deployment secret manager and keep it stable across restarts; rotating it
+without re-encrypting/re-enrolling makes the stored Copilot token database
+unreadable.
+
+The helper also supplies a generated `BIFROST_ENCRYPTION_KEY` when absent. The
+base Compose file validates that variable even when `docker-compose.copilot.yml`
+disables Bifrost, so this placeholder avoids accidental startup failures in a
+Copilot-only local stack. After the gateway is healthy, the helper refreshes any
+existing global or project OpenCode config so provider/model metadata changes
+(for example image attachment support or endpoint routing) reach developers who
+start `opencode` directly. Set `AI_ORCH_REFRESH_OPENCODE=false` to skip this
+automatic local refresh.
+
+`scripts/copilot-compose-up.sh` remains as a compatibility wrapper for the local
+operator flow, but new docs and automation should use `scripts/local-copilot-compose-up.sh`.
+
+#### Deployed Gateway Developer Flow
+
+Use this when QA/prod/shared AI-Orch is already running and you only need to
+configure a developer machine to run `opencode` directly through that gateway:
 
 ```sh
 cd ai-agent-orch
 AI_ORCH_GOVERNANCE_URL=https://ai-orch.example.com \
 AI_ORCH_MODEL_GATEWAY_URL=https://models.ai-orch.example.com \
 AI_ORCH_DEV_TOKEN=<developer-enrollment-token-or-id-token> \
-AI_ORCH_RUNTIME_TOKEN=<runtime-token> \
-AI_ORCH_ACTOR_SUBJECT=<actor-subject> \
-scripts/enroll-developer-copilot-opencode.sh
+scripts/deployed-opencode-enroll.sh
 ```
 
-The script starts or refreshes the developer's Copilot enrollment through the Governance Shell, verifies the actor can list Copilot models, then installs the `ai-orch` OpenCode provider config. During install, `ai-orch opencode install-config` calls the model gateway's `/v1/models` endpoint with the developer actor context and imports the live governed model list into OpenCode. That list is route-aware: a Copilot-only server exposes Copilot-routable aliases and the actor's live Copilot picker models, not OpenRouter-only aliases that the current backend cannot execute. The Copilot OAuth credential is stored encrypted in the server-side ai-orch token store for that actor. It is not copied into OpenCode, Cline, the Orchestrator, or project files.
+The deployed enrollment script starts or refreshes the developer's Copilot
+enrollment through the Governance Shell, verifies the actor can list Copilot
+models, asks the server for a 90-day revocable AI-Orch runtime credential, then
+installs or refreshes the `ai-orch` OpenCode provider config. During install,
+`ai-orch opencode install-config` calls the model gateway's `/v1/models` endpoint
+with the developer actor context and imports the live governed model list into
+OpenCode. That list is route-aware: a Copilot-only server exposes
+Copilot-routable aliases and the actor's live Copilot picker models, not
+OpenRouter-only aliases that the current backend cannot execute. The generated
+model entries also advertise OpenCode image attachment support (`attachment: true`
+and `modalities.input: ["text", "image"]`) so multimodal Copilot/GPT-5-class
+routes can accept pasted screenshots. The Copilot OAuth credential is stored
+encrypted in the server-side ai-orch token store for that actor. It is not copied
+into OpenCode, Cline, the Orchestrator, or project files. The installed refresh
+job updates only AI-Orch-routed OpenCode config and model aliases; it does not
+store OpenRouter, Foundry, Bedrock or Copilot provider keys on the developer
+machine.
+
+
+Developer refresh commands for a deployed gateway:
+
+```sh
+# One-time or when a developer's local credential/config needs repair.
+scripts/deployed-opencode-enroll.sh
+
+# Manual refresh if needed. Enrollment installs an automatic refresh job by default.
+scripts/deployed-opencode-refresh.sh
+
+# Optional model route smoke.
+ai-orch bench run --workflow smoke --models all-enabled
+```
+
+Developers run `opencode` directly after enrollment. They should not have to remember
+whether a gateway change affected model metadata, image attachments, or the
+chat/Responses provider split. In local Copilot-backed deployments,
+`scripts/local-copilot-compose-up.sh` refreshes existing OpenCode configs after the
+Gateway is healthy. In deployed QA/prod/shared deployments, enrollment installs
+the user-level refresh job by default so local config metadata stays current
+without developers copying provider keys or rerunning setup manually.
+
+Provider readiness is available to operators through `/v1/admin/providers/status`. It reports configured/missing status for OpenRouter, Azure AI Foundry, Bedrock, OpenAI, Anthropic, DeepSeek and Copilot enrolments without returning secret values.
+
+Validate the generated OpenCode agent/model matrix after backend or routing changes:
+
+```sh
+AI_ORCH_ACTOR_SUBJECT=<developer-actor> scripts/opencode-agent-matrix-smoke.sh
+```
+
+This smoke reads `ai-orch opencode generate-config`, then calls each configured agent model through the correct gateway surface. It catches endpoint mismatches between logical capability routes (for example `coding-gpt55`) and transport-specific provider surfaces (`/v1/chat/completions` vs `/v1/responses`). Passing this matrix proves the configured agents can at least reach their governed model route; full patch/tool behavior still needs OpenCode E2E or client-level tests.
+
 
 OpenCode and Cline still point only at ai-orch. Do not configure developer tools to call `github-copilot`, OpenRouter, Bifrost, OpenAI, Anthropic, or provider APIs directly in governed mode.
 
-Generic OpenAI-compatible clients often call `/v1/chat/completions`. ai-orch follows the same Copilot endpoint rule used by OpenCode's native Copilot provider: GPT-5-class non-mini Copilot models use upstream `/responses`, while `gpt-5-mini`, Anthropic/Claude and GPT-4-class Copilot models use chat completions. For Custom/OpenAI-compatible clients that still call chat for `gpt-5.5` or `gpt-5.3-codex`, the gateway converts the chat request, including function tools and tool-result turns, to Responses and translates Responses text, usage and function-call SSE back into chat-completion chunks for the client.
+Generic OpenAI-compatible clients often call `/v1/chat/completions`. ai-orch follows the same Copilot endpoint rule used by OpenCode's native Copilot provider: GPT-5.3+/5.4/5.5 Copilot models are served only on upstream `/responses`, while `gpt-5-mini`, Anthropic/Claude and Gemini Copilot models use chat completions. The generated OpenCode config is explicit about this: those Responses-only aliases are placed under the `ai-orch-responses` provider (`@ai-sdk/openai` -> `/v1/responses`), so OpenCode does not call chat for them. The chat-to-Responses bridge is compatibility/fallback behavior for other custom OpenAI-compatible clients that only support `/v1/chat/completions` and still send `gpt-5.5` or `gpt-5.3-codex`: the gateway converts the chat request, including function tools and tool-result turns, to Responses and translates Responses text, usage and function-call SSE back into chat-completion chunks for the client.
+
+#### Deployed Gateway Claude Code Enrolment
+
+Use this when a QA/prod/shared Governance Shell is already running and a developer
+wants Claude Code routed through the gateway:
+
+```sh
+cd ai-agent-orch
+AI_ORCH_GOVERNANCE_URL=https://ai-orch.example.com \
+AI_ORCH_MODEL_GATEWAY_URL=https://models.ai-orch.example.com \
+AI_ORCH_DEV_TOKEN=<developer-enrollment-token-or-id-token> \
+scripts/deployed-claude-code-enroll.sh
+```
+
+The script mirrors `scripts/deployed-opencode-enroll.sh`, swapping the final step to
+`ai-orch developer enroll --client claude-code`. That command:
+
+1. Asks the server for a 90-day revocable AI-Orch runtime credential through the
+   existing `/v1/developer/runtime-credential` path.
+2. Generates the project Claude Code config (`CLAUDE.md`, `.mcp.json`, and the
+   `.claude/settings.json` lifecycle hooks) in the working directory.
+3. Backs up the developer's Claude `settings.json` (default `~/.claude/settings.json`,
+   or a `--path` override) to a timestamped copy **before** any mutation, and aborts
+   the whole enrolment if the backup fails, so the original file is never left in a
+   half-written state.
+4. Merges into that `settings.json` the gateway routing and governance wiring while
+   preserving unrelated keys:
+   - `env.ANTHROPIC_BASE_URL` → the model gateway URL (`AI_ORCH_MODEL_GATEWAY_URL`),
+   - `env.ANTHROPIC_AUTH_TOKEN` → the runtime credential,
+   - the `ai-orch-gateway` MCP server block,
+   - the `UserPromptSubmit` / `PostToolUse` / `Stop` lifecycle hooks that invoke
+     `ai-orch hook prompt-submit|post-tool|stop`.
+
+Only the runtime token is ever written to the developer machine — no provider keys
+(`ANTHROPIC_API_KEY`, OpenRouter, Copilot, AWS) are placed in Claude Code config. After
+enrolment Claude Code routes model traffic through `/v1/messages`, so its calls are
+`gateway_enforced` with real usage and cost, and its hooks self-report lifecycle
+evidence. The command prints the actor subject, the credential expiry, and the path of
+the settings backup.
+
+#### Kiro Governance-Only Onboarding
+
+Kiro has no custom model-endpoint override, so it is enrolled for the governance lanes
+only — MCP tools plus the hook→REST evidence lane, with **no model proxy lane**:
+
+```sh
+cd ai-agent-orch
+AI_ORCH_GOVERNANCE_URL=https://ai-orch.example.com \
+AI_ORCH_DEV_TOKEN=<developer-enrollment-token-or-id-token> \
+go run ./cmd/ai-orch developer enroll --client kiro
+```
+
+`ai-orch developer enroll --client kiro`:
+
+1. Requests a 90-day runtime credential through the same
+   `/v1/developer/runtime-credential` path.
+2. Generates the Kiro config (`.kiro/settings/mcp.json`, the `ai-orch.md` steering file,
+   and the three `.kiro/hooks/*.kiro.hook.json` lifecycle hooks).
+3. Wires the runtime credential into the generated Kiro MCP `env` block as
+   `AI_ORCH_DEV_TOKEN`, alongside the existing `AI_ORCH_GOVERNANCE_URL`.
+
+There is no `ANTHROPIC_BASE_URL` and no model endpoint override: Kiro's own model
+traffic stays `self_reported`, while its MCP tool calls are `gateway_enforced` and its
+lifecycle hooks self-report evidence via `ai-orch hook prompt-submit|post-tool|stop`.
+The command prints the actor subject and the credential expiry.
 
 ### Backend Control From The UI
 
@@ -617,6 +800,7 @@ ai-orch mcp install --client codex
 ai-orch mcp install --client claude-code
 ai-orch mcp install --client vscode
 ai-orch mcp install --client cline
+ai-orch mcp install --client kiro
 ```
 
 The install command refuses to overwrite existing files by default. Use `--force` only when you have reviewed what will be replaced.
@@ -779,6 +963,66 @@ ai-orch-models.example.com {
 ```
 
 The equivalent nginx locations need `proxy_buffering off;` and `proxy_read_timeout 0;` on the gateway host so streaming responses are not cut. Keep the container ports bound to loopback (the Compose defaults already do this) so the proxy is the only ingress.
+
+## Failure Modes
+
+Real failure paths that exist in this codebase today, in symptom / check / cause-and-fix form.
+
+### Hooklane evidence POST failing and spooling
+
+**Symptom:** a Kiro lifecycle hook still exits `0`, but stderr prints `evidence queued for retry: the governance shell was unreachable or returned a server error`.
+
+**Check:** the spool directory at `<workspace>/.kiro/.ai-orch-spool/`. Each `0600` JSON file is one fully-rendered evidence POST body (client_event_id included); the directory is `0700`, and a sorted listing is the retry order.
+
+**Cause and fix:** a network error or a `5xx` from the Governance Shell (a `4xx` is a permanent rejection and is never spooled). Each event is written through a same-directory temporary file and atomic rename, then the spool auto-flushes oldest first the next time any hook runs. Successful and `4xx` files are deleted; network/`5xx` failures stop the flush, and corrupt files are deleted with a stderr note. The queue caps at 500 files and drops the oldest once full. On startup, a legacy `.ai-orch-spool.jsonl` is imported and removed.
+
+### Managed-client duplicate receipts
+
+**Symptom:** `POST /v1/managed-client/evidence` returns `202` with `duplicate > 0` in the response body.
+
+**Check:** the `duplicate` count reflects how many events in the batch reused an `event_id` already recorded for that session, via the `managed_client_receipts` table keyed on `(session_id, client_event_id)`.
+
+**Cause and fix:** not an error condition; it means the client retried a batch it had already delivered, and the retry was safely deduped instead of creating a second audit record. Investigate only if `duplicate` is unexpectedly high on a batch that should be all-new events, which usually means the client is not generating a fresh `event_id` per event.
+
+### Pricing refresh failures and backoff
+
+**Symptom:** governance-shell logs repeat `model pricing refresh attempt N/6 failed: ...`, followed by `model pricing refresh exhausted retries, waiting for next tick`; session cost reporting shows `cost_source: unavailable` or an unpriced total.
+
+**Check:** the two log lines above, and whether the process can reach the OpenRouter pricing endpoint (`OPENROUTER_BASE_URL` if overridden).
+
+**Cause and fix:** each refresh cycle retries up to 6 times with jittered exponential backoff (30s base, doubling, capped at 15 minutes) before giving up until the next regular tick (`AI_ORCH_MODEL_PRICING_REFRESH_INTERVAL`, default 24h). Previously-fetched prices stay in the table meanwhile, so this degrades new cost estimates rather than erasing old ones; only a cold start with no prior successful refresh leaves pricing empty. Fix outbound access to OpenRouter, or wait for the next tick; no restart is required.
+
+### SQLite busy/locked under concurrent access
+
+**Symptom:** `database is locked` or `SQLITE_BUSY` errors in governance-shell logs, or writes that stall for several seconds.
+
+**Check:** how many governance-shell processes point at the same `AI_ORCH_AUDIT_PATH`, and whether that path is on a network filesystem.
+
+**Cause and fix:** every store opens with WAL journaling and a 10-second busy timeout (`internal/sqlitex/sqlitex.go`), so a writer waits instead of failing immediately under brief contention, but SQLite still allows exactly one writer at a time. This store is single-process by design; do not point two governance-shell instances at the same `audit.db`. If a single process still locks up, check the volume is a real local filesystem, not NFS or similar, since WAL locking is unreliable there.
+
+### Admin endpoints returning 401/403
+
+**Symptom:** `/v1/admin/*` calls return `401` or `403`.
+
+**Check:** whether an `Authorization: Bearer <token>` header was sent at all, and whether that token matches the server's `AI_ORCH_ADMIN_TOKEN`.
+
+**Cause and fix:** `401` means no bearer token was presented; `403 admin not configured` means the server has no `AI_ORCH_ADMIN_TOKEN` set; `403 admin access required` means a token was presented but does not match. Set `AI_ORCH_ADMIN_TOKEN` on the server and use the exact same value in the client or the Governance UI's admin token field.
+
+### governance-insights returning empty
+
+**Symptom:** `/v1/reporting/governance-insights` (or the admin variant) returns `items: []` and `total: 0` even though sessions exist.
+
+**Check:** the `window` query parameter (default 7 days, rejected above 30 days) and which token generated the request.
+
+**Cause and fix:** sessions older than the window are excluded; widen it with `?window=30d`. The non-admin endpoint is actor-scoped to the caller's own sessions (the dev token plus any `X-AI-Orch-Local-Identity` header), so an operator looking for another actor's activity there will always see an empty queue; use the admin token against `/v1/admin/reporting/governance-insights` for org-wide visibility.
+
+### Kill-switch blocking sessions
+
+**Symptom:** session creation or dispatch fails with a reason like `kill switch enabled`, `kill switch enabled for agent <name>`, or `kill switch enabled for client <name>`.
+
+**Check:** `GET /v1/admin/killswitch` (admin token) for active `global`/`all`, `global`/`sessions`, `agent`/`<name>`, and `client`/`<name>` entries, plus the `AI_ORCH_KILL_SWITCH` environment variable, which blocks everything at the process level and is not visible or clearable through the API.
+
+**Cause and fix:** clear a stored entry with `DELETE /v1/admin/killswitch/{scope}/{id}`, or use the Unblock button on the Governance UI's Risk Controls page. If `AI_ORCH_KILL_SWITCH=true`, unset it and restart the process; that switch is a deploy-time override, not runtime state.
 
 ## Backups And Retention
 

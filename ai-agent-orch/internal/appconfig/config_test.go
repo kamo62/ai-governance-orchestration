@@ -50,6 +50,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.ModelBackend != "bifrost" {
 		t.Fatalf("expected default model backend bifrost, got %q", cfg.ModelBackend)
 	}
+	if cfg.ClaudeBackend != "" {
+		t.Fatalf("expected empty default Claude backend, got %q", cfg.ClaudeBackend)
+	}
 	if cfg.BifrostBaseURL != "" {
 		t.Fatalf("expected empty default Bifrost base URL, got %q", cfg.BifrostBaseURL)
 	}
@@ -77,13 +80,14 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	t.Setenv("AI_ORCH_POLICY_ENGINE", "agt")
 	t.Setenv("AI_ORCH_CONSECUTIVE_TOOL_CALL_MAX", "7")
 	t.Setenv("AI_ORCH_MODEL_BACKEND", "bifrost")
+	t.Setenv("AI_ORCH_CLAUDE_BACKEND", "anthropic")
 	t.Setenv("AI_ORCH_BIFROST_BASE_URL", "http://bifrost:8080")
 	t.Setenv("AI_ORCH_BIFROST_API_KEY", "env-bifrost-token")
 	t.Setenv("AI_ORCH_ENABLE_SERVER_CONTEXT_RESOLVER", "true")
 	t.Setenv("AI_ORCH_REQUIRE_WORK_ITEM", "true")
 	t.Setenv("AI_ORCH_EXECUTION_TIMEOUT", "5m")
 
-	cfg, err := Load([]string{"-addr", ":7777", "-audit-path", "/tmp/flag-audit.jsonl", "-dev-token", "flag-token", "-service-token", "flag-service-token", "-classification-max", "restricted", "-kill-switch=false", "-cost-cap-enabled=false", "-session-cost-cap-usd", "0.75", "-policy-engine", "native", "-consecutive-tool-call-max", "11", "-model-backend", "copilot-user", "-bifrost-base-url", "http://flag-bifrost:8080", "-bifrost-api-key", "flag-bifrost-token", "-enable-server-context-resolver=false", "-require-work-item=false", "-execution-timeout", "30s"})
+	cfg, err := Load([]string{"-addr", ":7777", "-audit-path", "/tmp/flag-audit.jsonl", "-dev-token", "flag-token", "-service-token", "flag-service-token", "-classification-max", "restricted", "-kill-switch=false", "-cost-cap-enabled=false", "-session-cost-cap-usd", "0.75", "-policy-engine", "native", "-consecutive-tool-call-max", "11", "-model-backend", "copilot-user", "-claude-backend", "bedrock", "-bifrost-base-url", "http://flag-bifrost:8080", "-bifrost-api-key", "flag-bifrost-token", "-enable-server-context-resolver=false", "-require-work-item=false", "-execution-timeout", "30s"})
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -123,6 +127,9 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	if cfg.ModelBackend != "copilot-user" {
 		t.Fatalf("expected flag model backend to win, got %q", cfg.ModelBackend)
 	}
+	if cfg.ClaudeBackend != "bedrock" {
+		t.Fatalf("expected flag Claude backend to win, got %q", cfg.ClaudeBackend)
+	}
 	if cfg.BifrostBaseURL != "http://flag-bifrost:8080" {
 		t.Fatalf("expected flag Bifrost base URL to win, got %q", cfg.BifrostBaseURL)
 	}
@@ -137,6 +144,17 @@ func TestLoadUsesEnvAndFlags(t *testing.T) {
 	}
 	if cfg.ExecutionTimeout != 30*time.Second {
 		t.Fatalf("expected flag execution timeout to win, got %v", cfg.ExecutionTimeout)
+	}
+}
+
+func TestLoadRejectsInvalidClaudeBackend(t *testing.T) {
+	t.Setenv("AI_ORCH_CLAUDE_BACKEND", "moon")
+	_, err := Load([]string{})
+	if err == nil {
+		t.Fatal("Load should reject invalid Claude backend")
+	}
+	if !strings.Contains(err.Error(), "AI_ORCH_CLAUDE_BACKEND") {
+		t.Fatalf("error should name AI_ORCH_CLAUDE_BACKEND, got %v", err)
 	}
 }
 

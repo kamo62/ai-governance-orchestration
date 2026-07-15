@@ -130,8 +130,14 @@ func main() {
 			fmt.Fprintf(os.Stderr, "unknown mcp subcommand: %s\n", os.Args[2])
 			os.Exit(1)
 		}
+	case "hook":
+		handleHook(ctx, cfg, os.Args[2:])
 	case "copilot":
 		handleCopilot(ctx, cfg, os.Args[2:])
+	case "developer":
+		handleDeveloper(ctx, cfg, os.Args[2:])
+	case "bench":
+		handleBench(ctx, cfg, os.Args[2:])
 	case "opencode":
 		if len(os.Args) > 2 && openCodeToolSubcommands[os.Args[2]] {
 			handleOpenCodeTool(os.Args[2:])
@@ -151,7 +157,7 @@ func printUsage() {
 Usage:
   ai-orch session create --agent <name> --classification <level> --prompt <text> [--workspace]
   ai-orch session message --session-id <id> --prompt <text>
-  ai-orch session confirm --session-id <id> --agent <name>
+  ai-orch session confirm --session-id <id> --agent <name> [--human]
   ai-orch session events --session-id <id>
   ai-orch audit lookup --session-id <id>
   ai-orch audit verify --session-id <id>
@@ -163,8 +169,11 @@ Usage:
   ai-orch mcp start [--transport http|stdio] [--host 127.0.0.1] [--port 18081]
   ai-orch mcp install --client <vscode|cline|claude-code|codex> [--force]
   ai-orch mcp doctor
+  ai-orch hook prompt-submit|post-tool|stop  (reads lifecycle event JSON on stdin)
+  ai-orch developer enroll --client opencode [--scope global|project]
   ai-orch copilot login|status|models|logout|refresh [--local]
   ai-orch copilot smoke --local [--model <id>] [--prompt <text>]
+  ai-orch bench run --workflow <workflow> --models all-enabled
   ai-orch opencode [--governance-agent <name>] [--governance-classification <level>] [--governance-prompt <text>] [-- <opencode args...>]
 
 Environment:

@@ -40,6 +40,7 @@ type SessionConfig struct {
 	CostCapEnabled    bool
 	SessionCostCapUSD float64
 	PolicyEngine      policyengine.Engine
+	PolicyDecisions   PolicyDecisionStore
 	ToolLoopMax       int
 	PatchBuffer       *PatchBuffer
 	Metrics           *MetricsHandler
@@ -93,6 +94,7 @@ type SessionService struct {
 	costCapEnabled     bool
 	sessionCostCapUSD  float64
 	policyEngine       policyengine.Engine
+	policyDecisions    PolicyDecisionStore
 	toolLoopMax        int
 	patchBuffer        *PatchBuffer
 	metrics            *MetricsHandler
@@ -124,17 +126,21 @@ func (s *SessionService) setSessionStatus(ctx context.Context, sessionID string,
 	_ = s.sessions.UpdateStatus(ctx, sessionID, status)
 }
 
-func (s *SessionService) setRoutedAgent(ctx context.Context, sessionID string, agent string) error {
-	if s == nil || s.sessions == nil || sessionID == "" || agent == "" {
+func (s *SessionService) setRouteDecision(ctx context.Context, sessionID string, decision RouteDecision) error {
+	if s == nil || s.sessions == nil || sessionID == "" || decision.Specialist == "" {
 		return nil
 	}
-	setter, ok := s.sessions.(interface {
+	if setter, ok := s.sessions.(interface {
+		SetRouteDecision(context.Context, string, string, string, bool) error
+	}); ok {
+		return setter.SetRouteDecision(ctx, sessionID, decision.Specialist, decision.RoutingConfidence, decision.HumanConfirmationRequired)
+	}
+	if setter, ok := s.sessions.(interface {
 		SetRoutedAgent(context.Context, string, string) error
-	})
-	if !ok {
-		return nil
+	}); ok {
+		return setter.SetRoutedAgent(ctx, sessionID, decision.Specialist)
 	}
-	return setter.SetRoutedAgent(ctx, sessionID, agent)
+	return nil
 }
 
 // SessionExists verifies that a session id is known to the Governance Shell.
@@ -207,49 +213,52 @@ type CreateSessionResponse struct {
 }
 
 type SessionSummary struct {
-	SessionID           string              `json:"session_id"`
-	ParentSessionID     string              `json:"parent_session_id,omitempty"`
-	RunID               string              `json:"run_id,omitempty"`
-	ActorSubject        string              `json:"actor_subject"`
-	Agent               string              `json:"agent"`
-	RoutedAgent         string              `json:"routed_agent,omitempty"`
-	Classification      string              `json:"classification"`
-	Status              string              `json:"status"`
-	CreatedAt           time.Time           `json:"created_at"`
-	PermissionMode      string              `json:"permission_mode,omitempty"`
-	ApprovalMode        string              `json:"approval_mode,omitempty"`
-	WorkspaceMode       string              `json:"workspace_mode,omitempty"`
-	UseCaseID           string              `json:"use_case_id,omitempty"`
-	WorkflowID          string              `json:"workflow_id,omitempty"`
-	WorkItemID          string              `json:"work_item_id,omitempty"`
-	WorkItemType        string              `json:"work_item_type,omitempty"`
-	RepoURL             string              `json:"repo_url,omitempty"`
-	Branch              string              `json:"branch,omitempty"`
-	CommitSHA           string              `json:"commit_sha,omitempty"`
-	Intent              string              `json:"intent,omitempty"`
-	ActorHint           string              `json:"actor_hint,omitempty"`
-	SourceSystem        string              `json:"source_system,omitempty"`
-	StoryPoints         int                 `json:"story_points,omitempty"`
-	EstimatedDevDays    float64             `json:"estimated_dev_days,omitempty"`
-	BlendedDayRateUSD   float64             `json:"blended_day_rate_usd,omitempty"`
-	BaselineCostUSD     float64             `json:"baseline_cost_usd,omitempty"`
-	ModelCostUSD        float64             `json:"model_cost_usd,omitempty"`
-	ToolCostUSD         float64             `json:"tool_cost_usd,omitempty"`
-	PlatformCostUSD     float64             `json:"platform_cost_usd,omitempty"`
-	ReviewCostUSD       float64             `json:"review_cost_usd,omitempty"`
-	VerificationCostUSD float64             `json:"verification_cost_usd,omitempty"`
-	RetryCount          int                 `json:"retry_count,omitempty"`
-	UsageSummary        SessionUsageSummary `json:"usage_summary"`
-	LatestEventType     string              `json:"latest_event_type,omitempty"`
-	LatestEventAt       time.Time           `json:"latest_event_at,omitempty"`
-	Transport           string              `json:"transport,omitempty"`
-	TrustLevel          string              `json:"trust_level,omitempty"`
-	EnforcementMode     string              `json:"enforcement_mode,omitempty"`
-	PatchState          string              `json:"patch_state,omitempty"`
-	PatchCount          int                 `json:"patch_count,omitempty"`
-	ToolCallCount       int                 `json:"tool_call_count,omitempty"`
-	PolicyDecision      string              `json:"policy_decision,omitempty"`
-	PolicyReason        string              `json:"policy_reason,omitempty"`
+	SessionID                 string              `json:"session_id"`
+	ParentSessionID           string              `json:"parent_session_id,omitempty"`
+	RunID                     string              `json:"run_id,omitempty"`
+	ActorSubject              string              `json:"actor_subject"`
+	Agent                     string              `json:"agent"`
+	RoutedAgent               string              `json:"routed_agent,omitempty"`
+	RoutingConfidence         string              `json:"routing_confidence,omitempty"`
+	HumanConfirmationRequired bool                `json:"human_confirmation_required,omitempty"`
+	Classification            string              `json:"classification"`
+	Status                    string              `json:"status"`
+	CreatedAt                 time.Time           `json:"created_at"`
+	PermissionMode            string              `json:"permission_mode,omitempty"`
+	ApprovalMode              string              `json:"approval_mode,omitempty"`
+	WorkspaceMode             string              `json:"workspace_mode,omitempty"`
+	UseCaseID                 string              `json:"use_case_id,omitempty"`
+	WorkflowID                string              `json:"workflow_id,omitempty"`
+	WorkItemID                string              `json:"work_item_id,omitempty"`
+	WorkItemType              string              `json:"work_item_type,omitempty"`
+	RepoURL                   string              `json:"repo_url,omitempty"`
+	Branch                    string              `json:"branch,omitempty"`
+	CommitSHA                 string              `json:"commit_sha,omitempty"`
+	Intent                    string              `json:"intent,omitempty"`
+	ActorHint                 string              `json:"actor_hint,omitempty"`
+	SourceSystem              string              `json:"source_system,omitempty"`
+	ClientSessionID           string              `json:"client_session_id,omitempty"`
+	StoryPoints               int                 `json:"story_points,omitempty"`
+	EstimatedDevDays          float64             `json:"estimated_dev_days,omitempty"`
+	BlendedDayRateUSD         float64             `json:"blended_day_rate_usd,omitempty"`
+	BaselineCostUSD           float64             `json:"baseline_cost_usd,omitempty"`
+	ModelCostUSD              float64             `json:"model_cost_usd,omitempty"`
+	ToolCostUSD               float64             `json:"tool_cost_usd,omitempty"`
+	PlatformCostUSD           float64             `json:"platform_cost_usd,omitempty"`
+	ReviewCostUSD             float64             `json:"review_cost_usd,omitempty"`
+	VerificationCostUSD       float64             `json:"verification_cost_usd,omitempty"`
+	RetryCount                int                 `json:"retry_count,omitempty"`
+	UsageSummary              SessionUsageSummary `json:"usage_summary"`
+	LatestEventType           string              `json:"latest_event_type,omitempty"`
+	LatestEventAt             time.Time           `json:"latest_event_at,omitempty"`
+	Transport                 string              `json:"transport,omitempty"`
+	TrustLevel                string              `json:"trust_level,omitempty"`
+	EnforcementMode           string              `json:"enforcement_mode,omitempty"`
+	PatchState                string              `json:"patch_state,omitempty"`
+	PatchCount                int                 `json:"patch_count,omitempty"`
+	ToolCallCount             int                 `json:"tool_call_count,omitempty"`
+	PolicyDecision            string              `json:"policy_decision,omitempty"`
+	PolicyReason              string              `json:"policy_reason,omitempty"`
 }
 
 type ListSessionsResponse struct {
@@ -264,6 +273,10 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 	engine := cfg.PolicyEngine
 	if engine == nil {
 		engine, _ = policyengine.New("native")
+	}
+	policyDecisions := cfg.PolicyDecisions
+	if policyDecisions == nil {
+		policyDecisions = NewMemoryPolicyDecisionStore()
 	}
 	patchBuffer := cfg.PatchBuffer
 	if patchBuffer == nil {
@@ -301,6 +314,7 @@ func NewSessionService(cfg SessionConfig) *SessionService {
 		costCapEnabled:     cfg.CostCapEnabled,
 		sessionCostCapUSD:  cfg.SessionCostCapUSD,
 		policyEngine:       engine,
+		policyDecisions:    policyDecisions,
 		toolLoopMax:        toolLoopMax,
 		patchBuffer:        patchBuffer,
 		metrics:            cfg.Metrics,
@@ -436,38 +450,41 @@ func parseSessionListLimit(value string) int {
 
 func sessionSummaryFromRecord(record SessionRecord) SessionSummary {
 	return SessionSummary{
-		SessionID:           record.SessionID,
-		ParentSessionID:     record.ParentSessionID,
-		RunID:               record.RunID,
-		ActorSubject:        record.ActorSubject,
-		Agent:               record.Agent,
-		RoutedAgent:         record.RoutedAgent,
-		Classification:      record.Classification,
-		Status:              record.Status,
-		CreatedAt:           record.CreatedAt,
-		PermissionMode:      record.PermissionMode,
-		ApprovalMode:        record.ApprovalMode,
-		WorkspaceMode:       record.WorkspaceMode,
-		UseCaseID:           record.UseCaseID,
-		WorkflowID:          record.WorkflowID,
-		WorkItemID:          record.WorkItemID,
-		WorkItemType:        record.WorkItemType,
-		RepoURL:             record.RepoURL,
-		Branch:              record.Branch,
-		CommitSHA:           record.CommitSHA,
-		Intent:              record.Intent,
-		ActorHint:           record.ActorHint,
-		SourceSystem:        record.SourceSystem,
-		StoryPoints:         record.StoryPoints,
-		EstimatedDevDays:    record.EstimatedDevDays,
-		BlendedDayRateUSD:   record.BlendedDayRateUSD,
-		BaselineCostUSD:     record.BaselineCostUSD,
-		ModelCostUSD:        record.ModelCostUSD,
-		ToolCostUSD:         record.ToolCostUSD,
-		PlatformCostUSD:     record.PlatformCostUSD,
-		ReviewCostUSD:       record.ReviewCostUSD,
-		VerificationCostUSD: record.VerificationCostUSD,
-		RetryCount:          record.RetryCount,
+		SessionID:                 record.SessionID,
+		ParentSessionID:           record.ParentSessionID,
+		RunID:                     record.RunID,
+		ActorSubject:              record.ActorSubject,
+		Agent:                     record.Agent,
+		RoutedAgent:               record.RoutedAgent,
+		RoutingConfidence:         record.RoutingConfidence,
+		HumanConfirmationRequired: record.HumanConfirmationRequired,
+		Classification:            record.Classification,
+		Status:                    record.Status,
+		CreatedAt:                 record.CreatedAt,
+		PermissionMode:            record.PermissionMode,
+		ApprovalMode:              record.ApprovalMode,
+		WorkspaceMode:             record.WorkspaceMode,
+		UseCaseID:                 record.UseCaseID,
+		WorkflowID:                record.WorkflowID,
+		WorkItemID:                record.WorkItemID,
+		WorkItemType:              record.WorkItemType,
+		RepoURL:                   record.RepoURL,
+		Branch:                    record.Branch,
+		CommitSHA:                 record.CommitSHA,
+		Intent:                    record.Intent,
+		ActorHint:                 record.ActorHint,
+		SourceSystem:              record.SourceSystem,
+		ClientSessionID:           record.ClientSessionID,
+		StoryPoints:               record.StoryPoints,
+		EstimatedDevDays:          record.EstimatedDevDays,
+		BlendedDayRateUSD:         record.BlendedDayRateUSD,
+		BaselineCostUSD:           record.BaselineCostUSD,
+		ModelCostUSD:              record.ModelCostUSD,
+		ToolCostUSD:               record.ToolCostUSD,
+		PlatformCostUSD:           record.PlatformCostUSD,
+		ReviewCostUSD:             record.ReviewCostUSD,
+		VerificationCostUSD:       record.VerificationCostUSD,
+		RetryCount:                record.RetryCount,
 	}
 }
 
@@ -501,6 +518,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.resolveSessionContext(&request)
+	request.RepoURL = sanitizeRepoURL(request.RepoURL)
 	if err := s.enforceWorkItemContext(&request); err != nil {
 		if auditErr := s.appendDenied(r.Context(), err.Error(), nil, request.Classification); auditErr != nil {
 			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
@@ -538,6 +556,25 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "policy engine unavailable"})
 		return
 	}
+	policySessionID := ""
+	policyCorrelationID := ""
+	if decision.Allowed {
+		policySessionID = s.newID("sess")
+	} else {
+		policyCorrelationID = randomID("corr")
+	}
+	if err := s.recordPolicyDecision(r.Context(), policyengine.Request{
+		AgentName:         request.Agent,
+		ActionType:        "session.create",
+		Classification:    request.Classification,
+		ClassificationMax: s.classificationMax,
+		CostCapEnabled:    s.costCapEnabled,
+		SessionCostCapUSD: s.sessionCostCapUSD,
+		EstimatedCostUSD:  request.EstimatedCostUSD,
+	}, decision, policySessionID, policyCorrelationID); err != nil {
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "policy decision write failed"})
+		return
+	}
 	if !decision.Allowed {
 		reason := decision.Reason
 		if reason == "" {
@@ -545,7 +582,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		}
 		findings := decision.Findings
 		if reason == "cost cap exceeded" {
-			if err := s.appendDeniedWithCost(r.Context(), reason, request.Classification, request.EstimatedCostUSD, s.sessionCostCapUSD); err != nil {
+			if err := s.appendDeniedWithCost(r.Context(), reason, request.Classification, request.EstimatedCostUSD, s.sessionCostCapUSD, policyAuditLink{decisionID: decision.DecisionID, correlationID: policyCorrelationID}); err != nil {
 				httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 				return
 			}
@@ -553,7 +590,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteJSON(w, http.StatusPaymentRequired, map[string]any{"error": reason})
 			return
 		}
-		if err := s.appendDenied(r.Context(), reason, findings, request.Classification); err != nil {
+		if err := s.appendDenied(r.Context(), reason, findings, request.Classification, policyAuditLink{decisionID: decision.DecisionID, correlationID: policyCorrelationID}); err != nil {
 			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "audit write failed"})
 			return
 		}
@@ -562,7 +599,7 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID := s.newID("sess")
+	sessionID := policySessionID
 	eventID := s.newID("evt")
 	promptHash := sha256.Sum256([]byte(request.Prompt))
 
@@ -582,12 +619,15 @@ func (s *SessionService) createSession(w http.ResponseWriter, r *http.Request) {
 		WorkspaceMode:      request.WorkspaceMode,
 		WorkItemID:         request.WorkItemID,
 		WorkItemType:       request.WorkItemType,
+		RepoURL:            request.RepoURL,
+		Branch:             request.Branch,
 		CommitSHA:          request.CommitSHA,
 		ActorHint:          request.ActorHint,
 		SourceSystem:       request.SourceSystem,
 		PromptSHA256:       hex.EncodeToString(promptHash[:]),
 		EstimatedCostUSD:   request.EstimatedCostUSD,
 		CostCapUSD:         activeCostCap(s.costCapEnabled, s.sessionCostCapUSD),
+		PolicyDecisionID:   decision.DecisionID,
 		RawPromptStored:    false,
 		RawResponseStored:  false,
 		CorrelationSubject: "governance-shell",

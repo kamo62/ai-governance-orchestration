@@ -21,6 +21,7 @@ type Store interface {
 
 type Event struct {
 	EventID                  string         `json:"event_id"`
+	ClientEventID            string         `json:"client_event_id,omitempty"`
 	ParentEventID            string         `json:"parent_event_id,omitempty"`
 	ParentSessionID          string         `json:"parent_session_id,omitempty"`
 	PrevEventHash            string         `json:"prev_event_hash,omitempty"`
@@ -73,6 +74,8 @@ type Event struct {
 	WorkspaceMode            string         `json:"workspace_mode,omitempty"`
 	WorkItemID               string         `json:"work_item_id,omitempty"`
 	WorkItemType             string         `json:"work_item_type,omitempty"`
+	RepoURL                  string         `json:"repo_url,omitempty"`
+	Branch                   string         `json:"branch,omitempty"`
 	CommitSHA                string         `json:"commit_sha,omitempty"`
 	ActorHint                string         `json:"actor_hint,omitempty"`
 	SourceSystem             string         `json:"source_system,omitempty"`

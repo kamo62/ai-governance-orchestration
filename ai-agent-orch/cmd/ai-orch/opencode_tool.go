@@ -28,16 +28,27 @@ const (
 // GenerateOpenCodeConfig creates an OpenCode provider configuration
 // that routes model calls through the ai-orch Governance Shell.
 func GenerateOpenCodeConfig(gatewayURL string) map[string]any {
-	return GenerateOpenCodeConfigWithOptions(OpenCodeConfigOptions{GatewayURL: gatewayURL, UseEnvPlaceholders: true})
+	opts := OpenCodeConfigOptions{GatewayURL: gatewayURL, UseEnvPlaceholders: true}
+	// generate-config writes to stdout, so it cannot place the plugin file. Emit
+	// a plugin reference only when an explicit path is provided (the docker
+	// sandbox sets AI_ORCH_OPENCODE_PLUGIN_PATH to its mounted plugin path).
+	if p := strings.TrimSpace(os.Getenv("AI_ORCH_OPENCODE_PLUGIN_PATH")); p != "" {
+		opts.PluginPath = p
+	}
+	return GenerateOpenCodeConfigWithOptions(opts)
 }
 
 type OpenCodeConfigOptions struct {
-	GatewayURL         string
-	RuntimeToken       string
-	ActorSubject       string
-	Classification     string
-	UseEnvPlaceholders bool
-	DiscoveredModels   []OpenCodeProviderModel
+	GatewayURL          string
+	RuntimeToken        string
+	ActorSubject        string
+	Classification      string
+	UseEnvPlaceholders  bool
+	DiscoveredModels    []OpenCodeProviderModel
+	UseDiscoveredModels bool
+	// PluginPath, when set, is written into the config's top-level "plugin"
+	// list so OpenCode loads the ai-orch git-context plugin.
+	PluginPath string
 }
 
 type OpenCodeProviderModel struct {
@@ -46,16 +57,21 @@ type OpenCodeProviderModel struct {
 }
 
 func GenerateOpenCodeConfigWithOptions(opts OpenCodeConfigOptions) map[string]any {
-	return map[string]any{
+	config := map[string]any{
 		"$schema":           "https://opencode.ai/config.json",
-		"enabled_providers": []string{"ai-orch"},
+		"enabled_providers": []string{"ai-orch", "ai-orch-responses"},
 		"model":             defaultModel,
 		"small_model":       defaultSmallModel,
 		"agent":             defaultOpenCodeAgentConfig(),
 		"provider": map[string]any{
-			"ai-orch": aiOrchProviderConfig(opts),
+			"ai-orch":           aiOrchProviderConfig(opts),
+			"ai-orch-responses": aiOrchResponsesProviderConfig(opts),
 		},
 	}
+	if strings.TrimSpace(opts.PluginPath) != "" {
+		config["plugin"] = []string{opts.PluginPath}
+	}
+	return config
 }
 
 func openCodeBaseURL(gatewayURL string) string {
@@ -97,12 +113,17 @@ func installOpenCodeConfig(gatewayURL string, args []string) error {
 	if err != nil {
 		return err
 	}
+	pluginPath, err := openCodePluginPath(filepath.Dir(target))
+	if err != nil {
+		return err
+	}
 	opts := OpenCodeConfigOptions{
 		GatewayURL:         gatewayURL,
 		RuntimeToken:       *runtimeToken,
 		ActorSubject:       *actorSubject,
 		Classification:     *classification,
 		UseEnvPlaceholders: *envPlaceholders,
+		PluginPath:         pluginPath,
 	}
 	if !*envPlaceholders {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -112,6 +133,7 @@ func installOpenCodeConfig(gatewayURL string, args []string) error {
 			fmt.Fprintf(os.Stderr, "warning: could not import dynamic gateway models for OpenCode config: %v\n", discoverErr)
 		} else {
 			opts.DiscoveredModels = discovered
+			opts.UseDiscoveredModels = true
 		}
 	}
 	merged, changed, err := mergeOpenCodeConfigWithOptions(existing, opts, *force)
@@ -300,6 +322,38 @@ func mergeOpenCodeConfigWithOptions(config map[string]any, opts OpenCodeConfigOp
 	if ensureOpenCodeAgentConfig(config) {
 		changed = true
 	}
+
+	nextResponses := aiOrchResponsesProviderConfig(opts)
+	if current, ok := providers["ai-orch-responses"]; ok {
+		equal, err := jsonEqual(current, nextResponses)
+		if err != nil {
+			return nil, false, err
+		}
+		if !equal && !force {
+			return nil, false, errors.New("provider.ai-orch-responses already exists and differs; rerun with --force to update it")
+		}
+		if !equal {
+			providers["ai-orch-responses"] = nextResponses
+			changed = true
+		}
+	} else {
+		providers["ai-orch-responses"] = nextResponses
+		changed = true
+	}
+	if _, hasEnabledProviders := config["enabled_providers"]; hasEnabledProviders {
+		enabled, enabledChanged := ensureStringListIncludes(config["enabled_providers"], "ai-orch-responses")
+		if enabledChanged {
+			config["enabled_providers"] = enabled
+			changed = true
+		}
+	}
+	if strings.TrimSpace(opts.PluginPath) != "" {
+		plugins, pluginsChanged := ensureStringListIncludes(config["plugin"], opts.PluginPath)
+		if pluginsChanged {
+			config["plugin"] = plugins
+			changed = true
+		}
+	}
 	return config, changed, nil
 }
 
@@ -357,7 +411,7 @@ func defaultOpenCodeAgentConfig() map[string]any {
 		"governance-lead": map[string]any{
 			"description":     "Clarifies intent, classifies risk, attaches context, and chooses the next ai-orch specialist.",
 			"mode":            "primary",
-			"model":           "ai-orch/coding-gpt55",
+			"model":           "ai-orch-responses/copilot-gpt-5.4-mini",
 			"reasoningEffort": "low",
 			"temperature":     0.1,
 			"steps":           6,
@@ -399,7 +453,7 @@ func defaultOpenCodeAgentConfig() map[string]any {
 		"frontend-development": map[string]any{
 			"description":     "Implements frontend UI, client behavior, and browser-facing tests.",
 			"mode":            "subagent",
-			"model":           "ai-orch/coding-gpt55",
+			"model":           "ai-orch/copilot-claude-opus-4.8",
 			"reasoningEffort": "medium",
 			"permission":      writeWithReview,
 			"prompt":          "Implement frontend changes narrowly, preserving accessibility and existing design patterns. Use OpenCode edit operations for file changes; never run apply_patch or shell patch heredocs.",
@@ -421,7 +475,7 @@ func defaultOpenCodeAgentConfig() map[string]any {
 		"documentation": map[string]any{
 			"description":     "Improves developer-facing documentation.",
 			"mode":            "subagent",
-			"model":           "ai-orch/copilot-gpt-5-mini",
+			"model":           "ai-orch/copilot-gemini-3.5-flash",
 			"reasoningEffort": "medium",
 			"permission":      writeWithReview,
 			"prompt":          "Update documentation to reflect implemented behavior. Remove stale instructions. Use OpenCode edit operations for file changes; never run apply_patch or shell patch heredocs.",
@@ -477,47 +531,85 @@ func aiOrchProviderConfig(opts OpenCodeConfigOptions) map[string]any {
 				"X-AI-Orch-Classification": classification,
 			},
 		},
-		"models": openCodeProviderModels(opts.DiscoveredModels),
+		"models": openCodeProviderModels(opts.DiscoveredModels, opts.UseDiscoveredModels),
 	}
 }
 
-func openCodeProviderModels(discovered []OpenCodeProviderModel) map[string]any {
-	staticModels := map[string]any{
-		"coding-gpt55": map[string]any{
-			"name": "Governed GPT-5.5 Capability Route",
-		},
-		"openrouter-openai-gpt55": map[string]any{
-			"name": "Governed OpenRouter OpenAI GPT-5.5",
-		},
-		"copilot-gpt-5-mini": map[string]any{
-			"name": "Governed Copilot GPT-5 Mini",
-		},
-		"copilot-gpt-5.3-codex": map[string]any{
-			"name": "Governed Copilot GPT-5.3 Codex",
-		},
-		"copilot-gpt-5.5": map[string]any{
-			"name": "Governed Copilot GPT-5.5",
-		},
-		"coding-primary": map[string]any{
-			"name": "Governed Coding Primary",
-		},
-		"coding-balanced": map[string]any{
-			"name": "Governed Coding Balanced",
-		},
-		"coding-fast": map[string]any{
-			"name": "Governed Coding Fast",
-		},
-		"coding-economy": map[string]any{
-			"name": "Governed Coding Economy",
-		},
+// aiOrchResponsesProviderConfig is a second governed provider that speaks the
+// OpenAI Responses API (@ai-sdk/openai). Copilot serves the GPT-5.3+/5.4/5.5
+// reasoning models only on /responses, so they cannot be reached through the
+// @ai-sdk/openai-compatible /chat/completions provider above. Same gateway, same
+// auth and governance headers; only the API surface differs.
+func aiOrchResponsesProviderConfig(opts OpenCodeConfigOptions) map[string]any {
+	cfg := aiOrchProviderConfig(opts)
+	cfg["npm"] = "@ai-sdk/openai"
+	cfg["name"] = "AI Orch Governed Router (Responses)"
+	cfg["models"] = openCodeResponsesProviderModels()
+	return cfg
+}
+
+func openCodeModelConfig(name string, imageInput bool) map[string]any {
+	cfg := map[string]any{"name": name}
+	if imageInput {
+		cfg["attachment"] = true
+		cfg["modalities"] = map[string]any{
+			"input":  []string{"text", "image"},
+			"output": []string{"text"},
+		}
 	}
-	if len(discovered) == 0 {
+	return cfg
+}
+
+func openCodeModelSupportsImageInput(id string) bool {
+	switch strings.TrimSpace(id) {
+	case "coding-gpt55", "openrouter-openai-gpt55",
+		"copilot-gpt-5-mini", "copilot-gpt-5.3-codex", "copilot-gpt-5.4-mini", "copilot-gpt-5.5",
+		"copilot-claude-opus-4.8", "copilot-gemini-3.5-flash":
+		return true
+	default:
+		// Dynamic Copilot picker aliases are only imported after the actor's live
+		// catalog says they are available. Current Copilot picker coding models are
+		// multimodal; advertise image support so OpenCode does not reject image
+		// attachments before the governed gateway can route them.
+		return strings.HasPrefix(strings.TrimSpace(id), "copilot-")
+	}
+}
+
+// openCodeResponsesProviderModels lists the Copilot models that are only
+// reachable via the Responses API.
+func openCodeResponsesProviderModels() map[string]any {
+	return map[string]any{
+		"copilot-gpt-5.4-mini":  openCodeModelConfig("Governed Copilot GPT-5.4 Mini", true),
+		"copilot-gpt-5.5":       openCodeModelConfig("Governed Copilot GPT-5.5", true),
+		"copilot-gpt-5.3-codex": openCodeModelConfig("Governed Copilot GPT-5.3 Codex", true),
+	}
+}
+
+func openCodeProviderModels(discovered []OpenCodeProviderModel, useDiscovered bool) map[string]any {
+	staticModels := map[string]any{
+		"coding-gpt55":             openCodeModelConfig("Governed GPT-5.5 Capability Route", true),
+		"openrouter-openai-gpt55":  openCodeModelConfig("Governed OpenRouter OpenAI GPT-5.5", true),
+		"copilot-gpt-5-mini":       openCodeModelConfig("Governed Copilot GPT-5 Mini", true),
+		"copilot-claude-opus-4.8":  openCodeModelConfig("Governed Copilot Claude Opus 4.8", true),
+		"copilot-gemini-3.5-flash": openCodeModelConfig("Governed Copilot Gemini 3.5 Flash", true),
+		"coding-primary":           openCodeModelConfig("Governed Coding Primary", true),
+		"coding-balanced":          openCodeModelConfig("Governed Coding Balanced", true),
+		"coding-fast":              openCodeModelConfig("Governed Coding Fast", true),
+		"coding-economy":           openCodeModelConfig("Governed Coding Economy", true),
+	}
+	if !useDiscovered {
 		return staticModels
 	}
 	models := map[string]any{}
 	for _, model := range discovered {
 		id := strings.TrimSpace(model.ID)
 		if id == "" {
+			continue
+		}
+		// Responses-API-only models belong only to the ai-orch-responses provider;
+		// keep them out of the chat (@ai-sdk/openai-compatible) provider so they are
+		// not selectable on /v1/chat/completions, where they fail upstream.
+		if isResponsesOnlyModel(id) {
 			continue
 		}
 		if static, exists := staticModels[id]; exists {
@@ -528,9 +620,17 @@ func openCodeProviderModels(discovered []OpenCodeProviderModel) map[string]any {
 		if name == "" {
 			name = "Governed " + id
 		}
-		models[id] = map[string]any{"name": name}
+		models[id] = openCodeModelConfig(name, openCodeModelSupportsImageInput(id))
 	}
 	return models
+}
+
+// isResponsesOnlyModel reports whether an alias is served only via the Copilot
+// Responses API and must not appear in the chat-completions provider. The
+// responses provider's own model list is the single source of truth.
+func isResponsesOnlyModel(id string) bool {
+	_, ok := openCodeResponsesProviderModels()[strings.TrimSpace(id)]
+	return ok
 }
 
 func fetchGatewayModelsForOpenCode(ctx context.Context, gatewayURL string, runtimeToken string, actorSubject string, classification string) ([]OpenCodeProviderModel, error) {
@@ -700,6 +800,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 var openCodeToolSubcommands = map[string]bool{
 	"generate-config": true,
 	"install-config":  true,
+	"refresh":         true,
 	"verify":          true,
 	"run":             true,
 	"e2e":             true,
@@ -708,7 +809,7 @@ var openCodeToolSubcommands = map[string]bool{
 
 func handleOpenCodeTool(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: ai-orch opencode <generate-config|install-config|verify|run|e2e|gateway-smoke>")
+		fmt.Fprintln(os.Stderr, "usage: ai-orch opencode <generate-config|install-config|refresh|verify|run|e2e|gateway-smoke>")
 		os.Exit(1)
 	}
 
@@ -736,6 +837,12 @@ func handleOpenCodeTool(args []string) {
 	case "install-config":
 		if err := installOpenCodeConfig(gatewayURL, args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "install OpenCode config failed: %v\n", err)
+			os.Exit(2)
+		}
+
+	case "refresh":
+		if err := refreshOpenCodeConfig(context.Background(), loadConfig(), gatewayURL, args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "refresh AI-Orch-routed OpenCode config failed: %v\n", err)
 			os.Exit(2)
 		}
 
@@ -795,7 +902,17 @@ func runOpenCode(gatewayURL string) error {
 	}
 	defer os.Remove(configFile.Name())
 
-	if err := json.NewEncoder(configFile).Encode(GenerateOpenCodeConfig(gatewayURL)); err != nil {
+	pluginPath, pluginErr := openCodePluginPath(filepath.Dir(configFile.Name()))
+	if pluginErr != nil {
+		configFile.Close()
+		return fmt.Errorf("install OpenCode plugin: %w", pluginErr)
+	}
+	cfgMap := GenerateOpenCodeConfigWithOptions(OpenCodeConfigOptions{
+		GatewayURL:         gatewayURL,
+		UseEnvPlaceholders: true,
+		PluginPath:         pluginPath,
+	})
+	if err := json.NewEncoder(configFile).Encode(cfgMap); err != nil {
 		configFile.Close()
 		return fmt.Errorf("write temporary OpenCode config: %w", err)
 	}

@@ -3,6 +3,7 @@ package httpauth
 import (
 	"context"
 	"crypto"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
@@ -488,19 +489,31 @@ func parseJWK(key map[string]any) (any, error) {
 			return nil, err
 		}
 		var curve elliptic.Curve
+		var ecdhCurve ecdh.Curve
+		var coordSize int
 		switch crv {
 		case "P-256":
 			curve = elliptic.P256()
+			ecdhCurve = ecdh.P256()
+			coordSize = 32
 		case "P-384":
 			curve = elliptic.P384()
+			ecdhCurve = ecdh.P384()
+			coordSize = 48
 		case "P-521":
 			curve = elliptic.P521()
+			ecdhCurve = ecdh.P521()
+			coordSize = 66
 		default:
 			return nil, fmt.Errorf("unsupported ec curve: %s", crv)
 		}
 		x := new(big.Int).SetBytes(xBytes)
 		y := new(big.Int).SetBytes(yBytes)
-		if !curve.IsOnCurve(x, y) {
+		encodedPoint := make([]byte, 1+2*coordSize)
+		encodedPoint[0] = 4
+		copy(encodedPoint[1+coordSize-len(xBytes):1+coordSize], xBytes)
+		copy(encodedPoint[1+2*coordSize-len(yBytes):], yBytes)
+		if _, err := ecdhCurve.NewPublicKey(encodedPoint); err != nil {
 			return nil, errors.New("ec point is not on curve")
 		}
 		// Verify alg matches curve.

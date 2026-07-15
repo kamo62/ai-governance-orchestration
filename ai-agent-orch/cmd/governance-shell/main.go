@@ -109,8 +109,11 @@ func main() {
 
 	// Initialize session store (SQLite-backed when audit path is SQLite).
 	var sessionStore governance.SessionStore
+	var developerCredentialStore *governance.SQLiteDeveloperCredentialStore
 	var modelPricingStore governance.ModelPricingStore
 	var modelPricingCloser interface{ Close() error }
+	var policyDecisionStore governance.PolicyDecisionStore
+	var policyDecisionCloser interface{ Close() error }
 	if hasSQLiteExt(cfg.AuditPath) {
 		store, err := governance.NewSQLiteSessionStore(cfg.AuditPath)
 		if err != nil {
@@ -123,6 +126,21 @@ func main() {
 		}
 		modelPricingStore = pricingStore
 		modelPricingCloser = pricingStore
+		developerCredentials, err := governance.NewSQLiteDeveloperCredentialStore(cfg.AuditPath)
+		if err != nil {
+			logx.Fatalf("developer credential store init failed: %v", err)
+		}
+		developerCredentialStore = developerCredentials
+		decisions, err := governance.NewSQLitePolicyDecisionStore(cfg.AuditPath)
+		if err != nil {
+			logx.Fatalf("policy decision store init failed: %v", err)
+		}
+		policyDecisionStore = decisions
+		policyDecisionCloser = decisions
+	}
+	if policyDecisionStore == nil {
+		policyDecisionStore = governance.NewMemoryPolicyDecisionStore()
+		logx.Infof("policy decision store is in-memory; decision history resets on restart")
 	}
 
 	var sessionContextResolver governance.ContextResolver
@@ -144,6 +162,7 @@ func main() {
 		CostCapEnabled:     cfg.CostCapEnabled,
 		SessionCostCapUSD:  cfg.SessionCostCapUSD,
 		PolicyEngine:       policyEngine,
+		PolicyDecisions:    policyDecisionStore,
 		ToolLoopMax:        cfg.ToolLoopMax,
 		Metrics:            metricsHandler,
 		ContextResolver:    sessionContextResolver,
@@ -231,72 +250,108 @@ func main() {
 		}
 	}
 	logx.Infof("model backend selected: %s", modelBackend.Name())
+	copilotEnrollmentCount := 0
+	if copilotStore != nil {
+		if count, err := copilotStore.EnrollmentCount(context.Background()); err == nil {
+			copilotEnrollmentCount = count
+		}
+	}
+	providerReadiness := governance.ProviderReadinessFromEnv(os.Getenv, modelBackend.Name(), copilotEnrollmentCount)
 	pricingFetcher := governance.OpenRouterPricingFetcher{BaseURL: os.Getenv("OPENROUTER_BASE_URL")}
 	pricingBootstrapped := false
 	if modelPricingStore != nil {
 		pricingBootstrapped = bootstrapModelPricing(context.Background(), modelPricingStore, pricingFetcher)
 	}
+	runtimeGatewayEnabled := cfg.RuntimeToken != "" || developerCredentialStore != nil
 
-	handler := http.NewServeMux()
-	handler.Handle("/ui", governanceui.Redirect())
-	handler.Handle("/ui/", http.StripPrefix("/ui/", governanceui.Handler()))
-	handler.Handle("/", baseHandler)
+	handler := newAuthRouter()
+	handler.Handle(authPublic, "/ui", governanceui.Redirect())
+	handler.Handle(authPublic, "/ui/", http.StripPrefix("/ui/", governanceui.Handler()))
+	handler.Handle(authPublic, "/mcp/healthz", baseHandler)
+	handler.Handle(authPublic, "/readyz", baseHandler)
+	handler.Handle(authPublic, "/healthz", baseHandler)
+	handler.Handle(authRequired, "/", baseHandler)
 	gatewayOptions := []governance.GatewayOption{
 		{ID: "bifrost", Label: "Bifrost", Mode: "sidecar", Default: true},
 		{ID: "copilot-user", Label: "GitHub Copilot", Mode: "per-user", ComposeFile: "docker-compose.copilot.yml"},
 	}
-	handler.Handle("/v1/system/status", governance.NewSystemStatusHandler(governance.SystemStatusConfig{
+	handler.Handle(authRequired, "/v1/system/status", governance.NewSystemStatusHandler(governance.SystemStatusConfig{
 		Service:               "governance-shell",
 		Version:               appversion.Version,
 		Environment:           cfg.Environment,
 		ModelBackend:          modelBackend.Name(),
 		GatewayAddr:           cfg.GatewayAddr,
-		RuntimeGatewayEnabled: cfg.RuntimeToken != "",
+		RuntimeGatewayEnabled: runtimeGatewayEnabled,
 		ClassificationMax:     cfg.ClassificationMax,
 		PolicyEngine:          cfg.PolicyEngine,
 		Gateways:              gatewayOptions,
 	}))
-	handler.Handle("/v1/backends", governance.NewBackendHandler(governance.BackendHandlerConfig{
+	handler.Handle(authAdminOnWrite, "/v1/backends", governance.NewBackendHandler(governance.BackendHandlerConfig{
 		CurrentBackend: modelBackend.Name(),
 		GatewayOptions: gatewayOptions,
 		AdminToken:     cfg.AdminToken,
 		ControlEnabled: cfg.BackendControlEnabled,
 		WorkDir:        cfg.BackendControlWorkDir,
 	}))
+	handler.Handle(authAdmin, "/v1/admin/providers/status", governance.NewProviderStatusHandlerFunc(func() []governance.ProviderReadiness {
+		enrollments := 0
+		if copilotStore != nil {
+			if count, err := copilotStore.EnrollmentCount(context.Background()); err == nil {
+				enrollments = count
+			}
+		}
+		return governance.ProviderReadinessFromEnv(os.Getenv, modelBackend.Name(), enrollments)
+	}))
 	if copilotStore != nil {
-		handler.Handle("/v1/copilot/", governance.NewCopilotHandler(governance.CopilotHandlerConfig{DevToken: cfg.DevToken, Authorizer: requestAuthorizer, Store: copilotStore}))
+		handler.Handle(authRequired, "/v1/copilot/", governance.NewCopilotHandler(governance.CopilotHandlerConfig{DevToken: cfg.DevToken, Authorizer: requestAuthorizer, Store: copilotStore}))
 	}
-	handler.Handle("/v1/agents", governance.NewAgentListHandler(cfg.CatalogRoot))
-	handler.Handle("/v1/runs", governance.NewRunHandler(sessionService, orchClient))
-	handler.Handle("/v1/sessions", governance.NewSessionHandler(sessionService))
-	handler.Handle("/v1/sessions/", &sessionSubrouter{
+	handler.Handle(authRequired, "/v1/developer/", governance.NewDeveloperHandler(governance.DeveloperHandlerConfig{
+		DevToken:             cfg.DevToken,
+		Authorizer:           requestAuthorizer,
+		CopilotStore:         copilotStore,
+		CredentialStore:      developerCredentialStore,
+		RuntimeCredentialTTL: 90 * 24 * time.Hour,
+	}))
+	handler.Handle(authRequired, "/v1/agents", governance.NewAgentListHandler(cfg.CatalogRoot))
+	handler.Handle(authRequired, "/v1/runs", governance.NewRunHandler(sessionService, orchClient))
+	handler.Handle(authRequired, "/v1/sessions", governance.NewSessionHandler(sessionService))
+	handler.Handle(authRequired, "/v1/sessions/", &sessionSubrouter{
 		sessionService: sessionService,
 		orchClient:     orchClient,
 		events:         eventStore,
 	})
-	handler.Handle("/v1/audit/sessions/", governance.NewAuditLookupHandler(governance.AuditLookupConfig{
+	handler.Handle(authRequired, "/v1/audit/sessions/", governance.NewAuditLookupHandler(governance.AuditLookupConfig{
 		DevToken:     cfg.DevToken,
 		Authorizer:   requestAuthorizer,
 		Audit:        auditStore,
 		ModelPricing: modelPricingStore,
 		Sessions:     sessionStore,
 	}))
-	handler.Handle("/v1/admin/killswitch", governance.NewAdminHandler(killSwitchStore, sessionService))
-	handler.Handle("/v1/admin/killswitch/", governance.NewAdminHandler(killSwitchStore, sessionService))
-	handler.Handle("/v1/admin/audit/retention", governance.NewAdminAuditHandler(auditStore, sessionService))
-	handler.Handle("/v1/admin/sessions", governance.NewAdminSessionsHandler(sessionService))
-	handler.Handle("/v1/admin/sessions/export", governance.NewAdminSessionsExportHandler(sessionService))
-	handler.Handle("/v1/admin/audit/sessions/", governance.NewAdminAuditLookupHandler(governance.AdminAuditLookupConfig{
+	handler.Handle(authSelf, "/v1/managed-client/evidence", governance.NewManagedClientEvidenceHandler(governance.ManagedClientEvidenceConfig{
+		Credentials: developerCredentialStore,
+		Audit:       auditStore,
+		Sessions:    sessionStore,
+		Receipts:    managedClientReceiptStore(policyDecisionStore),
+	}))
+	handler.Handle(authAdmin, "/v1/admin/killswitch", governance.NewAdminHandler(killSwitchStore, sessionService))
+	handler.Handle(authAdmin, "/v1/admin/killswitch/", governance.NewAdminHandler(killSwitchStore, sessionService))
+	handler.Handle(authAdmin, "/v1/admin/audit/retention", governance.NewAdminAuditHandler(auditStore, sessionService))
+	handler.Handle(authAdmin, "/v1/admin/sessions", governance.NewAdminSessionsHandler(sessionService))
+	handler.Handle(authAdmin, "/v1/admin/sessions/export", governance.NewAdminSessionsExportHandler(sessionService))
+	handler.Handle(authAdmin, "/v1/admin/audit/sessions/", governance.NewAdminAuditLookupHandler(governance.AdminAuditLookupConfig{
 		Service:      sessionService,
 		Audit:        auditStore.(governance.AuditReader),
 		ModelPricing: modelPricingStore,
 	}))
 	adminRegistryHandler := governance.NewAdminRegistryHandler(registryStore, sessionService)
-	handler.Handle("/v1/admin/evidence", adminRegistryHandler)
-	handler.Handle("/v1/admin/cache-outcomes", adminRegistryHandler)
-	handler.Handle("/v1/admin/reporting/maturity-governance", adminRegistryHandler)
-	handler.Handle("/v1/compositions", governance.NewCompositionHandler(sessionService, compositionStore))
-	handler.Handle("/v1/compositions/", governance.NewCompositionHandler(sessionService, compositionStore))
+	registerAdminRegistryHandlers(handler, adminRegistryHandler)
+	registerInsightHandlers(handler,
+		governance.NewInsightHandler(governance.InsightHandlerConfig{Service: sessionService, Registry: registryStore}),
+		governance.NewAdminInsightHandler(governance.InsightHandlerConfig{Service: sessionService, Registry: registryStore}),
+		governance.NewMaturityExportRunHandler(governance.MaturityExportRunConfig{Service: sessionService, Registry: registryStore}),
+	)
+	handler.Handle(authRequired, "/v1/compositions", governance.NewCompositionHandler(sessionService, compositionStore))
+	handler.Handle(authRequired, "/v1/compositions/", governance.NewCompositionHandler(sessionService, compositionStore))
 	registerRegistryHandlers(handler, governance.NewRegistryHandlerWithMetrics(registryStore, sessionService, metricsHandler))
 	if err := governance.SeedPOCRegistryDefaults(registryStore); err != nil {
 		logx.Warnf("registry seed warning: %v", err)
@@ -310,22 +365,20 @@ func main() {
 		Registrations:     defaultMCPRegistrations(cfg.CatalogRoot, cfg.ClassificationMax),
 		UserTokens:        governance.NewOAuthTokenStoreAdapter(oauthTokenStore),
 		PolicyEngine:      policyEngine,
+		PolicyDecisions:   policyDecisionStore,
 		ClassificationMax: cfg.ClassificationMax,
 	})
-	handler.Handle("/v1/mcp/", mcpProxy)
-	handler.Handle("/internal/v1/model/", governance.NewModelProxyHandler(governance.ModelProxyConfig{
+	handler.Handle(authSelf, "/v1/mcp/", mcpProxy)
+	handler.Handle(authSelf, "/internal/v1/model/", governance.NewModelProxyHandler(governance.ModelProxyConfig{
 		ServiceToken:  cfg.ServiceToken,
 		Backend:       modelBackend,
 		Audit:         auditStore,
 		LookupSession: sessionService.SessionRecord,
 	}))
-	handler.Handle("/internal/v1/mcp/", mcpProxy)
-	handler.Handle("/metrics", metricsHandler)
+	handler.Handle(authSelf, "/internal/v1/mcp/", mcpProxy)
+	handler.Handle(authPublic, "/metrics", metricsHandler)
 
-	// Centralized auth middleware with explicit public allow-list.
-	// Internal proxy endpoints use service-token auth inside their own handlers.
-	publicPaths := []string{"/ui", "/mcp/healthz", "/readyz", "/healthz", "/metrics", "/internal/v1/model/", "/internal/v1/mcp/", "/v1/mcp/"}
-	authHandler := governance.AuthMiddleware(sessionService, publicPaths)(handler)
+	authHandler := handler.Handler(sessionService)
 
 	wrappedHandler := logRequestLatency(authHandler)
 	// TLS note: ListenAndServe runs plain HTTP. In production, terminate TLS at
@@ -346,7 +399,7 @@ func main() {
 
 	// Model Compatibility Gateway (Phase 1G + 1J).
 	var gatewaySrv *http.Server
-	if cfg.RuntimeToken != "" {
+	if runtimeGatewayEnabled {
 		if sessionStore == nil {
 			logx.Fatal("model compatibility gateway requires durable session storage; configure a SQLite audit path")
 		}
@@ -354,13 +407,19 @@ func main() {
 		if err != nil {
 			logx.Warnf("model registry load failed: %v", err)
 		} else {
+			if cfg.ClaudeBackend != "" {
+				modelRegistry, err = catalog.SelectClaudeBackend(modelRegistry, cfg.ClaudeBackend)
+				if err != nil {
+					logx.Fatalf("Claude backend configuration failed: %v", err)
+				}
+			}
 			govRouter := router.NewWithRouteAvailability(modelRegistry, func(ctx context.Context, route catalog.ModelRoute, req router.Request) bool {
 				provider := strings.TrimSpace(route.Provider)
 				if !modelbackend.BackendSupportsProvider(modelBackend, provider) {
 					return false
 				}
 				if provider != modelbackend.BackendCopilotUser {
-					return true
+					return governance.ProviderConfiguredForRoute(provider, providerReadiness)
 				}
 				if copilotResolver == nil || strings.TrimSpace(req.ActorSubject) == "" {
 					return false
@@ -369,7 +428,17 @@ func main() {
 				return err == nil
 			})
 			gatewayConfig := modelgateway.GatewayConfig{
-				RuntimeToken:    cfg.RuntimeToken,
+				RuntimeToken: cfg.RuntimeToken,
+				RuntimeCredentialValidator: func(token string) (string, bool) {
+					if developerCredentialStore == nil {
+						return "", false
+					}
+					record, ok, err := developerCredentialStore.Validate(context.Background(), token, time.Now().UTC())
+					if err != nil || !ok {
+						return "", false
+					}
+					return record.ActorSubject, true
+				},
 				Router:          govRouter,
 				Backend:         modelBackend,
 				Audit:           auditStore,
@@ -432,25 +501,27 @@ func main() {
 				}
 				gatewayConfig.AutoSession = func(ctx context.Context, request modelgateway.AutoSessionRequest) (modelgateway.SessionInfo, error) {
 					result, err := sessionService.CreateAutoGatewaySession(ctx, governance.AutoGatewaySessionRequest{
-						ActorSubject:       request.ActorSubject,
-						Classification:     request.Classification,
-						PromptSHA256:       request.PromptSHA256,
-						ModelAlias:         request.ModelAlias,
-						Client:             request.Client,
-						Endpoint:           request.Endpoint,
-						RawRequestBody:     request.RawRequestBody,
-						TrustedClientToken: request.TrustedClientToken,
-						UseCaseID:          request.UseCaseID,
-						WorkflowID:         request.WorkflowID,
-						WorkItemID:         request.WorkItemID,
-						WorkItemType:       request.WorkItemType,
-						RepoURL:            request.RepoURL,
-						Branch:             request.Branch,
-						CommitSHA:          request.CommitSHA,
-						Intent:             request.Intent,
-						ActorHint:          request.ActorHint,
-						SourceSystem:       request.SourceSystem,
-						EstimatedCostUSD:   request.EstimatedCostUSD,
+						ActorSubject:          request.ActorSubject,
+						Classification:        request.Classification,
+						PromptSHA256:          request.PromptSHA256,
+						ModelAlias:            request.ModelAlias,
+						Client:                request.Client,
+						Endpoint:              request.Endpoint,
+						RawRequestBody:        request.RawRequestBody,
+						TrustedClientToken:    request.TrustedClientToken,
+						UseCaseID:             request.UseCaseID,
+						WorkflowID:            request.WorkflowID,
+						WorkItemID:            request.WorkItemID,
+						WorkItemType:          request.WorkItemType,
+						RepoURL:               request.RepoURL,
+						Branch:                request.Branch,
+						CommitSHA:             request.CommitSHA,
+						Intent:                request.Intent,
+						ActorHint:             request.ActorHint,
+						SourceSystem:          request.SourceSystem,
+						EstimatedCostUSD:      request.EstimatedCostUSD,
+						ClientSessionID:       request.ClientSessionID,
+						ParentClientSessionID: request.ParentClientSessionID,
 					})
 					if err != nil {
 						return modelgateway.SessionInfo{}, err
@@ -477,6 +548,7 @@ func main() {
 						WorkspaceMode:      record.WorkspaceMode,
 						GatewayToken:       result.GatewayToken,
 						AutoCreated:        true,
+						ClientSessionID:    record.ClientSessionID,
 					}, nil
 				}
 			}
@@ -529,6 +601,16 @@ func main() {
 	if modelPricingCloser != nil {
 		if err := modelPricingCloser.Close(); err != nil {
 			logx.Warnf("model pricing store close error: %v", err)
+		}
+	}
+	if policyDecisionCloser != nil {
+		if err := policyDecisionCloser.Close(); err != nil {
+			logx.Warnf("policy decision store close error: %v", err)
+		}
+	}
+	if developerCredentialStore != nil {
+		if err := developerCredentialStore.Close(); err != nil {
+			logx.Warnf("developer credential store close error: %v", err)
 		}
 	}
 	if copilotStore != nil {

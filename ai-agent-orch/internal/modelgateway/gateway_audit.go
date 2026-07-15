@@ -72,6 +72,8 @@ func (g *Gateway) auditModelCallHashesWithUsageAndTools(ctx context.Context, ses
 		WorkspaceMode:            session.WorkspaceMode,
 		WorkItemID:               session.WorkItemID,
 		WorkItemType:             session.WorkItemType,
+		RepoURL:                  session.RepoURL,
+		Branch:                   session.Branch,
 		CommitSHA:                session.CommitSHA,
 		ActorHint:                session.ActorHint,
 		SourceSystem:             session.SourceSystem,

@@ -5,8 +5,8 @@ required_for_phase0: false
 owner: local
 runtime: opencode
 model:
-  primary: coding-balanced
-  fallback: coding-economy
+  primary: copilot-claude-opus-4.8
+  fallback: copilot-gpt-5.5
 mcp_servers:
   - repo-classification
   - engineering-standards-kb

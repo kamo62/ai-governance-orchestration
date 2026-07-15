@@ -71,6 +71,8 @@ func TestGenerateOpenCodeConfig(t *testing.T) {
 	if _, ok := models["copilot-gpt-5-mini"]; !ok {
 		t.Fatal("expected copilot-gpt-5-mini model")
 	}
+	assertOpenCodeModelImageSupport(t, models["coding-gpt55"])
+	assertOpenCodeModelImageSupport(t, models["copilot-gpt-5-mini"])
 
 	agents, ok := config["agent"].(map[string]any)
 	if !ok {
@@ -111,10 +113,58 @@ func TestGenerateOpenCodeConfig(t *testing.T) {
 
 }
 
+func TestGenerateOpenCodeConfigModelsAdvertiseImageAttachments(t *testing.T) {
+	config := GenerateOpenCodeConfig("http://127.0.0.1:18082")
+	providers := config["provider"].(map[string]any)
+	for providerName, providerConfig := range providers {
+		provider := providerConfig.(map[string]any)
+		models := provider["models"].(map[string]any)
+		for modelID, modelConfig := range models {
+			assertOpenCodeModelImageSupport(t, modelConfig)
+			model := modelConfig.(map[string]any)
+			if model["name"] == "" {
+				t.Fatalf("expected name for %s/%s", providerName, modelID)
+			}
+		}
+	}
+}
+
+func assertOpenCodeModelImageSupport(t *testing.T, value any) {
+	t.Helper()
+	model, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("expected model config map, got %#v", value)
+	}
+	if model["attachment"] != true {
+		t.Fatalf("expected attachment support, got %#v", model)
+	}
+	modalities, ok := model["modalities"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected modalities map, got %#v", model)
+	}
+	input, ok := modalities["input"].([]string)
+	if !ok {
+		t.Fatalf("expected input modalities, got %#v", modalities["input"])
+	}
+	if !stringSliceContains(input, "image") || !stringSliceContains(input, "text") {
+		t.Fatalf("expected text and image input modalities, got %#v", input)
+	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestGenerateOpenCodeConfigIncludesDiscoveredModels(t *testing.T) {
 	config := GenerateOpenCodeConfigWithOptions(OpenCodeConfigOptions{
-		GatewayURL:         "http://127.0.0.1:18082",
-		UseEnvPlaceholders: true,
+		GatewayURL:          "http://127.0.0.1:18082",
+		UseEnvPlaceholders:  true,
+		UseDiscoveredModels: true,
 		DiscoveredModels: []OpenCodeProviderModel{
 			{ID: "copilot-claude-opus-4.8", Name: "Governed Copilot Claude Opus 4.8"},
 			{ID: "coding-fast", Name: "Should not replace static label"},
@@ -130,12 +180,28 @@ func TestGenerateOpenCodeConfigIncludesDiscoveredModels(t *testing.T) {
 	if opus["name"] != "Governed Copilot Claude Opus 4.8" {
 		t.Fatalf("unexpected discovered model name: %#v", opus)
 	}
+	assertOpenCodeModelImageSupport(t, opus)
 	codingFast := models["coding-fast"].(map[string]any)
 	if codingFast["name"] != "Governed Coding Fast" {
 		t.Fatalf("expected static model label to be preserved, got %#v", codingFast)
 	}
 	if _, ok := models["coding-balanced"]; ok {
 		t.Fatalf("did not expect undiscovered static model after live import, got %#v", models["coding-balanced"])
+	}
+}
+
+func TestGenerateOpenCodeConfigWithEmptyLiveDiscoveryDoesNotAdvertiseStaticAliases(t *testing.T) {
+	config := GenerateOpenCodeConfigWithOptions(OpenCodeConfigOptions{
+		GatewayURL:          "http://127.0.0.1:18082",
+		UseEnvPlaceholders:  true,
+		UseDiscoveredModels: true,
+		DiscoveredModels:    nil,
+	})
+
+	aiOrch := config["provider"].(map[string]any)["ai-orch"].(map[string]any)
+	models := aiOrch["models"].(map[string]any)
+	if len(models) != 0 {
+		t.Fatalf("expected empty live model list to stay empty, got %#v", models)
 	}
 }
 

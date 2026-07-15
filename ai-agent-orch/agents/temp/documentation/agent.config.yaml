@@ -4,8 +4,8 @@ phase: experimental
 owner: local
 runtime: opencode
 model:
-  primary: coding-economy
-  fallback: router-small
+  primary: copilot-gemini-3.5-flash
+  fallback: copilot-gpt-5.4-mini
 mcp_servers:
   - repo-classification
   - engineering-standards-kb

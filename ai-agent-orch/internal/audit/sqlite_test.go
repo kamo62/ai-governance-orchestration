@@ -8,7 +8,31 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/sqlitex"
 )
+
+func TestSQLiteStoreLegacyMigrationDoesNotHoldSchemaRowsDuringDDL(t *testing.T) {
+	dsn := "file:audit_legacy_migration?mode=memory&cache=shared"
+	db, err := sqlitex.Open(dsn, "audit migration test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE audit_events (event_id TEXT PRIMARY KEY, session_id TEXT, event_type TEXT NOT NULL, recorded_at TEXT NOT NULL);`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- (&SQLiteStore{DBPath: dsn, Now: time.Now, db: db}).migrate() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("migration timed out; possible open PRAGMA rows during DDL")
+	}
+}
 
 func TestSQLiteStoreAppendAndRetrieve(t *testing.T) {
 	dir := t.TempDir()
