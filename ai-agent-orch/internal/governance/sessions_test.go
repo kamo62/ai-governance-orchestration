@@ -1216,6 +1216,25 @@ func (s *recordingSessionStore) CompareAndSwapStatus(context.Context, string, st
 	return nil
 }
 
+func (s *recordingSessionStore) UpdateClaimedIdentityIfEmpty(_ context.Context, sessionID, osUsername, hostname, githubLogin string) error {
+	for i := range s.created {
+		if s.created[i].SessionID != sessionID {
+			continue
+		}
+		if s.created[i].ClaimedOSUsername == "" {
+			s.created[i].ClaimedOSUsername = osUsername
+		}
+		if s.created[i].ClaimedHostname == "" {
+			s.created[i].ClaimedHostname = hostname
+		}
+		if s.created[i].ClaimedGithubLogin == "" {
+			s.created[i].ClaimedGithubLogin = githubLogin
+		}
+		return nil
+	}
+	return nil
+}
+
 type fixedAuthorizer struct {
 	subject string
 }

@@ -318,6 +318,131 @@ func TestManagedClientEvidenceRecoversOrphanedReceipt(t *testing.T) {
 	}
 }
 
+func TestManagedClientEvidenceRecordsClientIdentityOnNewSession(t *testing.T) {
+	handler, token, auditStore, sessions := newManagedClientEvidenceTestRig(t)
+	body := []byte(`{
+		"events":[{"event_id":"evt_identity_start","schema_version":"v0","client":"t3code","client_session_id":"client_identity","event_type":"session_start","timestamp":"2026-07-02T10:00:00Z"}],
+		"client_identity":{"v":1,"os_username":"alice","hostname":"alice-laptop","os_platform":"darwin","github_login":"alice-gh"}
+	}`)
+
+	rec := postManagedClientBatch(handler, token, body)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp ManagedClientEvidenceResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if len(sessions.created) != 1 {
+		t.Fatalf("expected one managed session, got %#v", sessions.created)
+	}
+	created := sessions.created[0]
+	if created.ClaimedOSUsername != "alice" || created.ClaimedHostname != "alice-laptop" || created.ClaimedGithubLogin != "alice-gh" {
+		t.Fatalf("expected claimed identity persisted on new session, got %#v", created)
+	}
+
+	if resp.RecordedIdentity == nil {
+		t.Fatalf("expected recorded_identity in response, got %#v", resp)
+	}
+	if resp.RecordedIdentity.OSUsername != "alice" || resp.RecordedIdentity.Hostname != "alice-laptop" || resp.RecordedIdentity.GithubLogin != "alice-gh" {
+		t.Fatalf("unexpected recorded identity ack: %#v", resp.RecordedIdentity)
+	}
+
+	events, err := auditStore.EventsBySession(context.Background(), resp.SessionID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	foundClaimed := false
+	for _, ev := range events {
+		if ev.ClaimedOSUsername == "alice" && ev.ClaimedHostname == "alice-laptop" && ev.ClaimedOSPlatform == "darwin" && ev.ClaimedGithubLogin == "alice-gh" {
+			foundClaimed = true
+		}
+	}
+	if !foundClaimed {
+		t.Fatalf("expected at least one audit event carrying claimed identity, got %#v", events)
+	}
+}
+
+func TestManagedClientEvidenceWithoutClientIdentityStaysBackwardCompatible(t *testing.T) {
+	handler, token, _, sessions := newManagedClientEvidenceTestRig(t)
+	body := managedClientBatchJSON("evt_no_identity", "session_start")
+
+	rec := postManagedClientBatch(handler, token, body)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp ManagedClientEvidenceResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.RecordedIdentity != nil {
+		t.Fatalf("expected no recorded_identity when the batch carried none, got %#v", resp.RecordedIdentity)
+	}
+	if len(sessions.created) != 1 {
+		t.Fatalf("expected one managed session, got %#v", sessions.created)
+	}
+	created := sessions.created[0]
+	if created.ClaimedOSUsername != "" || created.ClaimedHostname != "" || created.ClaimedGithubLogin != "" {
+		t.Fatalf("expected no claimed identity on an old-client batch, got %#v", created)
+	}
+}
+
+func TestManagedClientEvidenceFillsInIdentityOnceOnExistingSession(t *testing.T) {
+	handler, token, _, sessions := newManagedClientEvidenceTestRig(t)
+
+	first := []byte(`{
+		"events":[{"event_id":"evt_fill_1","schema_version":"v0","client":"t3code","client_session_id":"client_fill","event_type":"prompt","timestamp":"2026-07-02T10:00:00Z"}],
+		"client_identity":{"v":1,"os_username":"alice","hostname":"","github_login":""}
+	}`)
+	rec := postManagedClientBatch(handler, token, first)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("first batch: expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// A later batch on the same client session reports a hostname and a
+	// *different* os_username. The stored os_username must not be overwritten,
+	// but the previously-empty hostname should be filled in.
+	second := []byte(`{
+		"events":[{"event_id":"evt_fill_2","schema_version":"v0","client":"t3code","client_session_id":"client_fill","event_type":"prompt","timestamp":"2026-07-02T10:01:00Z"}],
+		"client_identity":{"v":1,"os_username":"mallory","hostname":"alice-laptop","github_login":"alice-gh"}
+	}`)
+	rec = postManagedClientBatch(handler, token, second)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("second batch: expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp ManagedClientEvidenceResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode second response: %v", err)
+	}
+
+	if len(sessions.created) != 1 {
+		t.Fatalf("expected the session to be reused, not recreated, got %#v", sessions.created)
+	}
+	if resp.RecordedIdentity == nil {
+		t.Fatalf("expected recorded_identity ack on the second batch, got %#v", resp)
+	}
+	if resp.RecordedIdentity.OSUsername != "alice" {
+		t.Fatalf("expected os_username to stay alice (fill-in-once, never overwrite), got %q", resp.RecordedIdentity.OSUsername)
+	}
+	if resp.RecordedIdentity.Hostname != "alice-laptop" || resp.RecordedIdentity.GithubLogin != "alice-gh" {
+		t.Fatalf("expected previously-empty fields to be filled in, got %#v", resp.RecordedIdentity)
+	}
+}
+
+func TestManagedClientEvidenceAcceptsAndLogsUnexpectedIdentitySchemaVersion(t *testing.T) {
+	handler, token, _, _ := newManagedClientEvidenceTestRig(t)
+	body := []byte(`{
+		"events":[{"event_id":"evt_v2","schema_version":"v0","client":"t3code","client_session_id":"client_v2","event_type":"session_start","timestamp":"2026-07-02T10:00:00Z"}],
+		"client_identity":{"v":2,"os_username":"alice"}
+	}`)
+
+	rec := postManagedClientBatch(handler, token, body)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected an unexpected identity schema version to be accepted, not rejected, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func newManagedClientEvidenceTestRig(t *testing.T) (http.Handler, string, *audit.FileStore, *recordingSessionStore) {
 	t.Helper()
 	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)

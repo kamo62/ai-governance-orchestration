@@ -78,14 +78,65 @@ type ManagedClientPermission struct {
 }
 
 type ManagedClientEvidenceResponse struct {
-	SessionID string   `json:"session_id,omitempty"`
-	Accepted  int      `json:"accepted"`
-	Duplicate int      `json:"duplicate"`
-	EventIDs  []string `json:"event_ids,omitempty"`
+	SessionID        string                         `json:"session_id,omitempty"`
+	Accepted         int                            `json:"accepted"`
+	Duplicate        int                            `json:"duplicate"`
+	EventIDs         []string                       `json:"event_ids,omitempty"`
+	RecordedIdentity *ManagedClientRecordedIdentity `json:"recorded_identity,omitempty"`
+}
+
+// ManagedClientRecordedIdentity echoes exactly what the server stored for the
+// session's claimed machine identity, which may differ from what this batch
+// sent (for example, earlier fill-in-once values from a prior batch). The
+// server is the source of truth for what "recorded" means.
+type ManagedClientRecordedIdentity struct {
+	OSUsername  string `json:"os_username,omitempty"`
+	Hostname    string `json:"hostname,omitempty"`
+	GithubLogin string `json:"github_login,omitempty"`
+}
+
+// ManagedClientIdentity is optional, batch-level, client-asserted machine
+// identity. It is CLAIMED evidence, never a security principal: it is never
+// used for authorization or actor resolution, only recorded and surfaced for
+// downstream fleet/metrics correlation. The "v" field is the identity
+// block's own schema version, independent of the per-event schema_version.
+type ManagedClientIdentity struct {
+	V           int    `json:"v"`
+	OSUsername  string `json:"os_username"`
+	Hostname    string `json:"hostname"`
+	OSPlatform  string `json:"os_platform,omitempty"`
+	GithubLogin string `json:"github_login,omitempty"`
+}
+
+const managedClientIdentityMaxFieldLen = 256
+
+// sanitizeManagedClientIdentity trims and length-caps identity fields. Every
+// field is optional: missing or empty values are fine because the identity
+// block itself is optional evidence, not a validated credential.
+func sanitizeManagedClientIdentity(identity *ManagedClientIdentity) ManagedClientIdentity {
+	if identity == nil {
+		return ManagedClientIdentity{}
+	}
+	return ManagedClientIdentity{
+		V:           identity.V,
+		OSUsername:  truncateManagedClientIdentityField(identity.OSUsername),
+		Hostname:    truncateManagedClientIdentityField(identity.Hostname),
+		OSPlatform:  truncateManagedClientIdentityField(identity.OSPlatform),
+		GithubLogin: truncateManagedClientIdentityField(identity.GithubLogin),
+	}
+}
+
+func truncateManagedClientIdentityField(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) > managedClientIdentityMaxFieldLen {
+		trimmed = trimmed[:managedClientIdentityMaxFieldLen]
+	}
+	return trimmed
 }
 
 type managedClientEvidenceBatch struct {
-	Events []ManagedClientEvidenceEvent `json:"events"`
+	Events         []ManagedClientEvidenceEvent `json:"events"`
+	ClientIdentity *ManagedClientIdentity       `json:"client_identity,omitempty"`
 }
 
 type managedClientEvidenceHandler struct {
@@ -161,7 +212,19 @@ func (h *managedClientEvidenceHandler) ServeHTTP(w http.ResponseWriter, r *http.
 		}
 	}
 
-	sessionID, err := h.ensureSession(r.Context(), credential.ActorSubject, batch.Events[0])
+	// The identity block carries its own "v", independent of the per-event
+	// schema_version above. Unexpected versions are accepted and logged, never
+	// rejected: CLAIMED evidence has no protocol reason to fail a batch.
+	var identityForAudit *ManagedClientIdentity
+	if batch.ClientIdentity != nil {
+		if batch.ClientIdentity.V != 1 {
+			log.Printf("managed-client: client_identity schema version %d (expected 1), accepting anyway", batch.ClientIdentity.V)
+		}
+		sanitized := sanitizeManagedClientIdentity(batch.ClientIdentity)
+		identityForAudit = &sanitized
+	}
+
+	sessionID, recordedIdentity, err := h.ensureSession(r.Context(), credential.ActorSubject, batch)
 	if err != nil {
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "session attach failed"})
 		return
@@ -176,11 +239,18 @@ func (h *managedClientEvidenceHandler) ServeHTTP(w http.ResponseWriter, r *http.
 		}
 	}
 	response := ManagedClientEvidenceResponse{SessionID: sessionID}
+	if recordedIdentity.OSUsername != "" || recordedIdentity.Hostname != "" || recordedIdentity.GithubLogin != "" {
+		response.RecordedIdentity = &ManagedClientRecordedIdentity{
+			OSUsername:  recordedIdentity.OSUsername,
+			Hostname:    recordedIdentity.Hostname,
+			GithubLogin: recordedIdentity.GithubLogin,
+		}
+	}
 	var auditEventIDs map[string]bool
 	auditEventsLoaded := false
 	for _, event := range batch.Events {
 		auditEventID := h.newID("evt")
-		auditEvent := event.toAuditEvent(sessionID, credential.ActorSubject, auditEventID)
+		auditEvent := event.toAuditEvent(sessionID, credential.ActorSubject, auditEventID, identityForAudit)
 		receipt := ManagedClientReceipt{SessionID: sessionID, ClientEventID: event.EventID, AuditEventID: auditEventID, RecordedAt: h.now().UTC()}
 		if h.receipts != nil {
 			// The receipt PK atomically gives one request ownership. If the audit
@@ -261,15 +331,48 @@ func (h *managedClientEvidenceHandler) existingAuditEventIDs(ctx context.Context
 	return seen, nil
 }
 
-func (h *managedClientEvidenceHandler) ensureSession(ctx context.Context, actor string, event ManagedClientEvidenceEvent) (string, error) {
+// ensureSession resolves or creates the governed session for the batch's
+// (actor, client_session_id) pair and returns the identity now recorded for
+// that session. Sessions are create-once (FindActiveByActorClientSession
+// returns early below), so on a brand-new session the identity is whatever
+// this batch sent; on an existing session, only fields the earlier session
+// left empty are filled in, and only when this batch reports them non-empty.
+// A stored value is never overwritten once set.
+func (h *managedClientEvidenceHandler) ensureSession(ctx context.Context, actor string, batch managedClientEvidenceBatch) (string, ManagedClientIdentity, error) {
+	event := batch.Events[0]
+	identity := sanitizeManagedClientIdentity(batch.ClientIdentity)
 	h.sessionMu.Lock()
 	defer h.sessionMu.Unlock()
 	clientSessionID := strings.TrimSpace(event.ClientSessionID)
 	if finder, ok := h.sessions.(sessionClientFinder); ok {
 		if existing, found, err := finder.FindActiveByActorClientSession(ctx, actor, clientSessionID); err != nil {
-			return "", err
+			return "", ManagedClientIdentity{}, err
 		} else if found {
-			return existing.SessionID, nil
+			recorded := ManagedClientIdentity{
+				OSUsername:  existing.ClaimedOSUsername,
+				Hostname:    existing.ClaimedHostname,
+				GithubLogin: existing.ClaimedGithubLogin,
+			}
+			fillOSUsername := recorded.OSUsername == "" && identity.OSUsername != ""
+			fillHostname := recorded.Hostname == "" && identity.Hostname != ""
+			fillGithubLogin := recorded.GithubLogin == "" && identity.GithubLogin != ""
+			if fillOSUsername || fillHostname || fillGithubLogin {
+				if updater, ok := h.sessions.(sessionClaimedIdentityUpdater); ok {
+					if err := updater.UpdateClaimedIdentityIfEmpty(ctx, existing.SessionID, identity.OSUsername, identity.Hostname, identity.GithubLogin); err != nil {
+						return "", ManagedClientIdentity{}, err
+					}
+					if fillOSUsername {
+						recorded.OSUsername = identity.OSUsername
+					}
+					if fillHostname {
+						recorded.Hostname = identity.Hostname
+					}
+					if fillGithubLogin {
+						recorded.GithubLogin = identity.GithubLogin
+					}
+				}
+			}
+			return existing.SessionID, recorded, nil
 		}
 	}
 	sessionID := h.newID("sess_managed")
@@ -295,29 +398,45 @@ func (h *managedClientEvidenceHandler) ensureSession(ctx context.Context, actor 
 		EnforcementMode:    "advisory",
 		RecordedAt:         now,
 	}
+	if batch.ClientIdentity != nil {
+		sessionEvent.ClaimedOSUsername = identity.OSUsername
+		sessionEvent.ClaimedHostname = identity.Hostname
+		sessionEvent.ClaimedOSPlatform = identity.OSPlatform
+		sessionEvent.ClaimedGithubLogin = identity.GithubLogin
+	}
 	if _, err := h.audit.Append(ctx, sessionEvent); err != nil {
-		return "", err
+		return "", ManagedClientIdentity{}, err
 	}
 	rec := SessionRecord{
-		SessionID:       sessionID,
-		ActorSubject:    actor,
-		Agent:           "managed-client",
-		Classification:  "internal",
-		PromptSHA256:    "",
-		Status:          "running",
-		CreatedAt:       now,
-		ApprovalMode:    "client_reported",
-		WorkspaceMode:   "client-local",
-		RepoURL:         repoURL,
-		Branch:          strings.TrimSpace(event.Repo.Branch),
-		CommitSHA:       strings.TrimSpace(event.Repo.Commit),
-		SourceSystem:    defaultString(strings.TrimSpace(event.Client), "managed-client"),
-		ClientSessionID: clientSessionID,
+		SessionID:          sessionID,
+		ActorSubject:       actor,
+		Agent:              "managed-client",
+		Classification:     "internal",
+		PromptSHA256:       "",
+		Status:             "running",
+		CreatedAt:          now,
+		ApprovalMode:       "client_reported",
+		WorkspaceMode:      "client-local",
+		RepoURL:            repoURL,
+		Branch:             strings.TrimSpace(event.Repo.Branch),
+		CommitSHA:          strings.TrimSpace(event.Repo.Commit),
+		SourceSystem:       defaultString(strings.TrimSpace(event.Client), "managed-client"),
+		ClientSessionID:    clientSessionID,
+		ClaimedOSUsername:  identity.OSUsername,
+		ClaimedHostname:    identity.Hostname,
+		ClaimedGithubLogin: identity.GithubLogin,
 	}
 	if err := h.sessions.Create(ctx, rec); err != nil {
-		return "", err
+		return "", ManagedClientIdentity{}, err
 	}
-	return sessionID, nil
+	return sessionID, identity, nil
+}
+
+// sessionClaimedIdentityUpdater is implemented by session stores that can
+// fill in claimed identity fields on an existing session. Optional: stores
+// without it never fill in identity on a session created before this batch.
+type sessionClaimedIdentityUpdater interface {
+	UpdateClaimedIdentityIfEmpty(ctx context.Context, sessionID, osUsername, hostname, githubLogin string) error
 }
 
 func (h *managedClientEvidenceHandler) existingClientEventIDs(ctx context.Context, sessionID string) (map[string]bool, error) {
@@ -384,7 +503,12 @@ func validateManagedClientEvent(event ManagedClientEvidenceEvent) error {
 	return nil
 }
 
-func (event ManagedClientEvidenceEvent) toAuditEvent(sessionID, actor, auditEventID string) audit.Event {
+// toAuditEvent builds the audit record for a single evidence event. identity
+// is the batch's own sanitized client_identity (nil when the batch did not
+// carry one); when present, its claimed_ fields are stamped onto every event
+// in that batch, mirroring how repo/branch/commit context is already carried
+// per event above.
+func (event ManagedClientEvidenceEvent) toAuditEvent(sessionID, actor, auditEventID string, identity *ManagedClientIdentity) audit.Event {
 	auditEvent := audit.Event{
 		EventID:            auditEventID,
 		ClientEventID:      strings.TrimSpace(event.EventID),
@@ -403,6 +527,12 @@ func (event ManagedClientEvidenceEvent) toAuditEvent(sessionID, actor, auditEven
 		TrustLevel:         "managed_client",
 		EnforcementMode:    "advisory",
 		RecordedAt:         event.Timestamp.UTC(),
+	}
+	if identity != nil {
+		auditEvent.ClaimedOSUsername = identity.OSUsername
+		auditEvent.ClaimedHostname = identity.Hostname
+		auditEvent.ClaimedOSPlatform = identity.OSPlatform
+		auditEvent.ClaimedGithubLogin = identity.GithubLogin
 	}
 	switch event.EventType {
 	case "prompt":
