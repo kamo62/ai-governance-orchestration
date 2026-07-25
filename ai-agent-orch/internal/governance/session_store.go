@@ -55,6 +55,14 @@ type SessionRecord struct {
 	// single conversation reuses one governed session instead of minting one
 	// per model call. Empty for wrapper-created and control-plane sessions.
 	ClientSessionID string
+	// Claimed* fields are client-asserted machine identity from a managed
+	// client's optional client_identity block (see managed_client.go). They
+	// are CLAIMED evidence, never a security principal or authorization
+	// input, and are frozen at session creation except for a fill-in-once
+	// update that never overwrites a value already recorded.
+	ClaimedOSUsername  string
+	ClaimedHostname    string
+	ClaimedGithubLogin string
 	// Cost/value sizing.
 	StoryPoints         int
 	EstimatedDevDays    float64
@@ -159,6 +167,9 @@ func (s *SQLiteSessionStore) migrate() error {
 		"routing_confidence":           "TEXT NOT NULL DEFAULT ''",
 		"human_confirmation_required":  "INTEGER NOT NULL DEFAULT 0",
 		"client_session_id":            "TEXT NOT NULL DEFAULT ''",
+		"claimed_os_username":          "TEXT NOT NULL DEFAULT ''",
+		"claimed_hostname":             "TEXT NOT NULL DEFAULT ''",
+		"claimed_github_login":         "TEXT NOT NULL DEFAULT ''",
 	}
 	for col, def := range cols {
 		if err := s.ensureSessionColumn(col, def); err != nil {
@@ -200,13 +211,15 @@ func (s *SQLiteSessionStore) Create(ctx context.Context, rec SessionRecord) erro
 			use_case_id, workflow_id, work_item_id, work_item_type, repo_url, branch, commit_sha, intent, actor_hint, source_system,
 			story_points, estimated_dev_days, blended_day_rate_usd, baseline_cost_usd,
 			model_cost_usd, tool_cost_usd, platform_cost_usd, review_cost_usd,
-			verification_cost_usd, retry_count, gateway_token_sha256, runtime_gateway_token_sha256, client_session_id
+			verification_cost_usd, retry_count, gateway_token_sha256, runtime_gateway_token_sha256, client_session_id,
+			claimed_os_username, claimed_hostname, claimed_github_login
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?, ?, ?)
+			?, ?, ?, ?, ?,
+			?, ?, ?)
 	`,
 		rec.SessionID, rec.ParentSessionID, rec.ActorSubject, rec.Agent, rec.RoutedAgent, rec.RoutingConfidence, boolToInt(rec.HumanConfirmationRequired), rec.Classification, rec.PromptSHA256, rec.Status, rec.CreatedAt.Format(time.RFC3339Nano),
 		rec.RunID, rec.PermissionMode, rec.ApprovalMode, rec.WorkspaceMode,
@@ -214,6 +227,7 @@ func (s *SQLiteSessionStore) Create(ctx context.Context, rec SessionRecord) erro
 		rec.StoryPoints, rec.EstimatedDevDays, rec.BlendedDayRateUSD, rec.BaselineCostUSD,
 		rec.ModelCostUSD, rec.ToolCostUSD, rec.PlatformCostUSD, rec.ReviewCostUSD,
 		rec.VerificationCostUSD, rec.RetryCount, rec.GatewayTokenSHA256, rec.RuntimeGatewayTokenSHA256, rec.ClientSessionID,
+		rec.ClaimedOSUsername, rec.ClaimedHostname, rec.ClaimedGithubLogin,
 	)
 	if err != nil {
 		return fmt.Errorf("insert session: %w", err)
@@ -234,7 +248,8 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, sessionID string) (Session
 				COALESCE(story_points, 0), COALESCE(estimated_dev_days, 0), COALESCE(blended_day_rate_usd, 0),
 				COALESCE(baseline_cost_usd, 0), COALESCE(model_cost_usd, 0), COALESCE(tool_cost_usd, 0),
 				COALESCE(platform_cost_usd, 0), COALESCE(review_cost_usd, 0),
-				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, ''), COALESCE(client_session_id, '')
+				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, ''), COALESCE(client_session_id, ''),
+				COALESCE(claimed_os_username, ''), COALESCE(claimed_hostname, ''), COALESCE(claimed_github_login, '')
 			FROM sessions WHERE session_id = ?
 	`, sessionID).Scan(
 		&rec.SessionID, &rec.ParentSessionID, &rec.ActorSubject, &rec.Agent, &rec.RoutedAgent, &rec.RoutingConfidence, &humanConfirmationRequired, &rec.Classification, &rec.PromptSHA256, &rec.Status, &createdAtStr,
@@ -243,6 +258,7 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, sessionID string) (Session
 		&rec.StoryPoints, &rec.EstimatedDevDays, &rec.BlendedDayRateUSD, &rec.BaselineCostUSD,
 		&rec.ModelCostUSD, &rec.ToolCostUSD, &rec.PlatformCostUSD, &rec.ReviewCostUSD,
 		&rec.VerificationCostUSD, &rec.RetryCount, &rec.GatewayTokenSHA256, &rec.RuntimeGatewayTokenSHA256, &rec.ClientSessionID,
+		&rec.ClaimedOSUsername, &rec.ClaimedHostname, &rec.ClaimedGithubLogin,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SessionRecord{}, fmt.Errorf("session not found")
@@ -313,7 +329,8 @@ func (s *SQLiteSessionStore) ListRecent(ctx context.Context, actorSubject string
 				COALESCE(story_points, 0), COALESCE(estimated_dev_days, 0), COALESCE(blended_day_rate_usd, 0),
 				COALESCE(baseline_cost_usd, 0), COALESCE(model_cost_usd, 0), COALESCE(tool_cost_usd, 0),
 				COALESCE(platform_cost_usd, 0), COALESCE(review_cost_usd, 0),
-				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, '')
+				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, ''),
+				COALESCE(claimed_os_username, ''), COALESCE(claimed_hostname, ''), COALESCE(claimed_github_login, '')
 			FROM sessions
 			WHERE actor_subject = ?
 			ORDER BY created_at DESC
@@ -335,6 +352,7 @@ func (s *SQLiteSessionStore) ListRecent(ctx context.Context, actorSubject string
 			&rec.StoryPoints, &rec.EstimatedDevDays, &rec.BlendedDayRateUSD, &rec.BaselineCostUSD,
 			&rec.ModelCostUSD, &rec.ToolCostUSD, &rec.PlatformCostUSD, &rec.ReviewCostUSD,
 			&rec.VerificationCostUSD, &rec.RetryCount, &rec.GatewayTokenSHA256, &rec.RuntimeGatewayTokenSHA256,
+			&rec.ClaimedOSUsername, &rec.ClaimedHostname, &rec.ClaimedGithubLogin,
 		); err != nil {
 			return nil, fmt.Errorf("scan recent session: %w", err)
 		}
@@ -416,7 +434,8 @@ func (s *SQLiteSessionStore) ListRecentAll(ctx context.Context, limit int) ([]Se
 				COALESCE(story_points, 0), COALESCE(estimated_dev_days, 0), COALESCE(blended_day_rate_usd, 0),
 				COALESCE(baseline_cost_usd, 0), COALESCE(model_cost_usd, 0), COALESCE(tool_cost_usd, 0),
 				COALESCE(platform_cost_usd, 0), COALESCE(review_cost_usd, 0),
-				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, '')
+				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, ''),
+				COALESCE(claimed_os_username, ''), COALESCE(claimed_hostname, ''), COALESCE(claimed_github_login, '')
 			FROM sessions
 			ORDER BY created_at DESC
 			LIMIT ?
@@ -437,6 +456,7 @@ func (s *SQLiteSessionStore) ListRecentAll(ctx context.Context, limit int) ([]Se
 			&rec.StoryPoints, &rec.EstimatedDevDays, &rec.BlendedDayRateUSD, &rec.BaselineCostUSD,
 			&rec.ModelCostUSD, &rec.ToolCostUSD, &rec.PlatformCostUSD, &rec.ReviewCostUSD,
 			&rec.VerificationCostUSD, &rec.RetryCount, &rec.GatewayTokenSHA256, &rec.RuntimeGatewayTokenSHA256,
+			&rec.ClaimedOSUsername, &rec.ClaimedHostname, &rec.ClaimedGithubLogin,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
@@ -503,6 +523,84 @@ func (s *SQLiteSessionStore) SetRuntimeGatewayTokenHash(ctx context.Context, ses
 		return fmt.Errorf("session not found")
 	}
 	return nil
+}
+
+// UpdateClaimedIdentityIfEmpty fills in claimed machine-identity fields on an
+// existing session, one field at a time, only where the stored value is
+// still empty. Managed-client sessions are create-once, so identity is
+// normally frozen at creation; this lets a later batch fill in fields the
+// first batch omitted, without ever overwriting a value already recorded.
+// Passing an empty string for a field is a no-op for that field.
+func (s *SQLiteSessionStore) UpdateClaimedIdentityIfEmpty(ctx context.Context, sessionID, osUsername, hostname, githubLogin string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET
+			claimed_os_username = CASE WHEN claimed_os_username = '' THEN ? ELSE claimed_os_username END,
+			claimed_hostname = CASE WHEN claimed_hostname = '' THEN ? ELSE claimed_hostname END,
+			claimed_github_login = CASE WHEN claimed_github_login = '' THEN ? ELSE claimed_github_login END
+		WHERE session_id = ?
+	`, osUsername, hostname, githubLogin, sessionID)
+	if err != nil {
+		return fmt.Errorf("update claimed identity: %w", err)
+	}
+	return nil
+}
+
+// IdentityMapRow is one grouped row of the admin identity-map surface: a
+// distinct (actor, claimed OS username, claimed GitHub login) combination
+// seen across a managed client's sessions, for downstream fleet/metrics
+// correlation. It carries CLAIMED evidence only, never an authorization
+// input.
+type IdentityMapRow struct {
+	ActorSubject       string
+	ClaimedOSUsername  string
+	ClaimedGithubLogin string
+	ClaimedHostname    string
+	LastSeen           time.Time
+}
+
+// IdentityMap groups sessions by (actor_subject, claimed_os_username,
+// claimed_github_login) and returns one row per group with the most recent
+// session's hostname and creation time. Sessions in any status are included,
+// including done, because test-connection enrolment sessions end
+// immediately; rows with an empty claimed_os_username are excluded since
+// there is nothing claimed to correlate.
+func (s *SQLiteSessionStore) IdentityMap(ctx context.Context) ([]IdentityMapRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT actor_subject, COALESCE(claimed_os_username, ''), COALESCE(claimed_github_login, ''), COALESCE(claimed_hostname, ''), created_at
+		FROM sessions
+		WHERE COALESCE(claimed_os_username, '') <> ''
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query identity map: %w", err)
+	}
+	defer rows.Close()
+
+	seen := map[string]bool{}
+	var result []IdentityMapRow
+	for rows.Next() {
+		var actorSubject, osUsername, githubLogin, hostname, createdAtStr string
+		if err := rows.Scan(&actorSubject, &osUsername, &githubLogin, &hostname, &createdAtStr); err != nil {
+			return nil, fmt.Errorf("scan identity map row: %w", err)
+		}
+		key := actorSubject + "\x00" + osUsername + "\x00" + githubLogin
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		createdAt, _ := time.Parse(time.RFC3339Nano, createdAtStr)
+		result = append(result, IdentityMapRow{
+			ActorSubject:       actorSubject,
+			ClaimedOSUsername:  osUsername,
+			ClaimedGithubLogin: githubLogin,
+			ClaimedHostname:    hostname,
+			LastSeen:           createdAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate identity map rows: %w", err)
+	}
+	return result, nil
 }
 
 func (s *SQLiteSessionStore) UpdateStatus(ctx context.Context, sessionID, status string) error {

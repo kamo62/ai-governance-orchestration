@@ -112,6 +112,38 @@ func TestSQLiteSessionStoreListRecentFiltersActorAndOrdersNewestFirst(t *testing
 	}
 }
 
+func TestSQLiteSessionStoreListsClaimedIdentity(t *testing.T) {
+	store, err := NewSQLiteSessionStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	record := SessionRecord{
+		SessionID: "sess_claimed_list", ActorSubject: "local-dev", Agent: "managed-client",
+		Classification: "internal", PromptSHA256: "", Status: "running", CreatedAt: time.Now().UTC(),
+		ClaimedOSUsername: "alice", ClaimedHostname: "alice-laptop", ClaimedGithubLogin: "alice-gh",
+	}
+	if err := store.Create(context.Background(), record); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	for name, list := range map[string]func() ([]SessionRecord, error){
+		"actor": func() ([]SessionRecord, error) { return store.ListRecent(context.Background(), "local-dev", 10) },
+		"admin": func() ([]SessionRecord, error) { return store.ListRecentAll(context.Background(), 10) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			rows, err := list()
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if len(rows) != 1 || rows[0].ClaimedOSUsername != "alice" || rows[0].ClaimedHostname != "alice-laptop" || rows[0].ClaimedGithubLogin != "alice-gh" {
+				t.Fatalf("expected claimed identity in listed session, got %#v", rows)
+			}
+		})
+	}
+}
+
 func TestSQLiteSessionStoreListRecentSinceFiltersActorAndWindow(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := NewSQLiteSessionStore(path)
@@ -239,5 +271,188 @@ func TestSQLiteSessionStoreCreatesDirectoryAndRestrictsPermissions(t *testing.T)
 func TestSQLiteSessionStoreRequiresPath(t *testing.T) {
 	if _, err := NewSQLiteSessionStore(""); err == nil {
 		t.Fatal("expected empty path to fail")
+	}
+}
+
+// TestSQLiteSessionStoreClaimedIdentityColumnsMigrateIdempotently reopens the
+// same database twice, exercising ensureSessionColumn's ALTER TABLE path on
+// the second open. It must not error and the columns must keep behaving like
+// any other migrated column (default empty string, no data loss).
+func TestSQLiteSessionStoreClaimedIdentityColumnsMigrateIdempotently(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+
+	store, err := NewSQLiteSessionStore(path)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	ctx := context.Background()
+	if err := store.Create(ctx, SessionRecord{
+		SessionID:          "sess_claimed",
+		ActorSubject:       "local-dev",
+		Agent:              "unit-tests",
+		Classification:     "internal",
+		PromptSHA256:       "abc123",
+		Status:             "running",
+		CreatedAt:          time.Now().UTC(),
+		ClaimedOSUsername:  "alice",
+		ClaimedHostname:    "alice-laptop",
+		ClaimedGithubLogin: "alice-gh",
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// Reopening re-runs migrate() and ensureSessionColumn against a schema
+	// that already has the claimed_* columns; this must be a no-op, not an error.
+	reopened, err := NewSQLiteSessionStore(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer reopened.Close()
+
+	got, err := reopened.Get(ctx, "sess_claimed")
+	if err != nil {
+		t.Fatalf("get after reopen: %v", err)
+	}
+	if got.ClaimedOSUsername != "alice" || got.ClaimedHostname != "alice-laptop" || got.ClaimedGithubLogin != "alice-gh" {
+		t.Fatalf("expected claimed identity to survive re-migration, got %#v", got)
+	}
+}
+
+func TestSQLiteSessionStoreUpdateClaimedIdentityIfEmptyFillsOnlyEmptyFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := NewSQLiteSessionStore(path)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	if err := store.Create(ctx, SessionRecord{
+		SessionID:         "sess_fill",
+		ActorSubject:      "local-dev",
+		Agent:             "unit-tests",
+		Classification:    "internal",
+		PromptSHA256:      "abc123",
+		Status:            "running",
+		CreatedAt:         time.Now().UTC(),
+		ClaimedOSUsername: "alice",
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// os_username is already set to "alice"; the update must not overwrite it
+	// even though this call reports "mallory". hostname and github_login are
+	// still empty, so they should be filled in.
+	if err := store.UpdateClaimedIdentityIfEmpty(ctx, "sess_fill", "mallory", "alice-laptop", "alice-gh"); err != nil {
+		t.Fatalf("update claimed identity: %v", err)
+	}
+
+	got, err := store.Get(ctx, "sess_fill")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ClaimedOSUsername != "alice" {
+		t.Fatalf("expected claimed os_username to stay alice, got %q", got.ClaimedOSUsername)
+	}
+	if got.ClaimedHostname != "alice-laptop" || got.ClaimedGithubLogin != "alice-gh" {
+		t.Fatalf("expected empty fields to be filled in, got %#v", got)
+	}
+
+	// A second call with different values must not change anything further:
+	// every field is now non-empty.
+	if err := store.UpdateClaimedIdentityIfEmpty(ctx, "sess_fill", "bob", "bob-laptop", "bob-gh"); err != nil {
+		t.Fatalf("second update claimed identity: %v", err)
+	}
+	got2, err := store.Get(ctx, "sess_fill")
+	if err != nil {
+		t.Fatalf("get after second update: %v", err)
+	}
+	if got2.ClaimedOSUsername != "alice" || got2.ClaimedHostname != "alice-laptop" || got2.ClaimedGithubLogin != "alice-gh" {
+		t.Fatalf("expected fill-in-once to never overwrite recorded values, got %#v", got2)
+	}
+}
+
+func TestSQLiteSessionStoreIdentityMapGroupsFiltersAndIncludesDone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := NewSQLiteSessionStore(path)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	base := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
+	records := []SessionRecord{
+		// Older session for the same (actor, os_username, github_login) group;
+		// the newer session below should win for last_seen and hostname.
+		{
+			SessionID: "sess_alice_1", ActorSubject: "dev@example.test", Agent: "managed-client",
+			Classification: "internal", PromptSHA256: "", Status: "done", CreatedAt: base,
+			ClaimedOSUsername: "alice", ClaimedHostname: "alice-old-host", ClaimedGithubLogin: "alice-gh",
+		},
+		{
+			SessionID: "sess_alice_2", ActorSubject: "dev@example.test", Agent: "managed-client",
+			Classification: "internal", PromptSHA256: "", Status: "done", CreatedAt: base.Add(time.Hour),
+			ClaimedOSUsername: "alice", ClaimedHostname: "alice-new-host", ClaimedGithubLogin: "alice-gh",
+		},
+		// A test-connection style session that ends immediately (status
+		// "done") must still be included.
+		{
+			SessionID: "sess_bob_done", ActorSubject: "dev2@example.test", Agent: "managed-client",
+			Classification: "internal", PromptSHA256: "", Status: "done", CreatedAt: base.Add(2 * time.Hour),
+			ClaimedOSUsername: "bob", ClaimedHostname: "bob-host", ClaimedGithubLogin: "",
+		},
+		// No claimed OS username: must be excluded entirely.
+		{
+			SessionID: "sess_no_identity", ActorSubject: "dev3@example.test", Agent: "managed-client",
+			Classification: "internal", PromptSHA256: "", Status: "running", CreatedAt: base.Add(3 * time.Hour),
+		},
+	}
+	for _, rec := range records {
+		if err := store.Create(ctx, rec); err != nil {
+			t.Fatalf("create %s: %v", rec.SessionID, err)
+		}
+	}
+
+	rows, err := store.IdentityMap(ctx)
+	if err != nil {
+		t.Fatalf("identity map: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected two grouped rows, got %d: %#v", len(rows), rows)
+	}
+
+	byActor := map[string]IdentityMapRow{}
+	for _, row := range rows {
+		byActor[row.ActorSubject] = row
+	}
+
+	alice, ok := byActor["dev@example.test"]
+	if !ok {
+		t.Fatalf("expected a grouped row for alice, got %#v", rows)
+	}
+	if alice.ClaimedOSUsername != "alice" || alice.ClaimedGithubLogin != "alice-gh" {
+		t.Fatalf("unexpected alice group: %#v", alice)
+	}
+	if alice.ClaimedHostname != "alice-new-host" {
+		t.Fatalf("expected hostname from most recent session, got %q", alice.ClaimedHostname)
+	}
+	if !alice.LastSeen.Equal(base.Add(time.Hour)) {
+		t.Fatalf("expected last_seen to be the max created_at, got %s", alice.LastSeen)
+	}
+
+	bob, ok := byActor["dev2@example.test"]
+	if !ok {
+		t.Fatalf("expected a grouped row for bob (done session included), got %#v", rows)
+	}
+	if bob.ClaimedGithubLogin != "" {
+		t.Fatalf("expected empty github_login to be included, got %q", bob.ClaimedGithubLogin)
+	}
+
+	if _, excluded := byActor["dev3@example.test"]; excluded {
+		t.Fatalf("expected session with no claimed_os_username to be excluded, got %#v", rows)
 	}
 }

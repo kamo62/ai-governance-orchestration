@@ -338,6 +338,7 @@ func main() {
 	handler.Handle(authAdmin, "/v1/admin/audit/retention", governance.NewAdminAuditHandler(auditStore, sessionService))
 	handler.Handle(authAdmin, "/v1/admin/sessions", governance.NewAdminSessionsHandler(sessionService))
 	handler.Handle(authAdmin, "/v1/admin/sessions/export", governance.NewAdminSessionsExportHandler(sessionService))
+	handler.Handle(authAdmin, "/v1/admin/identity-map", governance.NewAdminIdentityMapHandler(sessionService))
 	handler.Handle(authAdmin, "/v1/admin/audit/sessions/", governance.NewAdminAuditLookupHandler(governance.AdminAuditLookupConfig{
 		Service:      sessionService,
 		Audit:        auditStore.(governance.AuditReader),

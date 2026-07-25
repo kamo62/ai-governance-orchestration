@@ -104,6 +104,59 @@ func NewAdminAuditLookupHandler(cfg AdminAuditLookupConfig) http.Handler {
 	})
 }
 
+// identityMapLister is implemented by session stores that can group sessions
+// into the claimed-identity map. Optional: stores without it return 501.
+type identityMapLister interface {
+	IdentityMap(ctx context.Context) ([]IdentityMapRow, error)
+}
+
+// IdentityMapEntry is the JSON shape of one /v1/admin/identity-map row.
+type IdentityMapEntry struct {
+	ActorSubject       string    `json:"actor_subject"`
+	ClaimedOSUsername  string    `json:"claimed_os_username"`
+	ClaimedGithubLogin string    `json:"claimed_github_login,omitempty"`
+	ClaimedHostname    string    `json:"claimed_hostname,omitempty"`
+	LastSeen           time.Time `json:"last_seen"`
+}
+
+// NewAdminIdentityMapHandler serves GET /v1/admin/identity-map: claimed
+// machine identity grouped by (actor_subject, claimed_os_username,
+// claimed_github_login) for a downstream metrics platform to correlate
+// governed sessions with fleet inventory. These are CLAIMED, client-asserted
+// values, never a security principal or authorization input. Done sessions
+// are included (test-connection enrolment sessions end immediately); rows
+// with no claimed OS username are excluded.
+func NewAdminIdentityMapHandler(service *SessionService) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			httpx.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+			return
+		}
+		if service == nil || service.sessions == nil {
+			httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "session store unavailable"})
+			return
+		}
+		if !service.RequireAdminRequest(w, r) {
+			return
+		}
+		lister, ok := service.sessions.(identityMapLister)
+		if !ok {
+			httpx.WriteJSON(w, http.StatusNotImplemented, map[string]any{"error": "session store does not support identity map"})
+			return
+		}
+		rows, err := lister.IdentityMap(r.Context())
+		if err != nil {
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "identity map lookup failed"})
+			return
+		}
+		entries := make([]IdentityMapEntry, 0, len(rows))
+		for _, row := range rows {
+			entries = append(entries, IdentityMapEntry(row))
+		}
+		httpx.WriteJSON(w, http.StatusOK, entries)
+	})
+}
+
 type sessionExportLister interface {
 	ListAllSince(ctx context.Context, since time.Time, max int) ([]SessionRecord, error)
 }
@@ -168,6 +221,7 @@ func NewAdminSessionsExportHandler(service *SessionService) http.Handler {
 			"model_alias", "model_resolved", "gateway_backend",
 			"prompt_tokens", "completion_tokens", "total_tokens",
 			"estimated_cost_usd", "cost_source", "trust_level",
+			"claimed_os_username", "claimed_github_login", "claimed_hostname",
 		})
 		for _, s := range summaries {
 			u := s.UsageSummary
@@ -177,6 +231,7 @@ func NewAdminSessionsExportHandler(service *SessionService) http.Handler {
 				u.ModelAlias, u.ModelResolved, u.GatewayBackend,
 				strconv.Itoa(u.PromptTokens), strconv.Itoa(u.CompletionTokens), strconv.Itoa(u.TotalTokens),
 				strconv.FormatFloat(u.EstimatedCostUSD, 'f', -1, 64), u.CostSource, s.TrustLevel,
+				s.ClaimedOSUsername, s.ClaimedGithubLogin, s.ClaimedHostname,
 			})
 		}
 		writer.Flush()

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.24.0-beta - 2026-07-24 (Minor)
+
+Release impact: Minor because this adds an optional, additive batch field and a new admin read endpoint without changing any existing managed-client or session API contract.
+
+- **Added machine-identity enrolment for managed clients**: evidence batches and test-connection calls may attach an optional `client_identity` block (`v`, `os_username`, `hostname`, `os_platform`, `github_login`). AI-Orch persists it on the session record as CLAIMED, client-asserted evidence, never a security principal or authorization input. A brand-new session stores whatever the first batch sends; an existing session only fills in fields the first batch left empty and never overwrites a value already recorded. The evidence response echoes back exactly what the server stored in a new `recorded_identity` field, and claimed fields are stamped onto the audit context (`claimed_` prefix) for batches that carried them.
+- **Added `GET /v1/admin/identity-map`**: an admin-only read surface for a downstream metrics platform, grouping claimed identity by `(actor_subject, claimed_os_username, claimed_github_login)` with the most recently seen hostname and session time. Done sessions are included (test-connection enrolment sessions end immediately); rows with no claimed OS username are excluded. The existing `/v1/admin/sessions/export` CSV also gained `claimed_os_username`, `claimed_github_login`, and `claimed_hostname` columns.
+- **Deployment ordering**: the server must be deployed before any client starts sending `client_identity`, because the evidence batch decoder rejects unknown fields (`DisallowUnknownFields`); an old server sees a batch with `client_identity` as a 400, not a silent ignore.
+
 ## v0.23.1-beta - 2026-07-14 (Patch)
 
 Release impact: Patch because route authorization is now declared explicitly with unchanged behavior for existing routes, and the remaining changes are demo tooling, CI coverage and static-analysis fixes.

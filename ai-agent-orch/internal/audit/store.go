@@ -82,7 +82,15 @@ type Event struct {
 	RawPromptStored          bool           `json:"raw_prompt_stored"`
 	RawResponseStored        bool           `json:"raw_response_stored"`
 	CorrelationSubject       string         `json:"correlation_subject,omitempty"`
-	RecordedAt               time.Time      `json:"recorded_at"`
+	// Claimed* fields are client-asserted machine identity from a managed
+	// client's optional client_identity block. They are evidence, never a
+	// security principal or authorization input; the `claimed_` prefix keeps
+	// that trust boundary explicit in every consumer of the audit ledger.
+	ClaimedOSUsername  string    `json:"claimed_os_username,omitempty"`
+	ClaimedHostname    string    `json:"claimed_hostname,omitempty"`
+	ClaimedOSPlatform  string    `json:"claimed_os_platform,omitempty"`
+	ClaimedGithubLogin string    `json:"claimed_github_login,omitempty"`
+	RecordedAt         time.Time `json:"recorded_at"`
 }
 
 func (s *FileStore) EventsBySession(ctx context.Context, sessionID string) ([]Event, error) {
