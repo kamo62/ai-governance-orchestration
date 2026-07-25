@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/httpx"
@@ -108,6 +110,18 @@ type ManagedClientIdentity struct {
 	GithubLogin string `json:"github_login,omitempty"`
 }
 
+// UnmarshalJSON keeps the identity block forward-compatible without relaxing
+// the strict batch and event decoding performed by readJSON.
+func (i *ManagedClientIdentity) UnmarshalJSON(data []byte) error {
+	type identity ManagedClientIdentity
+	var decoded identity
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*i = ManagedClientIdentity(decoded)
+	return nil
+}
+
 const managedClientIdentityMaxFieldLen = 256
 
 // sanitizeManagedClientIdentity trims and length-caps identity fields. Every
@@ -130,6 +144,9 @@ func truncateManagedClientIdentityField(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if len(trimmed) > managedClientIdentityMaxFieldLen {
 		trimmed = trimmed[:managedClientIdentityMaxFieldLen]
+		for !utf8.ValidString(trimmed) {
+			trimmed = trimmed[:len(trimmed)-1]
+		}
 	}
 	return trimmed
 }
@@ -239,13 +256,6 @@ func (h *managedClientEvidenceHandler) ServeHTTP(w http.ResponseWriter, r *http.
 		}
 	}
 	response := ManagedClientEvidenceResponse{SessionID: sessionID}
-	if recordedIdentity.OSUsername != "" || recordedIdentity.Hostname != "" || recordedIdentity.GithubLogin != "" {
-		response.RecordedIdentity = &ManagedClientRecordedIdentity{
-			OSUsername:  recordedIdentity.OSUsername,
-			Hostname:    recordedIdentity.Hostname,
-			GithubLogin: recordedIdentity.GithubLogin,
-		}
-	}
 	var auditEventIDs map[string]bool
 	auditEventsLoaded := false
 	for _, event := range batch.Events {
@@ -312,6 +322,30 @@ func (h *managedClientEvidenceHandler) ServeHTTP(w http.ResponseWriter, r *http.
 			_ = h.sessions.UpdateStatus(r.Context(), sessionID, "done")
 		}
 	}
+	if response.Accepted > 0 && batch.ClientIdentity != nil {
+		if updater, ok := h.sessions.(sessionClaimedIdentityUpdater); ok {
+			if err := updater.UpdateClaimedIdentityIfEmpty(r.Context(), sessionID, identityForAudit.OSUsername, identityForAudit.Hostname, identityForAudit.GithubLogin); err != nil {
+				httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "session identity update failed"})
+				return
+			}
+			if recordedIdentity.OSUsername == "" {
+				recordedIdentity.OSUsername = identityForAudit.OSUsername
+			}
+			if recordedIdentity.Hostname == "" {
+				recordedIdentity.Hostname = identityForAudit.Hostname
+			}
+			if recordedIdentity.GithubLogin == "" {
+				recordedIdentity.GithubLogin = identityForAudit.GithubLogin
+			}
+		}
+	}
+	if recordedIdentity.OSUsername != "" || recordedIdentity.Hostname != "" || recordedIdentity.GithubLogin != "" {
+		response.RecordedIdentity = &ManagedClientRecordedIdentity{
+			OSUsername:  recordedIdentity.OSUsername,
+			Hostname:    recordedIdentity.Hostname,
+			GithubLogin: recordedIdentity.GithubLogin,
+		}
+	}
 	httpx.WriteJSON(w, http.StatusAccepted, response)
 }
 
@@ -332,12 +366,11 @@ func (h *managedClientEvidenceHandler) existingAuditEventIDs(ctx context.Context
 }
 
 // ensureSession resolves or creates the governed session for the batch's
-// (actor, client_session_id) pair and returns the identity now recorded for
-// that session. Sessions are create-once (FindActiveByActorClientSession
+// (actor, client_session_id) pair and returns the identity currently recorded
+// for that session. Sessions are create-once (FindActiveByActorClientSession
 // returns early below), so on a brand-new session the identity is whatever
-// this batch sent; on an existing session, only fields the earlier session
-// left empty are filled in, and only when this batch reports them non-empty.
-// A stored value is never overwritten once set.
+// this batch sent. Existing-session fill-in is performed after at least one
+// batch event is accepted; a stored value is never overwritten once set.
 func (h *managedClientEvidenceHandler) ensureSession(ctx context.Context, actor string, batch managedClientEvidenceBatch) (string, ManagedClientIdentity, error) {
 	event := batch.Events[0]
 	identity := sanitizeManagedClientIdentity(batch.ClientIdentity)
@@ -352,25 +385,6 @@ func (h *managedClientEvidenceHandler) ensureSession(ctx context.Context, actor 
 				OSUsername:  existing.ClaimedOSUsername,
 				Hostname:    existing.ClaimedHostname,
 				GithubLogin: existing.ClaimedGithubLogin,
-			}
-			fillOSUsername := recorded.OSUsername == "" && identity.OSUsername != ""
-			fillHostname := recorded.Hostname == "" && identity.Hostname != ""
-			fillGithubLogin := recorded.GithubLogin == "" && identity.GithubLogin != ""
-			if fillOSUsername || fillHostname || fillGithubLogin {
-				if updater, ok := h.sessions.(sessionClaimedIdentityUpdater); ok {
-					if err := updater.UpdateClaimedIdentityIfEmpty(ctx, existing.SessionID, identity.OSUsername, identity.Hostname, identity.GithubLogin); err != nil {
-						return "", ManagedClientIdentity{}, err
-					}
-					if fillOSUsername {
-						recorded.OSUsername = identity.OSUsername
-					}
-					if fillHostname {
-						recorded.Hostname = identity.Hostname
-					}
-					if fillGithubLogin {
-						recorded.GithubLogin = identity.GithubLogin
-					}
-				}
 			}
 			return existing.SessionID, recorded, nil
 		}

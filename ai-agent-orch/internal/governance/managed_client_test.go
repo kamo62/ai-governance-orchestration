@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kamo62/ai-governance-orchestration/ai-agent-orch/internal/audit"
 )
@@ -364,6 +365,18 @@ func TestManagedClientEvidenceRecordsClientIdentityOnNewSession(t *testing.T) {
 	}
 }
 
+func TestTruncateManagedClientIdentityFieldKeepsUTF8RuneBoundary(t *testing.T) {
+	value := strings.Repeat("a", managedClientIdentityMaxFieldLen-1) + "é"
+	got := truncateManagedClientIdentityField(value)
+
+	if got != strings.Repeat("a", managedClientIdentityMaxFieldLen-1) {
+		t.Fatalf("expected incomplete rune to be removed, got length %d", len(got))
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected valid UTF-8, got %q", got)
+	}
+}
+
 func TestManagedClientEvidenceWithoutClientIdentityStaysBackwardCompatible(t *testing.T) {
 	handler, token, _, sessions := newManagedClientEvidenceTestRig(t)
 	body := managedClientBatchJSON("evt_no_identity", "session_start")
@@ -430,16 +443,42 @@ func TestManagedClientEvidenceFillsInIdentityOnceOnExistingSession(t *testing.T)
 	}
 }
 
+func TestManagedClientEvidenceDuplicateBatchDoesNotFillIdentity(t *testing.T) {
+	handler, token, _, sessions := newManagedClientEvidenceTestRig(t)
+	first := managedClientBatchJSON("evt_duplicate_identity", "prompt")
+	if rec := postManagedClientBatch(handler, token, first); rec.Code != http.StatusAccepted {
+		t.Fatalf("first batch: expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	second := []byte(`{
+		"events":[{"event_id":"evt_duplicate_identity","schema_version":"v0","client":"t3code","client_session_id":"client_1","event_type":"prompt","timestamp":"2026-07-02T10:01:00Z"}],
+		"client_identity":{"v":1,"os_username":"alice","hostname":"alice-laptop","github_login":"alice-gh"}
+	}`)
+	if rec := postManagedClientBatch(handler, token, second); rec.Code != http.StatusAccepted {
+		t.Fatalf("duplicate batch: expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(sessions.created) != 1 {
+		t.Fatalf("expected one session, got %#v", sessions.created)
+	}
+	created := sessions.created[0]
+	if created.ClaimedOSUsername != "" || created.ClaimedHostname != "" || created.ClaimedGithubLogin != "" {
+		t.Fatalf("duplicate batch filled claimed identity without an accepted event, got %#v", created)
+	}
+}
+
 func TestManagedClientEvidenceAcceptsAndLogsUnexpectedIdentitySchemaVersion(t *testing.T) {
-	handler, token, _, _ := newManagedClientEvidenceTestRig(t)
+	handler, token, _, sessions := newManagedClientEvidenceTestRig(t)
 	body := []byte(`{
 		"events":[{"event_id":"evt_v2","schema_version":"v0","client":"t3code","client_session_id":"client_v2","event_type":"session_start","timestamp":"2026-07-02T10:00:00Z"}],
-		"client_identity":{"v":2,"os_username":"alice"}
+		"client_identity":{"v":2,"os_username":"alice","hostname":"alice-laptop","email":"alice@example.test"}
 	}`)
 
 	rec := postManagedClientBatch(handler, token, body)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected an unexpected identity schema version to be accepted, not rejected, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(sessions.created) != 1 || sessions.created[0].ClaimedOSUsername != "alice" || sessions.created[0].ClaimedHostname != "alice-laptop" {
+		t.Fatalf("expected known identity fields to be recorded, got %#v", sessions.created)
 	}
 }
 

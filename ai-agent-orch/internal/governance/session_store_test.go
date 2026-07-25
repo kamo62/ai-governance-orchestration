@@ -112,6 +112,38 @@ func TestSQLiteSessionStoreListRecentFiltersActorAndOrdersNewestFirst(t *testing
 	}
 }
 
+func TestSQLiteSessionStoreListsClaimedIdentity(t *testing.T) {
+	store, err := NewSQLiteSessionStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	record := SessionRecord{
+		SessionID: "sess_claimed_list", ActorSubject: "local-dev", Agent: "managed-client",
+		Classification: "internal", PromptSHA256: "", Status: "running", CreatedAt: time.Now().UTC(),
+		ClaimedOSUsername: "alice", ClaimedHostname: "alice-laptop", ClaimedGithubLogin: "alice-gh",
+	}
+	if err := store.Create(context.Background(), record); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	for name, list := range map[string]func() ([]SessionRecord, error){
+		"actor": func() ([]SessionRecord, error) { return store.ListRecent(context.Background(), "local-dev", 10) },
+		"admin": func() ([]SessionRecord, error) { return store.ListRecentAll(context.Background(), 10) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			rows, err := list()
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if len(rows) != 1 || rows[0].ClaimedOSUsername != "alice" || rows[0].ClaimedHostname != "alice-laptop" || rows[0].ClaimedGithubLogin != "alice-gh" {
+				t.Fatalf("expected claimed identity in listed session, got %#v", rows)
+			}
+		})
+	}
+}
+
 func TestSQLiteSessionStoreListRecentSinceFiltersActorAndWindow(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := NewSQLiteSessionStore(path)

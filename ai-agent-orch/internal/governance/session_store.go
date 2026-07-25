@@ -329,7 +329,8 @@ func (s *SQLiteSessionStore) ListRecent(ctx context.Context, actorSubject string
 				COALESCE(story_points, 0), COALESCE(estimated_dev_days, 0), COALESCE(blended_day_rate_usd, 0),
 				COALESCE(baseline_cost_usd, 0), COALESCE(model_cost_usd, 0), COALESCE(tool_cost_usd, 0),
 				COALESCE(platform_cost_usd, 0), COALESCE(review_cost_usd, 0),
-				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, '')
+				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, ''),
+				COALESCE(claimed_os_username, ''), COALESCE(claimed_hostname, ''), COALESCE(claimed_github_login, '')
 			FROM sessions
 			WHERE actor_subject = ?
 			ORDER BY created_at DESC
@@ -351,6 +352,7 @@ func (s *SQLiteSessionStore) ListRecent(ctx context.Context, actorSubject string
 			&rec.StoryPoints, &rec.EstimatedDevDays, &rec.BlendedDayRateUSD, &rec.BaselineCostUSD,
 			&rec.ModelCostUSD, &rec.ToolCostUSD, &rec.PlatformCostUSD, &rec.ReviewCostUSD,
 			&rec.VerificationCostUSD, &rec.RetryCount, &rec.GatewayTokenSHA256, &rec.RuntimeGatewayTokenSHA256,
+			&rec.ClaimedOSUsername, &rec.ClaimedHostname, &rec.ClaimedGithubLogin,
 		); err != nil {
 			return nil, fmt.Errorf("scan recent session: %w", err)
 		}
@@ -432,7 +434,8 @@ func (s *SQLiteSessionStore) ListRecentAll(ctx context.Context, limit int) ([]Se
 				COALESCE(story_points, 0), COALESCE(estimated_dev_days, 0), COALESCE(blended_day_rate_usd, 0),
 				COALESCE(baseline_cost_usd, 0), COALESCE(model_cost_usd, 0), COALESCE(tool_cost_usd, 0),
 				COALESCE(platform_cost_usd, 0), COALESCE(review_cost_usd, 0),
-				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, '')
+				COALESCE(verification_cost_usd, 0), COALESCE(retry_count, 0), COALESCE(gateway_token_sha256, ''), COALESCE(runtime_gateway_token_sha256, ''),
+				COALESCE(claimed_os_username, ''), COALESCE(claimed_hostname, ''), COALESCE(claimed_github_login, '')
 			FROM sessions
 			ORDER BY created_at DESC
 			LIMIT ?
@@ -453,6 +456,7 @@ func (s *SQLiteSessionStore) ListRecentAll(ctx context.Context, limit int) ([]Se
 			&rec.StoryPoints, &rec.EstimatedDevDays, &rec.BlendedDayRateUSD, &rec.BaselineCostUSD,
 			&rec.ModelCostUSD, &rec.ToolCostUSD, &rec.PlatformCostUSD, &rec.ReviewCostUSD,
 			&rec.VerificationCostUSD, &rec.RetryCount, &rec.GatewayTokenSHA256, &rec.RuntimeGatewayTokenSHA256,
+			&rec.ClaimedOSUsername, &rec.ClaimedHostname, &rec.ClaimedGithubLogin,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
